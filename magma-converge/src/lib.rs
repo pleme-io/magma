@@ -26,6 +26,7 @@ use thiserror::Error;
 pub mod inmemory;
 pub mod github;
 pub mod dns;
+pub mod helm;
 pub mod terraform;
 pub mod engine;
 

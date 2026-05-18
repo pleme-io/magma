@@ -1,0 +1,23 @@
+[package]
+name        = "magma-fsm"
+description = "magma — typed reconcile lifecycle state machine. Phase enum (Idle/Planning/Approving/Applying/Verifying/Stable/Failed/Retrying/Refused). Typed transitions with timestamps + plan_id + reason. Resumable across operator restarts."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-converge = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+thiserror      = { workspace = true }
+chrono         = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

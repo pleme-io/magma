@@ -13,6 +13,7 @@ use magma_converge::{
     inmemory::InMemoryKvReconciler,
     github::{GithubRepoReconciler, MockGithubClient, RepoSettings},
     dns::{DnsRecordReconciler, MockDnsClient, Record, RecordKey, RecordValue},
+    helm::{HelmReleaseReconciler, MockHelmClient, ReleaseSpec},
     Action, Reconciler,
 };
 use proptest::prelude::*;
@@ -92,6 +93,17 @@ async fn law_empty_plan_apply_dns() {
     assert_eq!(state, after);
 }
 
+#[tokio::test]
+async fn law_empty_plan_apply_helm() {
+    let r = HelmReleaseReconciler::new(MockHelmClient::new());
+    let state = r.read_state().await.unwrap();
+    let plan = r.compute_plan(&json!({}), &state).unwrap();
+    assert!(plan.is_noop());
+    r.apply(&plan).await.unwrap();
+    let after = r.read_state().await.unwrap();
+    assert_eq!(state, after);
+}
+
 // ── Universal law: apply converges ───────────────────────────────
 
 proptest! {
@@ -153,6 +165,39 @@ async fn law_read_state_idempotent_dns() {
     assert_eq!(s1, s2);
 }
 
+#[tokio::test]
+async fn law_read_state_idempotent_helm() {
+    let mut initial = HashMap::new();
+    initial.insert("nginx".to_string(), ReleaseSpec {
+        chart: "ingress-nginx".into(),
+        version: "4.7.0".into(),
+        namespace: "default".into(),
+        values: json!({ "replicas": 2 }),
+    });
+    let r = HelmReleaseReconciler::new(MockHelmClient::with_releases(initial));
+    let s1 = r.read_state().await.unwrap();
+    let s2 = r.read_state().await.unwrap();
+    assert_eq!(s1, s2);
+}
+
+#[tokio::test]
+async fn law_apply_converges_helm() {
+    let r = HelmReleaseReconciler::new(MockHelmClient::new());
+    let mut desired = HashMap::new();
+    desired.insert("nginx".to_string(), ReleaseSpec {
+        chart: "ingress-nginx".into(),
+        version: "4.7.0".into(),
+        namespace: "default".into(),
+        values: json!({}),
+    });
+    let config = serde_json::to_value(desired).unwrap();
+    let state = r.read_state().await.unwrap();
+    let plan = r.compute_plan(&config, &state).unwrap();
+    r.apply(&plan).await.unwrap();
+    let drift = r.detect_drift(&config).await.unwrap();
+    assert!(drift.is_noop());
+}
+
 // ── Universal law: plan_id differs when config differs ───────────
 
 proptest! {
@@ -185,6 +230,7 @@ fn law_kinds_are_unique() {
         InMemoryKvReconciler::new().kind(),
         GithubRepoReconciler::new(MockGithubClient::new()).kind(),
         DnsRecordReconciler::new(MockDnsClient::new()).kind(),
+        HelmReleaseReconciler::new(MockHelmClient::new()).kind(),
     ];
     let unique: std::collections::HashSet<_> = kinds.iter().collect();
     assert_eq!(unique.len(), kinds.len(), "reconciler kinds collide: {kinds:?}");

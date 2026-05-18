@@ -24,6 +24,8 @@ members = [
     "magma-converge",
     "magma-drift",
     "magma-spec",
+    "magma-stream",
+    "magma-fsm",
     "magma-cli",
     "magma-test",
 ]
@@ -69,6 +71,8 @@ magma-operator-backend = { path = "magma-operator-backend" }
 magma-converge  = { path = "magma-converge" }
 magma-drift     = { path = "magma-drift" }
 magma-spec      = { path = "magma-spec" }
+magma-stream    = { path = "magma-stream" }
+magma-fsm       = { path = "magma-fsm" }
 magma-test      = { path = "magma-test" }
 
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──

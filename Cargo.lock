@@ -1290,6 +1290,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "magma-fsm"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "magma-converge",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "magma-graph"
 version = "0.1.0"
 dependencies = [
@@ -1476,6 +1488,25 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "magma-stream"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "chrono",
+ "hex",
+ "magma-converge",
+ "magma-drift",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -1,0 +1,30 @@
+[package]
+name        = "magma-stream"
+description = "magma — plan-as-data pipeline. Pipes typed Plan / DriftReport / Outcome into structured sinks (JSON-lines audit, K8s events, in-memory, BLAKE3 Merkle chain). Every magma-converge consumer gets observability + tamper-evident audit for free."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-converge = { workspace = true }
+magma-drift    = { workspace = true }
+async-trait    = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+thiserror      = { workspace = true }
+tokio          = { workspace = true }
+chrono         = { workspace = true }
+blake3         = { workspace = true }
+hex            = { workspace = true }
+tracing        = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }
