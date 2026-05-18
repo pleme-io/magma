@@ -13,9 +13,10 @@ authors.workspace      = true
 workspace = true
 
 [dependencies]
-magma-types  = { workspace = true }
-magma-config = { workspace = true }
-magma-state  = { workspace = true }
+magma-types     = { workspace = true }
+magma-config    = { workspace = true }
+magma-state     = { workspace = true }
+magma-arch-test = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 tokio        = { workspace = true }

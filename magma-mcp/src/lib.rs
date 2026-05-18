@@ -151,6 +151,18 @@ pub fn tool_specs() -> Vec<ToolSpec> {
             ]),
             destructive: false,
         },
+        ToolSpec {
+            name: "magma_fixture_verify".into(),
+            description: "Verify a single Pangea-rendered workspace through magma's typed pipeline. Returns a WorkspaceReport with resource counts, providers, action histogram, plan_id, and compatibility summary. Per theory/MAGMA.md §II.6 + magma-arch-test.".into(),
+            schema: minimal_schema(&[("workspace_path", "string", true)]),
+            destructive: false,
+        },
+        ToolSpec {
+            name: "magma_fixture_verify_dir".into(),
+            description: "Verify every `.tf.json` under a directory via magma-arch-test. Returns an AggregateReport with passed/failed counts + per-workspace breakdown. Reusable proof-surface for CI and rspec.".into(),
+            schema: minimal_schema(&[("workspace_dir", "string", true)]),
+            destructive: false,
+        },
     ]
 }
 
@@ -278,6 +290,28 @@ async fn handle_tool_call(
             match found {
                 Some(r) => Ok(serde_json::to_value(r)?),
                 None => Err(McpError::InvalidParams(format!("address {address} not in state"))),
+            }
+        }
+
+        "magma_fixture_verify" => {
+            let path = params
+                .get("workspace_path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| McpError::InvalidParams("workspace_path required".into()))?;
+            let harness = magma_arch_test::WorkspaceTestHarness::new(path);
+            match harness.verify().await {
+                Ok(report) => Ok(serde_json::to_value(report)?),
+                Err(e) => Err(McpError::InvalidParams(e.to_string())),
+            }
+        }
+
+        "magma_fixture_verify_dir" => {
+            let dir = workspace_dir.ok_or_else(|| {
+                McpError::InvalidParams("workspace_dir required".into())
+            })?;
+            match magma_arch_test::verify_directory(&dir).await {
+                Ok(agg) => Ok(serde_json::to_value(agg)?),
+                Err(e) => Err(McpError::InvalidParams(e.to_string())),
             }
         }
 
