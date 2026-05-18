@@ -1,0 +1,39 @@
+[package]
+name        = "magma-converge"
+description = "magma — universal state-convergence substrate. One typed Reconciler trait that fits any declarative API (Terraform, GitHub, DNS, Helm, Slack, …). The operator becomes the universal convergence engine. Per theory/CONVERGENCE-SUBSTRATE.md."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# TerraformReconciler wraps these three. Other reconciler impls
+# don't pull them in; the deps live at the crate level so the
+# universal Plan/Outcome types can be re-shaped from magma's typed
+# Plan/Outcome.
+magma-types   = { workspace = true }
+magma-config   = { workspace = true }
+magma-backend = { workspace = true }
+magma-plan    = { workspace = true }
+magma-apply   = { workspace = true }
+magma-state   = { workspace = true }
+
+async-trait = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+chrono      = { workspace = true }
+blake3      = { workspace = true }
+hex         = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio    = { workspace = true }
