@@ -17,6 +17,7 @@ members = [
     "magma-mcp",
     "magma-arch-test",
     "magma-migrate",
+    "magma-flow",
     "magma-cli",
     "magma-test",
 ]
@@ -55,6 +56,7 @@ magma-attest    = { path = "magma-attest" }
 magma-mcp       = { path = "magma-mcp" }
 magma-arch-test = { path = "magma-arch-test" }
 magma-migrate   = { path = "magma-migrate" }
+magma-flow      = { path = "magma-flow" }
 magma-test      = { path = "magma-test" }
 
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──

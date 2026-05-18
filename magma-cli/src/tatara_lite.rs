@@ -373,4 +373,116 @@ mod tests {
         let v = parse_deforch(src).unwrap();
         assert!(v["workspaces"].as_array().unwrap().is_empty());
     }
+
+    // ── proptest round-trip ───────────────────────────────────────
+    //
+    // Generates random valid (deforch …) inputs and asserts:
+    //   1. The parser accepts every well-formed input.
+    //   2. The emitted JSON structure satisfies the FlowFile shape
+    //      (workspaces array, edges array, each edge endpoint refers
+    //      to a declared workspace name).
+    //   3. The s-expr → JSON projection is deterministic: two parses
+    //      of the same source produce byte-equal JSON.
+    //
+    // Reasonable input grammar: 1–4 workspaces, 0–N edges between
+    // declared workspaces, plus optional optimization block.
+
+    use proptest::prelude::*;
+
+    fn safe_name() -> impl Strategy<Value = String> {
+        "[a-z][a-z0-9_]{0,15}"
+    }
+    fn safe_path() -> impl Strategy<Value = String> {
+        proptest::collection::vec("[a-z]{1,6}", 1..=4)
+            .prop_map(|segs| format!("/tmp/{}", segs.join("/")))
+    }
+
+    fn workspace_form() -> impl Strategy<Value = (String, String)> {
+        (safe_name(), safe_path())
+    }
+
+    fn render_deforch(
+        workspaces: &[(String, String)],
+        edges: &[(usize, String, usize, String)],
+        opt_concurrency: Option<u32>,
+    ) -> String {
+        let mut s = String::from("(deforch :name \"prop\"\n  :workspaces (\n");
+        for (n, d) in workspaces {
+            s.push_str(&format!("    (:name \"{n}\" :dir \"{d}\")\n"));
+        }
+        s.push_str("  )\n  :edges (\n");
+        for (fi, fo, ti, ti_in) in edges {
+            let from = &workspaces[*fi].0;
+            let to   = &workspaces[*ti].0;
+            s.push_str(&format!(
+                "    (:from \"{from}\" :from-output \"{fo}\"\n     :to   \"{to}\" :to-input \"{ti_in}\")\n"
+            ));
+        }
+        s.push_str("  )");
+        if let Some(c) = opt_concurrency {
+            s.push_str(&format!(
+                "\n  :optimization (:strategy \"parallel_by_tier\" :max-concurrency {c})"
+            ));
+        }
+        s.push(')');
+        s
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        #[test]
+        fn deforch_round_trip_structural(
+            workspaces in proptest::collection::vec(workspace_form(), 1..=4),
+        ) {
+            // Edges always reference declared workspaces (by index)
+            // so we generate them after we know the workspace count.
+            let edges: Vec<(usize, String, usize, String)> = vec![];
+            let src = render_deforch(&workspaces, &edges, None);
+
+            let v = parse_deforch(&src).unwrap();
+            let ws = v["workspaces"].as_array().unwrap();
+            prop_assert_eq!(ws.len(), workspaces.len());
+            for (i, (n, d)) in workspaces.iter().enumerate() {
+                prop_assert_eq!(ws[i]["name"].as_str().unwrap(), n.as_str());
+                prop_assert_eq!(ws[i]["dir"].as_str().unwrap(),  d.as_str());
+            }
+            prop_assert!(v["edges"].is_array());
+        }
+
+        #[test]
+        fn deforch_is_deterministic(
+            workspaces in proptest::collection::vec(workspace_form(), 1..=3),
+            concurrency in proptest::option::of(1u32..=16),
+        ) {
+            let edges: Vec<(usize, String, usize, String)> = vec![];
+            let src = render_deforch(&workspaces, &edges, concurrency);
+            let a = parse_deforch(&src).unwrap();
+            let b = parse_deforch(&src).unwrap();
+            prop_assert_eq!(serde_json::to_string(&a).unwrap(),
+                            serde_json::to_string(&b).unwrap());
+        }
+
+        #[test]
+        fn deforch_with_edges_references_only_declared_workspaces(
+            (workspaces, edges) in proptest::collection::vec(workspace_form(), 2..=4)
+                .prop_flat_map(|ws| {
+                    let ws_len = ws.len();
+                    let edge_strat = proptest::collection::vec(
+                        (0..ws_len, "[a-z]{1,5}", 0..ws_len, "[a-z]{1,5}"),
+                        0..=4,
+                    );
+                    (Just(ws), edge_strat)
+                }),
+        ) {
+            let src = render_deforch(&workspaces, &edges, None);
+            let v = parse_deforch(&src).unwrap();
+            let declared: std::collections::HashSet<String> =
+                workspaces.iter().map(|(n, _)| n.clone()).collect();
+            for edge in v["edges"].as_array().unwrap() {
+                prop_assert!(declared.contains(edge["from"].as_str().unwrap()));
+                prop_assert!(declared.contains(edge["to"].as_str().unwrap()));
+            }
+        }
+    }
 }

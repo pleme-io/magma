@@ -897,7 +897,7 @@ fn cmd_flow(args: FlowArgs) -> Result<u8> {
             .and_then(|s| s.to_str())
             .map(|s| s == "lisp" || s == "tatara" || s == "scm")
             .unwrap_or(false);
-        let flow: FlowFile = if is_lisp {
+        let flow: magma_flow::FlowFile = if is_lisp {
             let source = std::str::from_utf8(&bytes)
                 .map_err(|e| anyhow::anyhow!("invalid UTF-8 in lisp source: {e}"))?;
             let value = tatara_lite::parse_deforch(source)
@@ -906,120 +906,12 @@ fn cmd_flow(args: FlowArgs) -> Result<u8> {
         } else {
             serde_json::from_slice(&bytes)?
         };
-        let order = topological_order(&flow)?;
-        let mut outputs_so_far: std::collections::HashMap<String, serde_json::Value> =
-            std::collections::HashMap::new();
-        let mut summaries: Vec<serde_json::Value> = vec![];
-
-        for workspace in order {
-            let entry = flow
-                .workspaces
-                .iter()
-                .find(|w| w.name == workspace)
-                .ok_or_else(|| anyhow::anyhow!("flow references unknown workspace: {workspace}"))?;
-            let shape = magma::pangea::WorkspaceShape::discover(&entry.dir)
-                .map_err(|e| anyhow::anyhow!("discover {}: {e}", entry.name))?;
-            let loaded = magma::pangea::TerraformJsonLoader
-                .load(shape)
-                .await
-                .map_err(|e| anyhow::anyhow!("load {}: {e}", entry.name))?;
-            let cfg = magma::config::Config::from_json(loaded.rendered.clone())
-                .map_err(|e| anyhow::anyhow!("parse {}: {e}", entry.name))?;
-            let backend = magma::backend::LocalBackend::new(entry.dir.clone());
-            let state = backend
-                .read_state()
-                .await
-                .map_err(|e| anyhow::anyhow!("read state {}: {e}", entry.name))?;
-            let plan = magma::plan::plan(&cfg, &state)
-                .map_err(|e| anyhow::anyhow!("plan {}: {e}", entry.name))?;
-
-            // Extract this workspace's outputs from the rendered JSON's
-            // `output` block (Pangea-rendered).
-            let mut workspace_outputs: std::collections::HashMap<String, serde_json::Value> =
-                std::collections::HashMap::new();
-            for (out_name, decl) in &cfg.outputs {
-                workspace_outputs.insert(out_name.clone(), decl.value.clone());
-            }
-            // Cross-workspace edges: upstream → downstream input flow.
-            for edge in flow
-                .edges
-                .iter()
-                .filter(|e| e.from == entry.name)
-            {
-                if let Some(v) = workspace_outputs.get(&edge.from_output) {
-                    outputs_so_far.insert(
-                        format!("{}.{}", edge.to, edge.to_input),
-                        v.clone(),
-                    );
-                }
-            }
-
-            summaries.push(serde_json::json!({
-                "workspace": entry.name,
-                "plan_id":   hex::encode(plan.id.0),
-                "changes":   plan.resource_changes.len(),
-                "outputs":   workspace_outputs,
-            }));
-        }
-
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "workspaces":     summaries,
-                "propagated":     outputs_so_far,
-            }))?,
-        );
+        let report = magma_flow::run(&flow)
+            .await
+            .map_err(|e| anyhow::anyhow!("flow run: {e}"))?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
         Ok::<u8, anyhow::Error>(0)
     })
-}
-
-#[derive(serde::Deserialize)]
-struct FlowFile {
-    workspaces: Vec<FlowWorkspace>,
-    #[serde(default)]
-    edges:      Vec<FlowEdge>,
-    /// Optional typed orchestration hints. M0.4 plumbed; honored once
-    /// `magma flow run` lands its shigoto-wrapped apply path. The
-    /// current plan-only path is sequential regardless of hints.
-    #[serde(default)]
-    #[allow(dead_code)]
-    optimization: Option<OptimizationHints>,
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-#[allow(dead_code)]
-struct OptimizationHints {
-    #[serde(default)]
-    strategy:         Option<String>,
-    #[serde(default)]
-    max_concurrency:  Option<usize>,
-    #[serde(default)]
-    retries:          Option<OptimizationRetries>,
-    #[serde(default)]
-    timeout_ms:       Option<u64>,
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-#[allow(dead_code)]
-struct OptimizationRetries {
-    #[serde(default)]
-    max:        Option<u32>,
-    #[serde(default)]
-    backoff_ms: Option<u64>,
-}
-
-#[derive(serde::Deserialize, Clone)]
-struct FlowWorkspace {
-    name: String,
-    dir:  std::path::PathBuf,
-}
-
-#[derive(serde::Deserialize, Clone)]
-struct FlowEdge {
-    from:        String,
-    from_output: String,
-    to:          String,
-    to_input:    String,
 }
 
 // ── Migration / split / merge ──────────────────────────────────────
@@ -1130,45 +1022,7 @@ fn cmd_merge(args: MergeArgs) -> Result<u8> {
     })
 }
 
-fn topological_order(flow: &FlowFile) -> Result<Vec<String>> {
-    use std::collections::{HashMap, HashSet, VecDeque};
-    let mut indegree: HashMap<String, usize> = flow
-        .workspaces
-        .iter()
-        .map(|w| (w.name.clone(), 0))
-        .collect();
-    for edge in &flow.edges {
-        if !indegree.contains_key(&edge.to) {
-            anyhow::bail!("flow edge references unknown workspace: {}", edge.to);
-        }
-        *indegree.entry(edge.to.clone()).or_insert(0) += 1;
-    }
-    let mut queue: VecDeque<String> = indegree
-        .iter()
-        .filter(|&(_, &d)| d == 0)
-        .map(|(n, _)| n.clone())
-        .collect();
-    let mut order: Vec<String> = vec![];
-    let mut visited: HashSet<String> = HashSet::new();
-    while let Some(n) = queue.pop_front() {
-        if !visited.insert(n.clone()) {
-            continue;
-        }
-        order.push(n.clone());
-        for edge in flow.edges.iter().filter(|e| e.from == n) {
-            if let Some(d) = indegree.get_mut(&edge.to) {
-                *d = d.saturating_sub(1);
-                if *d == 0 {
-                    queue.push_back(edge.to.clone());
-                }
-            }
-        }
-    }
-    if order.len() < flow.workspaces.len() {
-        anyhow::bail!("flow has a cycle");
-    }
-    Ok(order)
-}
+// topological_order moved to magma-flow crate.
 
 // ── Tests ──────────────────────────────────────────────────────────
 

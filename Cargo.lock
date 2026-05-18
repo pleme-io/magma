@@ -1197,11 +1197,14 @@ dependencies = [
  "hex",
  "magma",
  "magma-arch-test",
+ "magma-flow",
  "magma-migrate",
+ "proptest",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "shikumi",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1215,6 +1218,24 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "magma-flow"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "magma-backend",
+ "magma-config",
+ "magma-pangea",
+ "magma-plan",
+ "magma-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
  "tracing",
 ]
 
@@ -1235,11 +1256,9 @@ dependencies = [
  "async-trait",
  "hex",
  "magma-arch-test",
- "magma-backend",
  "magma-config",
+ "magma-flow",
  "magma-migrate",
- "magma-pangea",
- "magma-plan",
  "magma-state",
  "magma-types",
  "serde",

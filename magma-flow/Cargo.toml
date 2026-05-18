@@ -1,0 +1,29 @@
+[package]
+name        = "magma-flow"
+description = "magma — typed Pangea cross-workspace flow runner. One canonical FlowFile / OptimizationHints / topological_order + run engine; consumed by `magma flow` CLI, `pangea_orchestrate` MCP tool, and `Pangea::Magma::Chain` Ruby. Per theory/PANGEA-MAGMA-ORCHESTRATION.md §IV."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types    = { workspace = true }
+magma-config   = { workspace = true }
+magma-pangea   = { workspace = true }
+magma-plan     = { workspace = true }
+magma-backend  = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+tokio          = { workspace = true }
+thiserror      = { workspace = true }
+tracing        = { workspace = true }
+hex            = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

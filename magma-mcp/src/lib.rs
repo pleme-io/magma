@@ -582,115 +582,20 @@ async fn dispatch_merge(
     Ok(serde_json::to_value(receipt)?)
 }
 
-#[derive(serde::Deserialize)]
-struct PangeaFlowFile {
-    workspaces: Vec<PangeaFlowWorkspace>,
-    #[serde(default)]
-    edges:      Vec<PangeaFlowEdge>,
-}
-
-#[derive(serde::Deserialize, Clone)]
-struct PangeaFlowWorkspace {
-    name: String,
-    dir:  std::path::PathBuf,
-}
-
-#[derive(serde::Deserialize, Clone)]
-struct PangeaFlowEdge {
-    from:        String,
-    from_output: String,
-    to:          String,
-    to_input:    String,
-}
+// FlowFile / topological_order / plan loop now live in magma-flow.
+// `pangea_orchestrate` dispatch is a thin parse + delegate.
 
 async fn dispatch_pangea_orchestrate(
     params: &serde_json::Value,
 ) -> Result<serde_json::Value, McpError> {
-    use magma_backend::Backend as _;
-    use magma_pangea::WorkspaceLoader as _;
-
     let flow_value = params.get("flow")
         .ok_or_else(|| McpError::InvalidParams("flow required".into()))?;
-    let flow: PangeaFlowFile = serde_json::from_value(flow_value.clone())
+    let flow: magma_flow::FlowFile = serde_json::from_value(flow_value.clone())
         .map_err(|e| McpError::InvalidParams(format!("flow: {e}")))?;
-
-    let order = topological_order(&flow)
-        .map_err(|e| McpError::InvalidParams(format!("topo: {e}")))?;
-    let mut outputs_so_far: std::collections::HashMap<String, serde_json::Value> =
-        std::collections::HashMap::new();
-    let mut summaries: Vec<serde_json::Value> = vec![];
-
-    for ws_name in order {
-        let entry = flow.workspaces.iter().find(|w| w.name == ws_name)
-            .ok_or_else(|| McpError::InvalidParams(format!("unknown workspace: {ws_name}")))?;
-        let shape = magma_pangea::WorkspaceShape::discover(&entry.dir)
-            .map_err(|e| McpError::InvalidParams(format!("discover {}: {e}", entry.name)))?;
-        let loaded = magma_pangea::TerraformJsonLoader.load(shape)
-            .await
-            .map_err(|e| McpError::InvalidParams(format!("load {}: {e}", entry.name)))?;
-        let cfg = magma_config::Config::from_json(loaded.rendered.clone())
-            .map_err(|e| McpError::InvalidParams(format!("parse {}: {e}", entry.name)))?;
-        let backend = magma_backend::LocalBackend::new(entry.dir.clone());
-        let state = backend.read_state()
-            .await
-            .map_err(|e| McpError::InvalidParams(format!("read state {}: {e}", entry.name)))?;
-        let plan = magma_plan::plan(&cfg, &state)
-            .map_err(|e| McpError::InvalidParams(format!("plan {}: {e}", entry.name)))?;
-
-        let mut workspace_outputs: std::collections::HashMap<String, serde_json::Value> =
-            std::collections::HashMap::new();
-        for (out_name, decl) in &cfg.outputs {
-            workspace_outputs.insert(out_name.clone(), decl.value.clone());
-        }
-        for edge in flow.edges.iter().filter(|e| e.from == entry.name) {
-            if let Some(v) = workspace_outputs.get(&edge.from_output) {
-                outputs_so_far.insert(format!("{}.{}", edge.to, edge.to_input), v.clone());
-            }
-        }
-
-        summaries.push(serde_json::json!({
-            "workspace": entry.name,
-            "plan_id":   hex::encode(plan.id.0),
-            "changes":   plan.resource_changes.len(),
-            "outputs":   workspace_outputs,
-        }));
-    }
-
-    Ok(serde_json::json!({
-        "workspaces": summaries,
-        "propagated": outputs_so_far,
-    }))
-}
-
-fn topological_order(flow: &PangeaFlowFile) -> Result<Vec<String>, String> {
-    use std::collections::{HashMap, HashSet, VecDeque};
-    let mut indegree: HashMap<String, usize> = flow.workspaces.iter()
-        .map(|w| (w.name.clone(), 0))
-        .collect();
-    for edge in &flow.edges {
-        if !indegree.contains_key(&edge.to) {
-            return Err(format!("edge references unknown workspace: {}", edge.to));
-        }
-        *indegree.entry(edge.to.clone()).or_insert(0) += 1;
-    }
-    let mut queue: VecDeque<String> = indegree.iter()
-        .filter(|&(_, &d)| d == 0).map(|(n, _)| n.clone()).collect();
-    let mut order: Vec<String> = vec![];
-    let mut visited: HashSet<String> = HashSet::new();
-    while let Some(n) = queue.pop_front() {
-        if !visited.insert(n.clone()) { continue; }
-        order.push(n.clone());
-        for edge in flow.edges.iter().filter(|e| e.from == n) {
-            if let Some(d) = indegree.get_mut(&edge.to) {
-                *d = d.saturating_sub(1);
-                if *d == 0 { queue.push_back(edge.to.clone()); }
-            }
-        }
-    }
-    if order.len() < flow.workspaces.len() {
-        return Err("flow has a cycle".into());
-    }
-    Ok(order)
+    let report = magma_flow::run(&flow)
+        .await
+        .map_err(|e| McpError::InvalidParams(format!("flow run: {e}")))?;
+    Ok(serde_json::to_value(report)?)
 }
 
 fn require_str<'a>(
