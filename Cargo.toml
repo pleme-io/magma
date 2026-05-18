@@ -28,6 +28,9 @@ members = [
     "magma-fsm",
     "magma-test-laws",
     "magma-discover",
+    "magma-replay",
+    "magma-bundle",
+    "magma-budget",
     "magma-cli",
     "magma-test",
 ]
@@ -77,6 +80,9 @@ magma-stream    = { path = "magma-stream" }
 magma-fsm       = { path = "magma-fsm" }
 magma-test-laws = { path = "magma-test-laws" }
 magma-discover  = { path = "magma-discover" }
+magma-replay    = { path = "magma-replay" }
+magma-bundle    = { path = "magma-bundle" }
+magma-budget    = { path = "magma-budget" }
 magma-test      = { path = "magma-test" }
 
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──

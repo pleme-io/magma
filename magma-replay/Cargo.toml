@@ -1,0 +1,25 @@
+[package]
+name        = "magma-replay"
+description = "magma — forensics + testing replay over audit chains. Pure functions reconstructing LifecycleState + Plan history from a magma-stream event chain. Powers `what happened during incident X` UX + offline testing replays."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-converge = { workspace = true }
+magma-stream   = { workspace = true }
+magma-fsm      = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+thiserror      = { workspace = true }
+chrono         = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
