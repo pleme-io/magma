@@ -1,0 +1,24 @@
+[package]
+name        = "magma-metrics"
+description = "magma — typed Prometheus metrics the convergence substrate emits. Counters/gauges/histograms keyed by reconciler kind + severity. Names + labels match pleme-io/helmworks/charts/pleme-reconciler PrometheusRule expectations."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-converge = { workspace = true }
+magma-drift    = { workspace = true }
+prometheus     = { workspace = true }
+thiserror      = { workspace = true }
+
+[dev-dependencies]
+tokio      = { workspace = true }
+chrono     = { workspace = true }
+serde_json = { workspace = true }

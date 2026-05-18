@@ -1,0 +1,32 @@
+[package]
+name        = "magma-controller"
+description = "magma — complete operator-loop composition. Wraps Reconciler + DriftPolicy + Budget + Stream + FSM + Bundle + Metrics into one reusable controller. The `I want a complete operator` composition every reconciler kind plugs into."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-converge = { workspace = true }
+magma-drift    = { workspace = true }
+magma-fsm      = { workspace = true }
+magma-stream   = { workspace = true }
+magma-bundle   = { workspace = true }
+magma-budget   = { workspace = true }
+magma-metrics  = { workspace = true }
+async-trait    = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+thiserror      = { workspace = true }
+tokio          = { workspace = true }
+tracing        = { workspace = true }
+chrono         = { workspace = true }
+
+[dev-dependencies]
+prometheus = { workspace = true }

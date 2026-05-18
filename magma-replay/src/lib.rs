@@ -19,6 +19,8 @@
 #![deny(unsafe_code)]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -33,6 +35,14 @@ pub enum ReplayError {
     InvalidChain(usize),
     #[error("empty event sequence")]
     Empty,
+    #[error("io reading audit log: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("parse error at line {line}: {source}")]
+    ParseLine {
+        line:   usize,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 // ── Reconstructed views ──────────────────────────────────────────
@@ -227,6 +237,51 @@ pub fn filter_by_kind<'a>(events: &'a [Event], kind: &str) -> Vec<&'a Event> {
         .collect()
 }
 
+// ── JSONL importers (close the loop with magma-stream's JsonLinesSink) ──
+
+/// Parse a JSON-lines audit reader into a typed `Vec<Event>`.
+/// Mirrors what `magma_stream::JsonLinesSink` writes: one event
+/// per line, canonical serde shape. Empty lines + lines starting
+/// with `#` are skipped (the latter is a convention for inline
+/// audit annotations).
+///
+/// Returns a typed `ReplayError::ParseLine { line, source }` so
+/// the operator can point at the exact offending line.
+pub fn parse_jsonl<R: Read>(reader: R) -> Result<Vec<Event>, ReplayError> {
+    let mut out = vec![];
+    for (idx, line) in BufReader::new(reader).lines().enumerate() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let event: Event = serde_json::from_str(trimmed)
+            .map_err(|source| ReplayError::ParseLine { line: idx + 1, source })?;
+        out.push(event);
+    }
+    Ok(out)
+}
+
+/// Convenience: read + parse a JSON-lines audit file from disk.
+pub fn parse_jsonl_path(path: impl AsRef<Path>) -> Result<Vec<Event>, ReplayError> {
+    let file = std::fs::File::open(path)?;
+    parse_jsonl(file)
+}
+
+/// Full forensics pipeline: read a JSON-lines audit log + run
+/// `replay()` on it. One call for the canonical "I have the audit
+/// file from the prod operator, what happened?" use case.
+pub fn replay_from_jsonl_path(path: impl AsRef<Path>) -> Result<ReplayReport, ReplayError> {
+    let events = parse_jsonl_path(path)?;
+    replay(&events)
+}
+
+/// Same as `replay_from_jsonl_path` but takes any `Read`.
+pub fn replay_from_jsonl_reader<R: Read>(reader: R) -> Result<ReplayReport, ReplayError> {
+    let events = parse_jsonl(reader)?;
+    replay(&events)
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -400,5 +455,67 @@ mod tests {
         assert_eq!(tf.len(), 1);
         let gh = filter_by_kind(&events, "github_repo");
         assert_eq!(gh.len(), 1);
+    }
+
+    // ── JSONL roundtrip with magma-stream's JsonLinesSink ────────
+
+    #[tokio::test]
+    async fn jsonl_round_trip_through_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let mut stream = PlanStream::new();
+        let jsonl = Arc::new(magma_stream::JsonLinesSink::new("audit", &path));
+        stream.register(jsonl);
+
+        emit_plan(&stream, "terraform", "p1", 3).await;
+        emit_drift(&stream, "terraform", "p1", 3, 0).await;
+        emit_outcome(&stream, "terraform", "p1", 3, 0).await;
+
+        let events = parse_jsonl_path(&path).unwrap();
+        assert_eq!(events.len(), 3);
+        let report = replay(&events).unwrap();
+        assert!(report.is_trusted());
+        assert_eq!(report.timeline.kinds, vec!["terraform"]);
+    }
+
+    #[tokio::test]
+    async fn replay_from_jsonl_path_one_call_pipeline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let mut stream = PlanStream::new();
+        stream.register(Arc::new(magma_stream::JsonLinesSink::new("audit", &path)));
+        emit_plan(&stream, "helm_release", "p9", 1).await;
+        emit_outcome(&stream, "helm_release", "p9", 1, 0).await;
+
+        let report = replay_from_jsonl_path(&path).unwrap();
+        assert_eq!(report.timeline.event_count, 2);
+        let act = report.activity.iter().find(|a| a.kind == "helm_release").unwrap();
+        assert_eq!(act.plans_computed, 1);
+        assert_eq!(act.applies, 1);
+    }
+
+    #[test]
+    fn parse_jsonl_skips_empty_and_comment_lines() {
+        let raw = b"
+# preamble comment
+{\"seq\":0,\"emitted_at\":\"2026-01-01T00:00:00Z\",\"payload\":{\"kind\":\"custom\",\"category\":\"t\",\"message\":\"x\"},\"prev_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"hash\":\"deadbeef\"}
+
+# trailing comment
+".as_slice();
+        let events = parse_jsonl(raw).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].seq, 0);
+    }
+
+    #[test]
+    fn parse_jsonl_reports_typed_line_number_on_error() {
+        let raw = b"
+{\"seq\":0,\"emitted_at\":\"2026-01-01T00:00:00Z\",\"payload\":{\"kind\":\"custom\",\"category\":\"t\",\"message\":\"x\"},\"prev_hash\":\"00\",\"hash\":\"x\"}
+not-valid-json
+".as_slice();
+        match parse_jsonl(raw) {
+            Err(ReplayError::ParseLine { line, .. }) => assert_eq!(line, 3),
+            other => panic!("expected ParseLine {{ line: 3 }}, got {other:?}"),
+        }
     }
 }

@@ -31,6 +31,8 @@ members = [
     "magma-replay",
     "magma-bundle",
     "magma-budget",
+    "magma-metrics",
+    "magma-controller",
     "magma-cli",
     "magma-test",
 ]
@@ -83,6 +85,8 @@ magma-discover  = { path = "magma-discover" }
 magma-replay    = { path = "magma-replay" }
 magma-bundle    = { path = "magma-bundle" }
 magma-budget    = { path = "magma-budget" }
+magma-metrics   = { path = "magma-metrics" }
+magma-controller = { path = "magma-controller" }
 magma-test      = { path = "magma-test" }
 
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──
@@ -154,6 +158,12 @@ rcgen          = "0.13"
 tempfile = "3"
 proptest = "1"
 insta    = "1"
+
+# ── Metrics ──────────────────────────────────────────────────
+# Standard Prometheus client. Matches pangea-operator's
+# `prometheus = "0.13"` so metric names + label conventions
+# align with the existing fleet observability stack.
+prometheus = "0.13"
 
 [profile.release]
 codegen-units = 1
