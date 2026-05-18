@@ -1,0 +1,21 @@
+[package]
+name        = "magma-fixtures"
+description = "magma — shared test fixtures. Pangea-shaped `.tf.json` builders + magma-typed State builders for any consumer's `#[cfg(test)]` block. Replaces duplicated tempfile setups across magma-flow / magma-mcp / magma-migrate / magma-arch-test."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types  = { workspace = true }
+magma-state  = { workspace = true }
+serde_json   = { workspace = true }
+tempfile     = { workspace = true }
+tokio        = { workspace = true }
+uuid         = { workspace = true }

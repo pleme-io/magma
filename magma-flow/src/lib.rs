@@ -333,31 +333,19 @@ mod tests {
 
     #[tokio::test]
     async fn run_propagates_outputs_along_edges() {
-        let tmp = tempfile::tempdir().unwrap();
-        let vpc_dir = tmp.path().join("vpc");
-        let cluster_dir = tmp.path().join("cluster");
-        std::fs::create_dir_all(&vpc_dir).unwrap();
-        std::fs::create_dir_all(&cluster_dir).unwrap();
+        use magma_fixtures::TfJsonBuilder;
 
-        std::fs::write(
-            vpc_dir.join("main.tf.json"),
-            serde_json::to_string_pretty(&serde_json::json!({
-                "provider": {"aws": {"region": "us-east-1"}},
-                "resource": {"aws_vpc": {"net": {"cidr_block": "10.0.0.0/16"}}},
-                "output":   {"vpc_id": {"value": "vpc-flow-test"}},
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            cluster_dir.join("main.tf.json"),
-            serde_json::to_string_pretty(&serde_json::json!({
-                "provider": {"aws": {"region": "us-east-1"}},
-                "resource": {"aws_iam_role": {"node": {"name": "n"}}},
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let vpc_dir     = tmp.path().join("vpc");
+        let cluster_dir = tmp.path().join("cluster");
+
+        TfJsonBuilder::new()
+            .resource("aws_vpc", "net", serde_json::json!({"cidr_block": "10.0.0.0/16"}))
+            .output("vpc_id", serde_json::json!("vpc-flow-test"))
+            .render_to_dir(&vpc_dir).unwrap();
+        TfJsonBuilder::new()
+            .resource("aws_iam_role", "node", serde_json::json!({"name": "n"}))
+            .render_to_dir(&cluster_dir).unwrap();
 
         let flow = FlowFile {
             workspaces: vec![
@@ -382,5 +370,123 @@ mod tests {
             report.propagated.get("cluster.vpc_id"),
             Some(&serde_json::Value::String("vpc-flow-test".into())),
         );
+    }
+
+    // ── proptest: topological_order over random DAGs ─────────────
+    //
+    // Generates random directed acyclic graphs with up to 6
+    // workspaces + up to 10 edges (validated DAGs by construction:
+    // edges only point from lower-index to higher-index nodes), and
+    // asserts:
+    //   1. Every produced order is a permutation of the workspace
+    //      names (no duplicates, no losses).
+    //   2. Every edge from→to in the input has from appearing before
+    //      to in the output order (the defining topo property).
+    //   3. Determinism: two calls on the same input produce identical
+    //      output.
+    //
+    // Plus a separate property: any cycle reliably returns
+    // FlowError::Cycle.
+
+    use proptest::prelude::*;
+
+    fn dag_strategy() -> impl Strategy<Value = FlowFile> {
+        proptest::collection::vec("[a-z][a-z0-9]{0,4}", 2..=6).prop_flat_map(|names| {
+            // Dedup names to avoid HashMap collisions.
+            let unique: Vec<String> = {
+                let mut seen = std::collections::HashSet::new();
+                names.into_iter().filter(|n| seen.insert(n.clone())).collect()
+            };
+            let n = unique.len();
+            let edge_strategy = proptest::collection::vec(
+                (0..n, 0..n).prop_filter("acyclic", |(a, b)| a < b),
+                0..=(n * 2),
+            );
+            (Just(unique), edge_strategy).prop_map(|(names, edges)| {
+                FlowFile {
+                    workspaces: names.iter().map(|n| FlowWorkspace {
+                        name: n.clone(),
+                        dir:  std::path::PathBuf::from(format!("/tmp/{n}")),
+                    }).collect(),
+                    edges: edges.into_iter().map(|(a, b)| FlowEdge {
+                        from:        names[a].clone(),
+                        from_output: "out".into(),
+                        to:          names[b].clone(),
+                        to_input:    "in".into(),
+                    }).collect(),
+                    optimization: None,
+                }
+            })
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn topo_is_permutation_of_workspaces(flow in dag_strategy()) {
+            let order = topological_order(&flow).unwrap();
+            let want: std::collections::HashSet<String> = flow
+                .workspaces.iter().map(|w| w.name.clone()).collect();
+            let got: std::collections::HashSet<String> = order.iter().cloned().collect();
+            prop_assert_eq!(got, want);
+            prop_assert_eq!(order.len(), flow.workspaces.len());
+        }
+
+        #[test]
+        fn topo_respects_every_edge(flow in dag_strategy()) {
+            let order = topological_order(&flow).unwrap();
+            let position: std::collections::HashMap<String, usize> =
+                order.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
+            for edge in &flow.edges {
+                let from_pos = position[&edge.from];
+                let to_pos   = position[&edge.to];
+                prop_assert!(from_pos < to_pos,
+                    "edge {}→{} violates topo: from={from_pos} to={to_pos}",
+                    edge.from, edge.to);
+            }
+        }
+
+        #[test]
+        fn topo_is_deterministic(flow in dag_strategy()) {
+            let a = topological_order(&flow).unwrap();
+            let b = topological_order(&flow).unwrap();
+            prop_assert_eq!(a, b);
+        }
+
+        #[test]
+        fn topo_detects_synthetic_cycle(
+            names in proptest::collection::vec("[a-z][a-z0-9]{0,4}", 2..=4)
+        ) {
+            // Dedup names; build a complete cycle a → b → c → … → a.
+            let unique: Vec<String> = {
+                let mut seen = std::collections::HashSet::new();
+                names.into_iter().filter(|n| seen.insert(n.clone())).collect()
+            };
+            prop_assume!(unique.len() >= 2);
+
+            let mut edges = Vec::new();
+            for i in 0..unique.len() {
+                let j = (i + 1) % unique.len();
+                edges.push(FlowEdge {
+                    from:        unique[i].clone(),
+                    from_output: "o".into(),
+                    to:          unique[j].clone(),
+                    to_input:    "i".into(),
+                });
+            }
+            let flow = FlowFile {
+                workspaces: unique.iter().map(|n| FlowWorkspace {
+                    name: n.clone(),
+                    dir:  std::path::PathBuf::from("/tmp/x"),
+                }).collect(),
+                edges,
+                optimization: None,
+            };
+            match topological_order(&flow) {
+                Err(FlowError::Cycle(_)) => {}
+                other => panic!("expected Cycle, got {other:?}"),
+            }
+        }
     }
 }

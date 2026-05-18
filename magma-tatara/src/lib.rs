@@ -1,5 +1,5 @@
-//! tatara-lite — minimal s-expression reader for the M0.7 `deforch`
-//! surface. Recognizes a tightly-typed subset of tatara-lisp:
+//! magma-tatara — minimal tatara-lisp reader for typed orchestration
+//! forms. Recognizes a tightly-typed subset of tatara-lisp:
 //!
 //! ```scheme
 //! (deforch :name "seph"
@@ -18,10 +18,13 @@
 //!
 //! Emits the canonical FlowFile JSON shape that `magma flow run`
 //! already consumes — same artifact as JSON, alternate authoring
-//! surface. The full tatara-lisp crate's `defcaixa`-style derivation
-//! (Pillar 12) lands when the magma-config bridge wires up tatara
-//! domains; this module is the proof-by-construction interim that
-//! every form maps mechanically onto the same FlowFile.
+//! surface. magma-cli + magma-mcp + library consumers share this
+//! one reader (per Pillar 12: generation over composition).
+//!
+//! The full tatara-lisp crate's `defcaixa`-style derivation lands
+//! when the magma-config bridge wires up tatara domains; this crate
+//! is the proof-by-construction interim that every form maps
+//! mechanically onto the same FlowFile.
 //!
 //! Hyphens in keyword names convert to underscores (`:from-output` →
 //! `from_output`) so the JSON serde shape lines up with FlowFile's
@@ -30,6 +33,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
+use thiserror::Error;
 
 #[derive(Debug, Clone)]
 enum Sexpr {
@@ -40,15 +44,9 @@ enum Sexpr {
     List(Vec<Sexpr>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[error("tatara parse error: {0}")]
 pub struct ParseError(pub String);
-
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-impl std::error::Error for ParseError {}
 
 /// Parse a `(deforch …)` form and return the equivalent FlowFile-shaped
 /// JSON Value.

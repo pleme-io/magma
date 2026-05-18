@@ -13,8 +13,9 @@ authors.workspace      = true
 workspace = true
 
 [dev-dependencies]
-tempfile = { workspace = true }
-uuid     = { workspace = true }
+tempfile        = { workspace = true }
+uuid            = { workspace = true }
+magma-fixtures  = { workspace = true }
 
 [dependencies]
 magma-types     = { workspace = true }

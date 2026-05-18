@@ -1,0 +1,20 @@
+[package]
+name        = "magma-tatara"
+description = "magma — minimal tatara-lisp reader. Recognizes the typed `(deforch …)` / `(defmigration …)` / future-domain orchestration forms and emits the canonical JSON shape every magma executor reads. Lives outside magma-cli so magma-mcp, magma-flow, and library consumers all share one reader. Per theory/PANGEA-MAGMA-ORCHESTRATION.md §VIII (M0.7) and Pillar 12 (generation over composition)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

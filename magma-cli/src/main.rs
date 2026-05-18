@@ -23,8 +23,6 @@ use clap::{Parser, Subcommand};
 use magma::pangea::WorkspaceLoader as _;
 use magma::backend::Backend as _;
 
-mod tatara_lite;
-
 // ── Drop-in compat: argv[0] sensing ────────────────────────────────
 
 /// Which CLI mode magma is running in. Determined from `argv[0]`'s
@@ -442,7 +440,20 @@ fn main() -> ExitCode {
         .init();
 
     let cli = Cli::parse();
-    let result = run(cli, invoke, output, tf_env);
+
+    // One tokio runtime for the whole process — every async subcommand
+    // dispatches into it instead of spawning its own. Replaces the
+    // 9-cmd duplication that had `tokio::runtime::Runtime::new()?
+    // .block_on(...)` repeated in each handler.
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("magma: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let result = runtime.block_on(run(cli, invoke, output, tf_env));
     match result {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
@@ -452,7 +463,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(
+async fn run(
     cli: Cli,
     invoke: InvokeMode,
     output: OutputMode,
@@ -467,10 +478,10 @@ fn run(
 
     match cmd {
         Command::Init(args)    => cmd_init(args),
-        Command::Plan(args)    => cmd_plan(args, cli.detailed_exitcode),
-        Command::Apply(args)   => cmd_apply(args),
-        Command::Destroy(args) => cmd_destroy(args),
-        Command::State(s)      => cmd_state(s),
+        Command::Plan(args)    => cmd_plan(args, cli.detailed_exitcode).await,
+        Command::Apply(args)   => cmd_apply(args).await,
+        Command::Destroy(args) => cmd_destroy(args).await,
+        Command::State(s)      => cmd_state(s).await,
         Command::Import        => stub("import"),
         Command::Workspace(w)  => cmd_workspace(w),
         Command::Output        => stub("output"),
@@ -487,60 +498,55 @@ fn run(
         Command::Watch         => stub("watch"),
         Command::Attest(a)     => cmd_attest(a),
         Command::Config(c)     => cmd_config(c),
-        Command::Flow(args)    => cmd_flow(args),
+        Command::Flow(args)    => cmd_flow(args).await,
         Command::Capabilities  => cmd_capabilities(),
-        Command::Fixture(cmd)  => cmd_fixture(cmd),
-        Command::Migrate(args) => cmd_migrate(args),
-        Command::Split(args)   => cmd_split(args),
-        Command::Merge(args)   => cmd_merge(args),
+        Command::Fixture(cmd)  => cmd_fixture(cmd).await,
+        Command::Migrate(args) => cmd_migrate(args).await,
+        Command::Split(args)   => cmd_split(args).await,
+        Command::Merge(args)   => cmd_merge(args).await,
     }
 }
 
-fn cmd_fixture(cmd: FixtureCommand) -> Result<u8> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        match cmd {
-            FixtureCommand::Verify(args) => {
-                let harness = magma_arch_test::WorkspaceTestHarness::new(args.path.clone());
-                match harness.verify().await {
-                    Ok(report) => {
-                        println!("{}", serde_json::to_string_pretty(&report)?);
-                        Ok::<u8, anyhow::Error>(0)
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "path":   args.path,
-                                "status": "failed",
-                                "error":  e.to_string(),
-                            }))?,
-                        );
-                        Ok(1)
-                    }
+async fn cmd_fixture(cmd: FixtureCommand) -> Result<u8> {
+    match cmd {
+        FixtureCommand::Verify(args) => {
+            let harness = magma_arch_test::WorkspaceTestHarness::new(args.path.clone());
+            match harness.verify().await {
+                Ok(report) => {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                    Ok(0)
                 }
-            }
-            FixtureCommand::VerifyDir(args) => {
-                match magma_arch_test::verify_directory(&args.dir).await {
-                    Ok(agg) => {
-                        println!("{}", serde_json::to_string_pretty(&agg)?);
-                        Ok::<u8, anyhow::Error>(if agg.failed == 0 { 0 } else { 1 })
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "dir":    args.dir,
-                                "status": "failed",
-                                "error":  e.to_string(),
-                            }))?,
-                        );
-                        Ok(1)
-                    }
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "path":   args.path,
+                            "status": "failed",
+                            "error":  e.to_string(),
+                        }))?,
+                    );
+                    Ok(1)
                 }
             }
         }
-    })
+        FixtureCommand::VerifyDir(args) => match magma_arch_test::verify_directory(&args.dir).await {
+            Ok(agg) => {
+                println!("{}", serde_json::to_string_pretty(&agg)?);
+                Ok(if agg.failed == 0 { 0 } else { 1 })
+            }
+            Err(e) => {
+                eprintln!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "dir":    args.dir,
+                        "status": "failed",
+                        "error":  e.to_string(),
+                    }))?,
+                );
+                Ok(1)
+            }
+        },
+    }
 }
 
 fn cmd_capabilities() -> Result<u8> {
@@ -639,170 +645,169 @@ fn cmd_init(args: InitArgs) -> Result<u8> {
     Ok(0)
 }
 
-fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        let shape = magma::pangea::WorkspaceShape::discover(&args.dir)
-            .map_err(|e| anyhow::anyhow!("discover: {e}"))?;
-        let loaded = magma::pangea::TerraformJsonLoader
-            .load(shape)
-            .await
-            .map_err(|e| anyhow::anyhow!("load: {e}"))?;
-        let cfg = magma::config::Config::from_json(loaded.rendered)
-            .map_err(|e| anyhow::anyhow!("parse: {e}"))?;
-        // Read state via LocalBackend (workspace dir holds .terraform/terraform.tfstate).
-        let backend = magma::backend::LocalBackend::new(args.dir.clone());
-        let state = backend.read_state().await
-            .map_err(|e| anyhow::anyhow!("read state: {e}"))?;
-        let plan = magma::plan::plan(&cfg, &state)
-            .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
-        // Pretty-print.
-        let summary = serde_json::json!({
-            "plan_id":          hex::encode(plan.id.0),
-            "created_at":       plan.created_at,
-            "resource_changes": plan.resource_changes.len(),
-            "changes":          plan.resource_changes,
-        });
-        if let Some(out) = args.out {
-            tokio::fs::write(&out, serde_json::to_vec_pretty(&plan)?).await?;
-            eprintln!("plan written to {}", out.display());
-        } else {
-            println!("{}", serde_json::to_string_pretty(&summary)?);
-        }
-        // -detailed-exitcode: 0 if no changes, 2 if changes pending.
-        let has_changes = plan
-            .resource_changes
-            .iter()
-            .any(|c| !matches!(c.action, magma::types::Action::NoOp));
-        if detailed && has_changes {
-            return Ok::<u8, anyhow::Error>(2);
-        }
-        Ok::<u8, anyhow::Error>(0)
-    })
+/// Discover → load → parse → read state. Every async cmd_* that
+/// operates on a Pangea-rendered workspace shares this prelude;
+/// keeping it in one helper means future load-bearing changes
+/// (e.g. caching, multi-file workspace support) land in one place.
+async fn load_workspace_and_state(
+    dir: &std::path::Path,
+) -> Result<(magma::config::Config, magma::backend::LocalBackend, magma::types::State)> {
+    let shape = magma::pangea::WorkspaceShape::discover(dir)
+        .map_err(|e| anyhow::anyhow!("discover: {e}"))?;
+    let loaded = magma::pangea::TerraformJsonLoader
+        .load(shape)
+        .await
+        .map_err(|e| anyhow::anyhow!("load: {e}"))?;
+    let cfg = magma::config::Config::from_json(loaded.rendered)
+        .map_err(|e| anyhow::anyhow!("parse: {e}"))?;
+    let backend = magma::backend::LocalBackend::new(dir.to_path_buf());
+    let state = backend
+        .read_state()
+        .await
+        .map_err(|e| anyhow::anyhow!("read state: {e}"))?;
+    Ok((cfg, backend, state))
 }
 
-fn cmd_apply(args: ApplyArgs) -> Result<u8> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        let shape = magma::pangea::WorkspaceShape::discover(&args.dir)
-            .map_err(|e| anyhow::anyhow!("discover: {e}"))?;
-        let loaded = magma::pangea::TerraformJsonLoader
-            .load(shape)
-            .await
-            .map_err(|e| anyhow::anyhow!("load: {e}"))?;
-        let cfg = magma::config::Config::from_json(loaded.rendered)
-            .map_err(|e| anyhow::anyhow!("parse: {e}"))?;
-        let backend = magma::backend::LocalBackend::new(args.dir.clone());
-        let mut state = backend.read_state().await
-            .map_err(|e| anyhow::anyhow!("read state: {e}"))?;
-        let plan = magma::plan::plan(&cfg, &state)
-            .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
+async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
+    let (cfg, _backend, state) = load_workspace_and_state(&args.dir).await?;
+    let plan = magma::plan::plan(&cfg, &state)
+        .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
+    let summary = serde_json::json!({
+        "plan_id":          hex::encode(plan.id.0),
+        "created_at":       plan.created_at,
+        "resource_changes": plan.resource_changes.len(),
+        "changes":          plan.resource_changes,
+    });
+    if let Some(out) = args.out {
+        tokio::fs::write(&out, serde_json::to_vec_pretty(&plan)?).await?;
+        eprintln!("plan written to {}", out.display());
+    } else {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    }
+    let has_changes = plan
+        .resource_changes
+        .iter()
+        .any(|c| !matches!(c.action, magma::types::Action::NoOp));
+    Ok(if detailed && has_changes { 2 } else { 0 })
+}
 
-        if !args.auto_approve {
-            eprintln!("magma apply: would apply {} resource changes. Re-run with --auto-approve to proceed.", plan.resource_changes.len());
-            return Ok(0);
-        }
+async fn cmd_apply(args: ApplyArgs) -> Result<u8> {
+    let (cfg, backend, mut state) = load_workspace_and_state(&args.dir).await?;
+    let plan = magma::plan::plan(&cfg, &state)
+        .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
 
-        let outcome = magma::apply::run_plan(&plan, &mut state)
-            .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
-        backend.write_state(&state).await
-            .map_err(|e| anyhow::anyhow!("write state: {e}"))?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "plan_id": hex::encode(outcome.plan_id.0),
-                "applied": outcome.applied.len(),
-                "failed":  outcome.failed.len(),
-                "started_at":  outcome.started_at,
-                "finished_at": outcome.finished_at,
-            }))?,
+    if !args.auto_approve {
+        eprintln!(
+            "magma apply: would apply {} resource changes. Re-run with --auto-approve to proceed.",
+            plan.resource_changes.len(),
         );
-        Ok::<u8, anyhow::Error>(if outcome.failed.is_empty() { 0 } else { 1 })
-    })
+        return Ok(0);
+    }
+
+    let outcome = magma::apply::run_plan(&plan, &mut state)
+        .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
+    backend
+        .write_state(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!("write state: {e}"))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "plan_id":     hex::encode(outcome.plan_id.0),
+            "applied":     outcome.applied.len(),
+            "failed":      outcome.failed.len(),
+            "started_at":  outcome.started_at,
+            "finished_at": outcome.finished_at,
+        }))?,
+    );
+    Ok(if outcome.failed.is_empty() { 0 } else { 1 })
 }
 
-fn cmd_destroy(args: DestroyArgs) -> Result<u8> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        let backend = magma::backend::LocalBackend::new(args.dir.clone());
-        let mut state = backend.read_state().await
-            .map_err(|e| anyhow::anyhow!("read state: {e}"))?;
-        // Synthesize a destroy plan: every state resource → Delete.
-        use magma::types::{Action, ChangeReason, Plan as TPlan, PlanId, ResourceChange};
-        let resource_changes: Vec<ResourceChange> = state
-            .resources
-            .iter()
-            .map(|r| ResourceChange {
-                address: r.address.clone(),
-                action:  Action::Delete,
-                before:  r.instances.first().map(|i| i.attributes.clone()),
-                after:   None,
-                reasons: vec![ChangeReason::DeletedResource],
-            })
-            .collect();
-        let plan = TPlan {
-            id:               PlanId([0u8; 32]),
-            created_at:       chrono::Utc::now(),
-            config_root:      args.dir.clone(),
-            variables:        Default::default(),
-            resource_changes,
-            output_changes:   vec![],
-        };
+async fn cmd_destroy(args: DestroyArgs) -> Result<u8> {
+    use magma::types::{Action, ChangeReason, Plan as TPlan, PlanId, ResourceChange};
 
-        if !args.auto_approve {
-            eprintln!("magma destroy: would destroy {} resources. Re-run with --auto-approve to proceed.", plan.resource_changes.len());
-            return Ok(0);
-        }
-        let outcome = magma::apply::run_plan(&plan, &mut state)
-            .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
-        backend.write_state(&state).await
-            .map_err(|e| anyhow::anyhow!("write state: {e}"))?;
-        eprintln!("magma destroy: removed {} resources", outcome.applied.len());
-        Ok::<u8, anyhow::Error>(if outcome.failed.is_empty() { 0 } else { 1 })
-    })
+    let backend = magma::backend::LocalBackend::new(args.dir.clone());
+    let mut state = backend
+        .read_state()
+        .await
+        .map_err(|e| anyhow::anyhow!("read state: {e}"))?;
+    let resource_changes: Vec<ResourceChange> = state
+        .resources
+        .iter()
+        .map(|r| ResourceChange {
+            address: r.address.clone(),
+            action:  Action::Delete,
+            before:  r.instances.first().map(|i| i.attributes.clone()),
+            after:   None,
+            reasons: vec![ChangeReason::DeletedResource],
+        })
+        .collect();
+    let plan = TPlan {
+        id:               PlanId([0u8; 32]),
+        created_at:       chrono::Utc::now(),
+        config_root:      args.dir.clone(),
+        variables:        Default::default(),
+        resource_changes,
+        output_changes:   vec![],
+    };
+
+    if !args.auto_approve {
+        eprintln!(
+            "magma destroy: would destroy {} resources. Re-run with --auto-approve to proceed.",
+            plan.resource_changes.len(),
+        );
+        return Ok(0);
+    }
+    let outcome = magma::apply::run_plan(&plan, &mut state)
+        .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
+    backend
+        .write_state(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!("write state: {e}"))?;
+    eprintln!("magma destroy: removed {} resources", outcome.applied.len());
+    Ok(if outcome.failed.is_empty() { 0 } else { 1 })
 }
 
-fn cmd_state(cmd: StateCommand) -> Result<u8> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        let backend = magma::backend::LocalBackend::new(std::env::current_dir()?);
-        let state = backend.read_state().await
-            .map_err(|e| anyhow::anyhow!("read state: {e}"))?;
-        match cmd {
-            StateCommand::List => {
-                for r in &state.resources {
-                    println!(
-                        "{}.{}{}",
-                        r.address.type_id.0,
-                        r.address.name,
-                        match &r.address.key {
-                            Some(k) => format!(" [{k:?}]"),
-                            None => String::new(),
-                        },
-                    );
-                }
-                Ok::<u8, anyhow::Error>(0)
+async fn cmd_state(cmd: StateCommand) -> Result<u8> {
+    let backend = magma::backend::LocalBackend::new(std::env::current_dir()?);
+    let state = backend
+        .read_state()
+        .await
+        .map_err(|e| anyhow::anyhow!("read state: {e}"))?;
+    match cmd {
+        StateCommand::List => {
+            for r in &state.resources {
+                println!(
+                    "{}.{}{}",
+                    r.address.type_id.0,
+                    r.address.name,
+                    match &r.address.key {
+                        Some(k) => format!(" [{k:?}]"),
+                        None => String::new(),
+                    },
+                );
             }
-            StateCommand::Show { address } => {
-                let found = state.resources.iter().find(|r| {
-                    format!("{}.{}", r.address.type_id.0, r.address.name) == address
-                });
-                match found {
-                    Some(r) => {
-                        println!("{}", serde_json::to_string_pretty(r)?);
-                        Ok(0)
-                    }
-                    None => {
-                        eprintln!("magma state show: address {address} not found in state");
-                        Ok(1)
-                    }
-                }
-            }
-            StateCommand::Mv   { .. }       => stub("state mv"),
-            StateCommand::Rm   { .. }       => stub("state rm"),
-            StateCommand::ReplaceProvider{..} => stub("state replace-provider"),
+            Ok(0)
         }
-    })
+        StateCommand::Show { address } => {
+            let found = state.resources.iter().find(|r| {
+                format!("{}.{}", r.address.type_id.0, r.address.name) == address
+            });
+            match found {
+                Some(r) => {
+                    println!("{}", serde_json::to_string_pretty(r)?);
+                    Ok(0)
+                }
+                None => {
+                    eprintln!("magma state show: address {address} not found in state");
+                    Ok(1)
+                }
+            }
+        }
+        StateCommand::Mv { .. }              => stub("state mv"),
+        StateCommand::Rm { .. }              => stub("state rm"),
+        StateCommand::ReplaceProvider { .. } => stub("state replace-provider"),
+    }
 }
 
 fn cmd_workspace(cmd: WorkspaceCommand) -> Result<u8> {
@@ -849,177 +854,140 @@ fn cmd_config(cmd: ConfigCommand) -> Result<u8> {
     }
 }
 
-fn cmd_flow(args: FlowArgs) -> Result<u8> {
-    // Flow file shape (typed JSON; tatara-lisp .lisp surface compiles
-    // to this same shape in M0.7):
+async fn cmd_flow(args: FlowArgs) -> Result<u8> {
+    // Flow file shape (typed JSON; tatara-lisp `.lisp` / `.tatara` /
+    // `.scm` extensions compile to the same JSON via magma-tatara):
     //
-    // {
-    //   "workspaces": [
-    //     { "name": "vpc",     "dir": "workspaces/seph-vpc" },
-    //     { "name": "cluster", "dir": "workspaces/seph-cluster" }
-    //   ],
-    //   "edges": [
-    //     { "from": "vpc", "from_output": "vpc_id",
-    //       "to":   "cluster", "to_input":  "vpc_id" }
-    //   ],
-    //   "optimization": {
-    //     "strategy":        "parallel_by_tier",
-    //     "max_concurrency": 4,
-    //     "retries":         { "max": 2, "backoff_ms": 500 }
-    //   }
-    // }
-    //
-    // Tatara-lisp surface (M0.7 minimal — `.lisp` / `.tatara` extension):
+    //   { "workspaces": [...], "edges": [...], "optimization": {...} }
     //
     //   (deforch :name "seph"
-    //     :workspaces (
-    //       (:name "vpc"     :dir "workspaces/seph-vpc")
-    //       (:name "cluster" :dir "workspaces/seph-cluster")
-    //     )
-    //     :edges (
-    //       (:from "vpc" :from-output "vpc_id"
-    //        :to   "cluster" :to-input "vpc_id")
-    //     )
-    //     :optimization (:strategy "parallel_by_tier"
-    //                    :max-concurrency 4))
+    //     :workspaces ((:name "vpc"     :dir "workspaces/seph-vpc")
+    //                  (:name "cluster" :dir "workspaces/seph-cluster"))
+    //     :edges ((:from "vpc" :from-output "vpc_id"
+    //              :to   "cluster" :to-input "vpc_id"))
+    //     :optimization (:strategy "parallel_by_tier" :max-concurrency 4))
     //
-    // Each workspace dir is a Pangea-rendered Terraform JSON workspace.
-    // magma loads + plans each in topological order; output values are
-    // taken from the `output` block of each workspace's rendered JSON
-    // and flow downstream per the declared edges. M0 ships the
-    // plan-only orchestration; per-workspace apply lands alongside
-    // typed cross-workspace state.
+    // magma loads + plans each workspace in topological order; output
+    // values from the rendered JSON flow downstream per declared
+    // edges. The actual engine lives in magma-flow; this handler just
+    // parses + delegates.
 
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        let bytes = tokio::fs::read(&args.flow).await?;
-        let is_lisp = args.flow.extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s == "lisp" || s == "tatara" || s == "scm")
-            .unwrap_or(false);
-        let flow: magma_flow::FlowFile = if is_lisp {
-            let source = std::str::from_utf8(&bytes)
-                .map_err(|e| anyhow::anyhow!("invalid UTF-8 in lisp source: {e}"))?;
-            let value = tatara_lite::parse_deforch(source)
-                .map_err(|e| anyhow::anyhow!("lisp parse: {e}"))?;
-            serde_json::from_value(value)?
-        } else {
-            serde_json::from_slice(&bytes)?
-        };
-        let report = magma_flow::run(&flow)
-            .await
-            .map_err(|e| anyhow::anyhow!("flow run: {e}"))?;
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        Ok::<u8, anyhow::Error>(0)
-    })
+    let bytes = tokio::fs::read(&args.flow).await?;
+    let is_lisp = args.flow.extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s == "lisp" || s == "tatara" || s == "scm")
+        .unwrap_or(false);
+    let flow: magma_flow::FlowFile = if is_lisp {
+        let source = std::str::from_utf8(&bytes)
+            .map_err(|e| anyhow::anyhow!("invalid UTF-8 in lisp source: {e}"))?;
+        let value = magma_tatara::parse_deforch(source)
+            .map_err(|e| anyhow::anyhow!("lisp parse: {e}"))?;
+        serde_json::from_value(value)?
+    } else {
+        serde_json::from_slice(&bytes)?
+    };
+    let report = magma_flow::run(&flow)
+        .await
+        .map_err(|e| anyhow::anyhow!("flow run: {e}"))?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(0)
 }
 
 // ── Migration / split / merge ──────────────────────────────────────
 
-fn cmd_migrate(args: MigrateArgs) -> Result<u8> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        let raw = if args.plan.as_os_str() == "-" {
-            use tokio::io::AsyncReadExt as _;
-            let mut buf = Vec::new();
-            tokio::io::stdin().read_to_end(&mut buf).await?;
-            buf
-        } else {
-            tokio::fs::read(&args.plan).await?
-        };
-        let mut plan: magma_migrate::MigrationPlan = serde_json::from_slice(&raw)
-            .map_err(|e| anyhow::anyhow!("parse MigrationPlan JSON: {e}"))?;
-        if args.dry_run {
-            plan.dry_run = true;
-        }
-        let receipt = magma_migrate::run(plan)
-            .await
-            .map_err(|e| anyhow::anyhow!("migrate: {e}"))?;
-        println!("{}", serde_json::to_string_pretty(&receipt)?);
-        Ok::<u8, anyhow::Error>(0)
-    })
+async fn cmd_migrate(args: MigrateArgs) -> Result<u8> {
+    let raw = if args.plan.as_os_str() == "-" {
+        use tokio::io::AsyncReadExt as _;
+        let mut buf = Vec::new();
+        tokio::io::stdin().read_to_end(&mut buf).await?;
+        buf
+    } else {
+        tokio::fs::read(&args.plan).await?
+    };
+    let mut plan: magma_migrate::MigrationPlan = serde_json::from_slice(&raw)
+        .map_err(|e| anyhow::anyhow!("parse MigrationPlan JSON: {e}"))?;
+    if args.dry_run {
+        plan.dry_run = true;
+    }
+    let receipt = magma_migrate::run(plan)
+        .await
+        .map_err(|e| anyhow::anyhow!("migrate: {e}"))?;
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(0)
 }
 
-fn cmd_split(args: SplitArgs) -> Result<u8> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        if args.resources.is_empty() {
-            anyhow::bail!("magma split: at least one --resource is required");
-        }
-        let moves: Vec<magma_migrate::ResourceMove> = args
-            .resources
-            .iter()
-            .map(|addr| magma_migrate::ResourceMove {
-                source_address: addr.clone(),
-                target_address: addr.clone(),
-            })
-            .collect();
-        let plan = magma_migrate::MigrationPlan {
-            from: magma_migrate::WorkspaceRef {
-                name:       args.from,
-                state_path: args.from_state,
-            },
-            to: magma_migrate::WorkspaceRef {
-                name:       args.to,
-                state_path: args.to_state,
-            },
-            moves,
-            preserve: magma_migrate::PreserveFlags::default(),
-            dry_run:  args.dry_run,
-        };
-        let receipt = magma_migrate::run(plan)
-            .await
-            .map_err(|e| anyhow::anyhow!("split: {e}"))?;
-        println!("{}", serde_json::to_string_pretty(&receipt)?);
-        Ok::<u8, anyhow::Error>(0)
-    })
+/// Build a typed MigrationPlan from CLI args + a list of resource
+/// moves. Shared by `cmd_split` and `cmd_merge` to keep the plan
+/// shape in one place.
+fn migration_plan(
+    from_name: String,
+    from_state: PathBuf,
+    to_name: String,
+    to_state: PathBuf,
+    moves: Vec<magma_migrate::ResourceMove>,
+    dry_run: bool,
+) -> magma_migrate::MigrationPlan {
+    magma_migrate::MigrationPlan {
+        from:     magma_migrate::WorkspaceRef { name: from_name, state_path: from_state },
+        to:       magma_migrate::WorkspaceRef { name: to_name,   state_path: to_state   },
+        moves,
+        preserve: magma_migrate::PreserveFlags::default(),
+        dry_run,
+    }
 }
 
-fn cmd_merge(args: MergeArgs) -> Result<u8> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        // Load the source state to enumerate every resource address; the
-        // plan-builder is `magma merge` itself — operators don't need to
-        // hand-author the address list.
-        let bytes = tokio::fs::read(&args.from_state).await
-            .map_err(|e| anyhow::anyhow!("read {:?}: {e}", args.from_state))?;
-        let from_state: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|e| anyhow::anyhow!("parse source state JSON: {e}"))?;
-        let resources = from_state
-            .get("resources")
-            .and_then(|r| r.as_array())
-            .ok_or_else(|| anyhow::anyhow!("source state has no resources array"))?;
-        let mut moves: Vec<magma_migrate::ResourceMove> = Vec::new();
-        for r in resources {
-            let kind = r.get("type").and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("resource missing `type`"))?;
-            let name = r.get("name").and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("resource missing `name`"))?;
-            let addr = format!("{kind}.{name}");
-            moves.push(magma_migrate::ResourceMove {
-                source_address: addr.clone(),
-                target_address: addr,
-            });
-        }
-        let plan = magma_migrate::MigrationPlan {
-            from: magma_migrate::WorkspaceRef {
-                name:       args.from,
-                state_path: args.from_state,
-            },
-            to: magma_migrate::WorkspaceRef {
-                name:       args.to,
-                state_path: args.to_state,
-            },
-            moves,
-            preserve: magma_migrate::PreserveFlags::default(),
-            dry_run:  args.dry_run,
-        };
-        let receipt = magma_migrate::run(plan)
-            .await
-            .map_err(|e| anyhow::anyhow!("merge: {e}"))?;
-        println!("{}", serde_json::to_string_pretty(&receipt)?);
-        Ok::<u8, anyhow::Error>(0)
-    })
+async fn cmd_split(args: SplitArgs) -> Result<u8> {
+    if args.resources.is_empty() {
+        anyhow::bail!("magma split: at least one --resource is required");
+    }
+    let moves: Vec<magma_migrate::ResourceMove> = args
+        .resources
+        .iter()
+        .map(|addr| magma_migrate::ResourceMove {
+            source_address: addr.clone(),
+            target_address: addr.clone(),
+        })
+        .collect();
+    let plan = migration_plan(args.from, args.from_state, args.to, args.to_state,
+                              moves, args.dry_run);
+    let receipt = magma_migrate::run(plan)
+        .await
+        .map_err(|e| anyhow::anyhow!("split: {e}"))?;
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(0)
+}
+
+async fn cmd_merge(args: MergeArgs) -> Result<u8> {
+    // Load the source state to enumerate every resource address; the
+    // plan-builder is `magma merge` itself — operators don't need to
+    // hand-author the address list.
+    let bytes = tokio::fs::read(&args.from_state).await
+        .map_err(|e| anyhow::anyhow!("read {:?}: {e}", args.from_state))?;
+    let from_state_json: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow::anyhow!("parse source state JSON: {e}"))?;
+    let resources = from_state_json
+        .get("resources")
+        .and_then(|r| r.as_array())
+        .ok_or_else(|| anyhow::anyhow!("source state has no resources array"))?;
+    let mut moves: Vec<magma_migrate::ResourceMove> = Vec::new();
+    for r in resources {
+        let kind = r.get("type").and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("resource missing `type`"))?;
+        let name = r.get("name").and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("resource missing `name`"))?;
+        let addr = format!("{kind}.{name}");
+        moves.push(magma_migrate::ResourceMove {
+            source_address: addr.clone(),
+            target_address: addr,
+        });
+    }
+    let plan = migration_plan(args.from, args.from_state, args.to, args.to_state,
+                              moves, args.dry_run);
+    let receipt = magma_migrate::run(plan)
+        .await
+        .map_err(|e| anyhow::anyhow!("merge: {e}"))?;
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(0)
 }
 
 // topological_order moved to magma-flow crate.

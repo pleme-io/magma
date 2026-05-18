@@ -24,6 +24,7 @@ magma               = { workspace = true }
 magma-arch-test     = { workspace = true }
 magma-migrate       = { workspace = true }
 magma-flow          = { workspace = true }
+magma-tatara        = { workspace = true }
 clap                = { workspace = true }
 shikumi             = { workspace = true }
 tokio               = { workspace = true }
@@ -37,5 +38,4 @@ tracing-subscriber  = { workspace = true }
 anyhow              = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
 tempfile = { workspace = true }

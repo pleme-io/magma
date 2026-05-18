@@ -1199,7 +1199,7 @@ dependencies = [
  "magma-arch-test",
  "magma-flow",
  "magma-migrate",
- "proptest",
+ "magma-tatara",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -1222,15 +1222,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "magma-fixtures"
+version = "0.1.0"
+dependencies = [
+ "magma-state",
+ "magma-types",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "magma-flow"
 version = "0.1.0"
 dependencies = [
  "hex",
  "magma-backend",
  "magma-config",
+ "magma-fixtures",
  "magma-pangea",
  "magma-plan",
  "magma-types",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -1258,6 +1272,7 @@ dependencies = [
  "magma-arch-test",
  "magma-backend",
  "magma-config",
+ "magma-fixtures",
  "magma-flow",
  "magma-migrate",
  "magma-pangea",
@@ -1395,6 +1410,15 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "magma-tatara"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

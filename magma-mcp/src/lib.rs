@@ -746,47 +746,15 @@ mod tests {
 
     #[tokio::test]
     async fn m06_migrate_dry_run_dispatches_in_process() {
-        // Build a synthetic state in-process, write it to a tempdir,
-        // then drive magma_migrate_dry_run through the JSON-RPC entry
-        // point. The dry-run guarantees nothing on disk changes.
-        use magma_types::{
-            ModulePath, ResourceAddress, ResourceKind, ResourceTypeId,
-            ProviderReference, StateResource, StateInstance, InstanceStatus, State,
-        };
-        let tmp = tempfile::tempdir().unwrap();
-        let src_path = tmp.path().join("src.tfstate");
-        let dst_path = tmp.path().join("dst.tfstate");
+        // Build a synthetic state via the shared magma-fixtures
+        // builder, drive magma_migrate_dry_run, verify no mutation.
+        use magma_fixtures::StateBuilder;
 
-        let resource = StateResource {
-            address: ResourceAddress {
-                module:  ModulePath::default(),
-                kind:    ResourceKind::Managed,
-                type_id: ResourceTypeId("aws_iam_role".into()),
-                name:    "alpha".into(),
-                key:     None,
-            },
-            provider: ProviderReference {
-                source: "hashicorp/aws".into(),
-                name:   "aws".into(),
-                alias:  None,
-            },
-            instances: vec![StateInstance {
-                schema_version: 0,
-                attributes:     serde_json::json!({"name":"alpha"}),
-                private:        vec![],
-                dependencies:   vec![],
-                status:         InstanceStatus::Ready,
-            }],
-        };
-        let state = State {
-            version: 4,
-            terraform_version: "1.7.0".into(),
-            serial:  1,
-            lineage: uuid::Uuid::new_v4(),
-            outputs: Default::default(),
-            resources: vec![resource],
-        };
-        magma_state::write_state(&src_path, &state).await.unwrap();
+        let (src_path, _src_tmp) = StateBuilder::new()
+            .resource("aws_iam_role", "alpha", serde_json::json!({"name":"alpha"}))
+            .write_tempfile().await.unwrap();
+        let dst_tmp  = tempfile::tempdir().unwrap();
+        let dst_path = dst_tmp.path().join("dst.tfstate");
 
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
@@ -804,7 +772,6 @@ mod tests {
         };
         let resp = dispatch(req).await;
         assert!(resp.error.is_none(), "dry-run errored: {:?}", resp.error);
-        // Source untouched, destination not written.
         let src_after = magma_state::read_state(&src_path).await.unwrap();
         assert_eq!(src_after.resources.len(), 1);
         assert!(!dst_path.exists(), "dry-run wrote target state");
@@ -812,25 +779,17 @@ mod tests {
 
     #[tokio::test]
     async fn magma_plan_dispatches_in_process() {
-        // Render a minimal Pangea-shaped .tf.json and dispatch
-        // magma_plan through the MCP entry point. Verifies the
-        // in-process plan engine works without shelling to the CLI.
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            tmp.path().join("main.tf.json"),
-            serde_json::to_string_pretty(&serde_json::json!({
-                "provider": {"aws": {"region": "us-east-1"}},
-                "resource": {"aws_iam_role": {"r": {"name": "mcp-plan-test"}}},
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        // Render a minimal Pangea-shaped .tf.json via the shared
+        // builder and dispatch magma_plan through the MCP entry point.
+        let ws = magma_fixtures::TfJsonBuilder::new()
+            .resource("aws_iam_role", "r", serde_json::json!({"name": "mcp-plan-test"}))
+            .render_to_tempdir().unwrap();
 
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id:      serde_json::json!(1),
             method:  "tools/call/magma_plan".into(),
-            params:  serde_json::json!({ "workspace_dir": tmp.path() }),
+            params:  serde_json::json!({ "workspace_dir": ws.dir() }),
         };
         let resp = dispatch(req).await;
         assert!(resp.error.is_none(), "plan errored: {:?}", resp.error);
