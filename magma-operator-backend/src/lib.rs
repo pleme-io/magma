@@ -573,7 +573,7 @@ mod tests {
     // ── proptest: tofu round-trip ────────────────────────────────
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
+        #![proptest_config(ProptestConfig::with_cases(48))]
 
         #[test]
         fn tofu_round_trip_preserves_resource_count(
@@ -626,5 +626,129 @@ mod tests {
                 .resources.iter().map(|r| r.address.name.clone()).collect();
             prop_assert_eq!(got, want);
         }
+
+        /// Arbitrary serial values survive the magma↔tofu round-trip
+        /// — a regression test for any future serial-encoding change.
+        #[test]
+        fn tofu_round_trip_preserves_serial(
+            serial in 0u64..=u64::MAX,
+        ) {
+            let original = magma_fixtures::StateBuilder::new()
+                .lineage(uuid::Uuid::nil())
+                .serial(serial)
+                .build();
+            let bytes = tofu_state::magma_to_tofu(&original).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let recovered = tofu_state::tofu_to_magma(&value).unwrap();
+            prop_assert_eq!(recovered.serial, serial);
+        }
+
+        /// Arbitrary lineage UUIDs survive the round-trip without
+        /// loss. Lineage drift between magma and tofu would silently
+        /// corrupt state attribution; this property forbids it.
+        #[test]
+        fn tofu_round_trip_preserves_lineage(
+            bytes in proptest::array::uniform16(0u8..=255),
+        ) {
+            let lineage = uuid::Uuid::from_bytes(bytes);
+            let original = magma_fixtures::StateBuilder::new()
+                .lineage(lineage)
+                .serial(1)
+                .build();
+            let serialized = tofu_state::magma_to_tofu(&original).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&serialized).unwrap();
+            let recovered = tofu_state::tofu_to_magma(&value).unwrap();
+            prop_assert_eq!(recovered.lineage, lineage);
+        }
+
+        /// Resource attributes survive the round-trip — magma never
+        /// mangles user-provided JSON.
+        #[test]
+        fn tofu_round_trip_preserves_attributes(
+            name in "[a-z][a-z0-9]{0,8}",
+            arn  in "arn:aws:iam::[0-9]{12}:role/[a-zA-Z0-9_-]{1,16}",
+        ) {
+            let attrs = serde_json::json!({
+                "name": name,
+                "arn":  arn,
+                "tags": {"managed_by": "magma"},
+            });
+            let original = magma_fixtures::StateBuilder::new()
+                .lineage(uuid::Uuid::nil())
+                .resource("aws_iam_role", &name, attrs.clone())
+                .build();
+            let bytes = tofu_state::magma_to_tofu(&original).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let recovered = tofu_state::tofu_to_magma(&value).unwrap();
+            prop_assert_eq!(recovered.resources.len(), 1);
+            prop_assert_eq!(&recovered.resources[0].instances[0].attributes, &attrs);
+        }
+
+        /// magma_shape and tofu_shape don't trample each other when
+        /// written into separate stores. Both backends start empty,
+        /// write the same logical state through their respective
+        /// shapes, read back — both round-trip cleanly.
+        #[test]
+        fn magma_and_tofu_shapes_are_isolated(
+            serial in 0u64..1000,
+        ) {
+            let want = magma_fixtures::StateBuilder::new()
+                .lineage(uuid::Uuid::nil())
+                .serial(serial)
+                .resource("aws_iam_role", "x", serde_json::json!({"name": "x"}))
+                .build();
+
+            let store_magma: Arc<MemStore> = Arc::new(MemStore::default());
+            let store_tofu:  Arc<MemStore> = Arc::new(MemStore::default());
+            let bm = OperatorBackend::new(Arc::clone(&store_magma));
+            let bt = OperatorBackend::with_shape(Arc::clone(&store_tofu), BackendShape::Tofu);
+
+            let rt_async = tokio::runtime::Runtime::new().unwrap();
+            rt_async.block_on(async {
+                bm.write_state(&want).await.unwrap();
+                bt.write_state(&want).await.unwrap();
+                let got_m = bm.read_state().await.unwrap();
+                let got_t = bt.read_state().await.unwrap();
+                prop_assert_eq!(got_m.serial,           want.serial);
+                prop_assert_eq!(got_m.resources.len(),  want.resources.len());
+                prop_assert_eq!(got_t.serial,           want.serial);
+                prop_assert_eq!(got_t.resources.len(),  want.resources.len());
+                // Bytes in store_tofu must look like canonical tofu
+                // JSON (parseable as object with `version`/`resources`).
+                let tofu_bytes = store_tofu.0.lock().unwrap().clone().unwrap();
+                let parsed: serde_json::Value =
+                    serde_json::from_slice(&tofu_bytes).unwrap();
+                prop_assert!(parsed.is_object());
+                prop_assert!(parsed.get("resources").is_some());
+                Ok(())
+            }).unwrap();
+        }
+    }
+
+    // ── Cross-shape regression: tofu-shape bytes are NOT magma-shape ─
+
+    /// Tofu-shaped state bytes are not interchangeable with magma-
+    /// shaped state bytes — magma's typed serde format and tofu's
+    /// resource-array format have incompatible top-level keys. This
+    /// test locks that boundary in: a Tofu-shape store cannot be
+    /// silently misread by a Magma-shape backend.
+    #[tokio::test]
+    async fn shape_mismatch_fails_loudly() {
+        let store: Arc<MemStore> = Arc::new(MemStore::default());
+
+        // Write Tofu-shaped state.
+        let bt = OperatorBackend::with_shape(Arc::clone(&store), BackendShape::Tofu);
+        bt.write_state(&fixture_state()).await.unwrap();
+
+        // Read with the Magma-shape backend; expect an error
+        // because magma's typed format requires fields that aren't
+        // present in the tofu shape.
+        let bm = OperatorBackend::new(Arc::clone(&store));
+        let result = bm.read_state().await;
+        assert!(
+            result.is_err(),
+            "magma backend silently accepted tofu-shaped bytes — \
+             cross-shape misread would silently corrupt state",
+        );
     }
 }
