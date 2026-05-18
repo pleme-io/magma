@@ -459,18 +459,40 @@ async fn handle_tool_call(
         }
 
         "magma_plan" => {
-            // The actual plan computation lives in magma-plan but
-            // magma-mcp doesn't depend on it directly to avoid a cycle.
-            // The CLI binary mediates: MCP clients invoke `magma plan
-            // --json --workspace=<dir>` via a tool-call adapter in
-            // production deployments. For M0 the typed schema is
-            // exposed and validation works; the actual plan call lands
-            // when magma-mcp gains magma-plan as a transitive dep
-            // alongside the operator/library refactor.
+            // Real in-process dispatch via magma-pangea + magma-plan +
+            // magma-backend. magma-mcp now owns those transitive deps
+            // alongside magma-flow, so the MCP server can plan directly
+            // without round-tripping through the CLI.
+            use magma_backend::Backend as _;
+            use magma_pangea::WorkspaceLoader as _;
+
+            let dir = workspace_dir.ok_or_else(|| {
+                McpError::InvalidParams("workspace_dir required".into())
+            })?;
+            let shape = magma_pangea::WorkspaceShape::discover(&dir)
+                .map_err(|e| McpError::InvalidParams(format!("discover: {e}")))?;
+            let loaded = magma_pangea::TerraformJsonLoader
+                .load(shape)
+                .await
+                .map_err(|e| McpError::InvalidParams(format!("load: {e}")))?;
+            let cfg = magma_config::Config::from_json(loaded.rendered)
+                .map_err(|e| McpError::InvalidParams(format!("parse: {e}")))?;
+            let backend = magma_backend::LocalBackend::new(dir.clone());
+            let state = backend
+                .read_state()
+                .await
+                .map_err(|e| McpError::InvalidParams(format!("read state: {e}")))?;
+            let plan = magma_plan::plan(&cfg, &state)
+                .map_err(|e| McpError::InvalidParams(format!("plan: {e}")))?;
+
             Ok(serde_json::json!({
-                "tool":           tool,
-                "workspace_dir":  workspace_dir,
-                "wiring":         "magma-cli mediates plan execution; see magma plan --json",
+                "plan_id":          hex::encode(plan.id.0),
+                "created_at":       plan.created_at,
+                "workspace_dir":    dir,
+                "resource_changes": plan.resource_changes,
+                "summary": {
+                    "total":  plan.resource_changes.len(),
+                },
             }))
         }
 
@@ -786,6 +808,35 @@ mod tests {
         let src_after = magma_state::read_state(&src_path).await.unwrap();
         assert_eq!(src_after.resources.len(), 1);
         assert!(!dst_path.exists(), "dry-run wrote target state");
+    }
+
+    #[tokio::test]
+    async fn magma_plan_dispatches_in_process() {
+        // Render a minimal Pangea-shaped .tf.json and dispatch
+        // magma_plan through the MCP entry point. Verifies the
+        // in-process plan engine works without shelling to the CLI.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("main.tf.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "provider": {"aws": {"region": "us-east-1"}},
+                "resource": {"aws_iam_role": {"r": {"name": "mcp-plan-test"}}},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id:      serde_json::json!(1),
+            method:  "tools/call/magma_plan".into(),
+            params:  serde_json::json!({ "workspace_dir": tmp.path() }),
+        };
+        let resp = dispatch(req).await;
+        assert!(resp.error.is_none(), "plan errored: {:?}", resp.error);
+        let result = resp.result.unwrap();
+        assert!(result["plan_id"].as_str().unwrap().len() == 64);
+        assert!(result["resource_changes"].is_array());
     }
 
     #[tokio::test]

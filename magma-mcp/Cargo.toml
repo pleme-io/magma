@@ -23,6 +23,9 @@ magma-state     = { workspace = true }
 magma-arch-test = { workspace = true }
 magma-migrate   = { workspace = true }
 magma-flow      = { workspace = true }
+magma-pangea    = { workspace = true }
+magma-plan      = { workspace = true }
+magma-backend   = { workspace = true }
 hex             = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
