@@ -1,6 +1,6 @@
 [package]
-name        = "magma-drift"
-description = "magma — typed drift classification + policies. Walks a Plan, classifies each Change by severity, emits typed DriftEvents. Decides AutoCorrect / Alert / RequireApproval per-policy."
+name        = "magma-discover"
+description = "magma — reverse reconciliation. Discoverable trait + helpers: list live resources, classify declared vs undeclared, emit adoption configs. Every Reconciler kind that can list resources gains typed adoption workflows."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -14,13 +14,11 @@ workspace = true
 
 [dependencies]
 magma-converge = { workspace = true }
+async-trait    = { workspace = true }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 thiserror      = { workspace = true }
-chrono         = { workspace = true }
-blake3         = { workspace = true }
-hex            = { workspace = true }
+tokio          = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-tokio    = { workspace = true }

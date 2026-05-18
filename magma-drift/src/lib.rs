@@ -14,7 +14,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use magma_converge::{Change, ChangeSeverity, Plan};
+use magma_converge::{Change, ChangeSeverity, Outcome, Plan, Reconciler, ReconcilerError};
+use serde_json::Value;
 
 // ── Decisions a policy produces ───────────────────────────────────
 
@@ -213,6 +214,83 @@ pub fn classify(plan: &Plan, policy: &DriftPolicy) -> DriftReport {
     DriftReport { kind: plan.kind.clone(), plan_id: plan.id.clone(), events, summary }
 }
 
+// ── Policy-aware reconcile (the operator's typical call shape) ────
+
+/// Typed result of `reconcile_with_policy`. Surfaces every
+/// possible terminal state for one reconcile cycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result_kind", rename_all = "snake_case")]
+pub enum ReconcileResult {
+    /// Plan was empty — no changes needed.
+    NoChange {
+        plan_id: magma_converge::PlanId,
+    },
+    /// Policy permitted every change; applied successfully.
+    Applied {
+        outcome: Outcome,
+        report:  DriftReport,
+    },
+    /// Policy held the reconcile for approval. Operator must
+    /// resume via a separate `apply_held` call after acknowledging.
+    HeldForApproval {
+        plan_id: magma_converge::PlanId,
+        report:  DriftReport,
+        /// Number of changes awaiting approval (subset of report).
+        held:    usize,
+    },
+    /// Policy refused at least one change. Reconcile aborts;
+    /// operator surfaces the refusal to the user.
+    Refused {
+        plan_id: magma_converge::PlanId,
+        report:  DriftReport,
+        /// Number of refused changes.
+        refused: usize,
+    },
+}
+
+/// Compose `read_state → compute_plan → classify → decide → apply`
+/// into one call. The default operator entry-point for a reconcile.
+///
+/// Decision logic:
+///
+/// * Empty plan → `ReconcileResult::NoChange`
+/// * Any change with decision `Refuse` → `Refused` (no apply runs)
+/// * Any change with decision `RequireApproval` → `HeldForApproval`
+/// * Otherwise (every change is AutoCorrect / AutoCorrectWithAlert)
+///   → run `apply` → `Applied`
+pub async fn reconcile_with_policy<R: Reconciler>(
+    reconciler: &R,
+    config:     &Value,
+    policy:     &DriftPolicy,
+) -> Result<ReconcileResult, ReconcilerError> {
+    let state = reconciler.read_state().await?;
+    let plan  = reconciler.compute_plan(config, &state)?;
+
+    if plan.is_noop() {
+        return Ok(ReconcileResult::NoChange { plan_id: plan.id });
+    }
+
+    let report = classify(&plan, policy);
+
+    if report.summary.refused > 0 {
+        return Ok(ReconcileResult::Refused {
+            plan_id: plan.id,
+            refused: report.summary.refused,
+            report,
+        });
+    }
+    if report.summary.awaiting_approval > 0 {
+        return Ok(ReconcileResult::HeldForApproval {
+            plan_id: plan.id,
+            held:    report.summary.awaiting_approval,
+            report,
+        });
+    }
+
+    let outcome = reconciler.apply(&plan).await?;
+    Ok(ReconcileResult::Applied { outcome, report })
+}
+
 /// Dedupe consecutive observations of the same drift by fingerprint.
 /// Used by long-running drift-detection loops that don't want to
 /// emit the same alert every minute.
@@ -257,7 +335,7 @@ impl DriftDeduplicator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magma_converge::{change, Action, change_with_severity};
+    use magma_converge::{change, change_with_severity, inmemory::InMemoryKvReconciler, Action};
     use serde_json::json;
 
     fn mk_plan(changes: Vec<Change>) -> Plan {
@@ -373,5 +451,88 @@ mod tests {
         assert!(d.observe("fp-a", window));
         assert!(d.observe("fp-b", window));
         assert_eq!(d.len(), 2);
+    }
+
+    // ── reconcile_with_policy: the load-bearing composition ────
+
+    #[tokio::test]
+    async fn reconcile_with_policy_no_change_path() {
+        let r = InMemoryKvReconciler::with_state(
+            [("a".to_string(), json!(1))].into_iter().collect(),
+        );
+        let cfg = json!({ "a": 1 });
+        let result = reconcile_with_policy(&r, &cfg, &DriftPolicy::conservative_default())
+            .await
+            .unwrap();
+        assert!(matches!(result, ReconcileResult::NoChange { .. }));
+    }
+
+    #[tokio::test]
+    async fn reconcile_with_policy_applied_path_for_functional_changes() {
+        let r = InMemoryKvReconciler::new();
+        // Empty state + non-empty config → Create changes (Functional severity)
+        let cfg = json!({ "a": 1, "b": 2 });
+        let result = reconcile_with_policy(&r, &cfg, &DriftPolicy::conservative_default())
+            .await
+            .unwrap();
+        match result {
+            ReconcileResult::Applied { outcome, report } => {
+                assert_eq!(outcome.applied.len(), 2);
+                assert_eq!(report.summary.auto_corrected_with_alert, 2);
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+        // State now matches config.
+        assert_eq!(r.snapshot().get("a"), Some(&json!(1)));
+        assert_eq!(r.snapshot().get("b"), Some(&json!(2)));
+    }
+
+    #[tokio::test]
+    async fn reconcile_with_policy_held_for_approval_on_critical() {
+        // State has a Critical-severity resource that the empty
+        // config would Delete. Conservative policy: Delete →
+        // Critical → RequireApproval.
+        let r = InMemoryKvReconciler::with_state(
+            [("doomed".to_string(), json!("value"))].into_iter().collect(),
+        );
+        let cfg = json!({});
+        let result = reconcile_with_policy(&r, &cfg, &DriftPolicy::conservative_default())
+            .await
+            .unwrap();
+        match result {
+            ReconcileResult::HeldForApproval { held, plan_id, .. } => {
+                assert_eq!(held, 1);
+                assert_eq!(plan_id.0.len(), 64);
+            }
+            other => panic!("expected HeldForApproval, got {other:?}"),
+        }
+        // State NOT mutated.
+        assert!(r.snapshot().contains_key("doomed"));
+    }
+
+    #[tokio::test]
+    async fn reconcile_with_policy_refused_aborts_apply() {
+        let r = InMemoryKvReconciler::new();
+        let cfg = json!({ "x": 1 });
+        // Custom policy: refuse Create against this prefix.
+        let policy = DriftPolicy {
+            rules: vec![PolicyRule {
+                name:           "no-creates".into(),
+                severity:       None,
+                action:         Some(Action::Create),
+                address_prefix: None,
+                decision:       DriftDecision::Refuse,
+            }],
+            fallback: DriftDecision::AutoCorrect,
+        };
+        let result = reconcile_with_policy(&r, &cfg, &policy).await.unwrap();
+        match result {
+            ReconcileResult::Refused { refused, .. } => {
+                assert_eq!(refused, 1);
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
+        // State NOT mutated — refused changes never apply.
+        assert!(r.snapshot().is_empty());
     }
 }

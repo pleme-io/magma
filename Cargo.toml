@@ -26,6 +26,8 @@ members = [
     "magma-spec",
     "magma-stream",
     "magma-fsm",
+    "magma-test-laws",
+    "magma-discover",
     "magma-cli",
     "magma-test",
 ]
@@ -73,6 +75,8 @@ magma-drift     = { path = "magma-drift" }
 magma-spec      = { path = "magma-spec" }
 magma-stream    = { path = "magma-stream" }
 magma-fsm       = { path = "magma-fsm" }
+magma-test-laws = { path = "magma-test-laws" }
+magma-discover  = { path = "magma-discover" }
 magma-test      = { path = "magma-test" }
 
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──
