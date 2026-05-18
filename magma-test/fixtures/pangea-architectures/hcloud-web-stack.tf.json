@@ -1,0 +1,38 @@
+{
+  "terraform": {
+    "required_providers": {
+      "hcloud": { "source": "hetznercloud/hcloud", "version": "~> 1.0" }
+    }
+  },
+  "provider": { "hcloud": { "token": "test" } },
+  "resource": {
+    "hcloud_server": {
+      "web1": { "name": "web1", "image": "debian-12", "server_type": "cx22", "location": "nbg1" },
+      "web2": { "name": "web2", "image": "debian-12", "server_type": "cx22", "location": "nbg1" }
+    },
+    "hcloud_volume": {
+      "static_data": {
+        "name":     "static-data",
+        "size":     50,
+        "location": "nbg1",
+        "format":   "ext4"
+      }
+    },
+    "hcloud_firewall": {
+      "web": {
+        "name": "web-firewall",
+        "rule": [
+          { "direction": "in", "protocol": "tcp", "port": "80",  "source_ips": ["0.0.0.0/0"] },
+          { "direction": "in", "protocol": "tcp", "port": "443", "source_ips": ["0.0.0.0/0"] }
+        ]
+      }
+    },
+    "hcloud_load_balancer": {
+      "web": {
+        "name":               "web-lb",
+        "load_balancer_type": "lb11",
+        "location":           "nbg1"
+      }
+    }
+  }
+}

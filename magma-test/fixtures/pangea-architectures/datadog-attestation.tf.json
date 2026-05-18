@@ -1,0 +1,44 @@
+{
+  "terraform": {
+    "required_providers": {
+      "datadog": { "source": "datadog/datadog", "version": "~> 3.0" }
+    }
+  },
+  "provider": { "datadog": { "api_key": "test", "app_key": "test" } },
+  "resource": {
+    "datadog_monitor": {
+      "tameshi_signature_drift": {
+        "name":     "tameshi: signature drift detected",
+        "type":     "metric alert",
+        "message":  "Sekiban verification failure rate >5%. Notify @platform-oncall.",
+        "query":    "avg(last_5m):sum:tameshi.verify.failure_rate{*} > 0.05",
+        "priority": 1
+      },
+      "kensa_attestation_gap": {
+        "name":     "kensa: attestation evidence gap",
+        "type":     "service check",
+        "message":  "Kensa attestation receipts missing for >10m. @compliance-team",
+        "query":    "\"kensa.attestation.fresh\".over(\"env:prod\").last(4).count_by_status()",
+        "priority": 2
+      }
+    },
+    "datadog_dashboard": {
+      "tameshi_overview": {
+        "title":      "tameshi attestation overview",
+        "layout_type":"ordered"
+      }
+    },
+    "datadog_service_level_objective": {
+      "attestation_freshness": {
+        "name":           "Attestation freshness SLO",
+        "type":           "metric",
+        "description":    "99% of attestations refreshed within 1h",
+        "thresholds":     [{ "timeframe": "30d", "target": 99.0 }],
+        "query": {
+          "denominator": "sum:tameshi.attestations.total{*}.as_count()",
+          "numerator":   "sum:tameshi.attestations.fresh{*}.as_count()"
+        }
+      }
+    }
+  }
+}

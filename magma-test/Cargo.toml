@@ -1,0 +1,48 @@
+[package]
+name        = "magma-test"
+description = "magma — compatibility test harness. Tier 1/2/3 providers × 5 test levels (smoke / schema / plan-diff / state-roundtrip / real-cloud-apply). Per theory/MAGMA.md §II.6."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+publish     = false
+
+[[bin]]
+name = "mock_provider"
+path = "src/bin/mock_provider.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+magma          = { workspace = true }
+magma-types    = { workspace = true }
+magma-config   = { workspace = true }
+magma-pangea   = { workspace = true }
+magma-arch-test = { workspace = true }
+magma-plan     = { workspace = true }
+magma-state    = { workspace = true }
+magma-plugin   = { workspace = true }
+magma-protocol = { workspace = true }
+tokio          = { workspace = true }
+tokio-stream   = { workspace = true }
+tonic          = { workspace = true }
+prost          = { workspace = true }
+prost-types    = { workspace = true }
+async-trait    = { workspace = true }
+rcgen          = { workspace = true }
+rustls         = { workspace = true }
+base64         = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+thiserror      = { workspace = true }
+tracing        = { workspace = true }
+proptest       = { workspace = true }
+insta          = { workspace = true }
+tempfile       = { workspace = true }
+which          = { workspace = true }
+
+[dev-dependencies]

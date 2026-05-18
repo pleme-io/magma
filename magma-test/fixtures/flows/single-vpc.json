@@ -1,0 +1,6 @@
+{
+  "workspaces": [
+    { "name": "vpc", "dir": "magma-test/fixtures/pangea" }
+  ],
+  "edges": []
+}

@@ -1,0 +1,46 @@
+{
+  "terraform": {
+    "required_providers": {
+      "aws": { "source": "hashicorp/aws", "version": "~> 5.0" }
+    }
+  },
+  "provider": { "aws": { "region": "us-east-1" } },
+  "resource": {
+    "aws_vpc": {
+      "secure": {
+        "cidr_block":          "10.99.0.0/16",
+        "enable_dns_support":  true,
+        "enable_dns_hostnames": true
+      }
+    },
+    "aws_default_security_group": {
+      "main": {
+        "vpc_id":  "${aws_vpc.secure.id}",
+        "ingress": [],
+        "egress":  []
+      }
+    },
+    "aws_flow_log": {
+      "vpc_logs": {
+        "vpc_id":                  "${aws_vpc.secure.id}",
+        "traffic_type":             "ALL",
+        "log_destination_type":    "cloud-watch-logs",
+        "log_destination":         "${aws_cloudwatch_log_group.flow.arn}",
+        "iam_role_arn":            "${aws_iam_role.flow_log.arn}"
+      }
+    },
+    "aws_cloudwatch_log_group": {
+      "flow": {
+        "name":              "vpc-flow-logs/secure",
+        "retention_in_days": 90,
+        "kms_key_id":        "arn:aws:kms:us-east-1:123:key/abcd"
+      }
+    },
+    "aws_iam_role": {
+      "flow_log": {
+        "name": "vpc-flow-log-role",
+        "assume_role_policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"vpc-flow-logs.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+      }
+    }
+  }
+}

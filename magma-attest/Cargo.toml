@@ -1,0 +1,22 @@
+[package]
+name        = "magma-attest"
+description = "magma — BLAKE3 attestation over plans + state + config; tameshi receipt emission; tabeliao registry integration."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types = { workspace = true }
+blake3      = { workspace = true }
+hex         = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+chrono      = { workspace = true }
+thiserror   = { workspace = true }

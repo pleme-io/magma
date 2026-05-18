@@ -1,0 +1,27 @@
+[package]
+name        = "magma-arch-test"
+description = "magma — reusable typed verification primitives for Pangea-rendered workspaces. WorkspaceTestHarness + assertion helpers consumed by magma's own integration tests, the `magma fixture` CLI subcommand, and third-party consumers (pangea-architectures rspec tests, pangea-operator integration suite, CI). Compounding piece: any tool that needs to assert 'this workspace works under magma' uses the typed primitives here, never the raw magma-plan/magma-config combo directly."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types  = { workspace = true }
+magma-config = { workspace = true }
+magma-pangea = { workspace = true }
+magma-plan   = { workspace = true }
+magma-state  = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+chrono       = { workspace = true }
+hex          = { workspace = true }
+tokio        = { workspace = true }
+tempfile     = { workspace = true }

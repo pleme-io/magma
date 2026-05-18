@@ -1,0 +1,31 @@
+[package]
+name        = "magma-plan"
+description = "magma — plan algorithm: state × config → []Action. The load-bearing semantics layer; proptest'd byte-for-byte against opentofu output."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types  = { workspace = true }
+magma-config = { workspace = true }
+magma-graph  = { workspace = true }
+magma-state  = { workspace = true }
+magma-plugin = { workspace = true }
+magma-attest = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+chrono       = { workspace = true }
+uuid         = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+async-trait  = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

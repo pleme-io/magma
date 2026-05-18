@@ -1,0 +1,57 @@
+{
+  "terraform": {
+    "required_providers": {
+      "aws":        { "source": "hashicorp/aws",        "version": "~> 5.0" },
+      "kubernetes": { "source": "hashicorp/kubernetes", "version": "~> 2.0" }
+    }
+  },
+  "provider": { "aws": { "region": "us-east-1" } },
+  "resource": {
+    "aws_iam_role": {
+      "eks_cluster_role": {
+        "name": "platform-eks-cluster-role",
+        "assume_role_policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"eks.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}",
+        "tags": { "ManagedBy": "pangea" }
+      },
+      "eks_node_role": {
+        "name": "platform-eks-node-role",
+        "assume_role_policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ec2.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}",
+        "tags": { "ManagedBy": "pangea" }
+      }
+    },
+    "aws_iam_role_policy_attachment": {
+      "cluster_policy": {
+        "role":       "${aws_iam_role.eks_cluster_role.name}",
+        "policy_arn": "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+      },
+      "node_worker_policy": {
+        "role":       "${aws_iam_role.eks_node_role.name}",
+        "policy_arn": "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+      }
+    },
+    "aws_eks_cluster": {
+      "main": {
+        "name":      "platform-eks",
+        "role_arn":  "${aws_iam_role.eks_cluster_role.arn}",
+        "vpc_config": {
+          "subnet_ids": ["subnet-0a1b2c3d", "subnet-0e1f2a3b"]
+        },
+        "version": "1.30",
+        "tags":    { "ManagedBy": "pangea" }
+      }
+    },
+    "aws_eks_node_group": {
+      "main": {
+        "cluster_name":    "${aws_eks_cluster.main.name}",
+        "node_group_name": "platform-eks-default",
+        "node_role_arn":   "${aws_iam_role.eks_node_role.arn}",
+        "subnet_ids":      ["subnet-0a1b2c3d", "subnet-0e1f2a3b"],
+        "scaling_config":  { "desired_size": 2, "max_size": 4, "min_size": 1 }
+      }
+    }
+  },
+  "output": {
+    "cluster_name":     { "value": "${aws_eks_cluster.main.name}",     "sensitive": false },
+    "cluster_endpoint": { "value": "${aws_eks_cluster.main.endpoint}", "sensitive": false }
+  }
+}

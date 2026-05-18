@@ -1,0 +1,24 @@
+[package]
+name        = "magma-mcp"
+description = "magma — MCP (Model Context Protocol) server. JSON-RPC 2.0 over stdin/stdout exposing magma's plan/apply/state/output operations as typed tools for AI agents. Per theory/MAGMA.md §II.8 interface 3."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types  = { workspace = true }
+magma-config = { workspace = true }
+magma-state  = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+tokio        = { workspace = true }
+async-trait  = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }

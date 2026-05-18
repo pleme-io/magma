@@ -1,0 +1,33 @@
+[package]
+name        = "magma"
+description = "magma — Rust-native Pangea-Ruby-first OpenTofu-compatible IaC executor. Umbrella crate; re-exports the public surface from the workspace's typed primitives."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[features]
+# Forward the magma-pangea magnus feature to consumers who want in-process Ruby.
+magnus = ["magma-pangea/magnus"]
+default = []
+
+[dependencies]
+magma-types     = { workspace = true }
+magma-config    = { workspace = true }
+magma-pangea    = { workspace = true }
+magma-protocol  = { workspace = true }
+magma-plugin    = { workspace = true }
+magma-providers = { workspace = true }
+magma-state     = { workspace = true }
+magma-backend   = { workspace = true }
+magma-graph     = { workspace = true }
+magma-plan      = { workspace = true }
+magma-apply     = { workspace = true }
+magma-attest    = { workspace = true }
+magma-mcp       = { workspace = true }

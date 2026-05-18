@@ -1,0 +1,46 @@
+{
+  "terraform": {
+    "required_providers": {
+      "datadog": { "source": "datadog/datadog", "version": "~> 3.0" },
+      "splunk":  { "source": "splunk/splunk",   "version": "~> 1.0" }
+    }
+  },
+  "provider": {
+    "datadog": { "api_key": "test", "app_key": "test" },
+    "splunk":  { "url": "https://splunk.example.com:8089", "auth_token": "test" }
+  },
+  "resource": {
+    "datadog_monitor": {
+      "k3s_node_down": {
+        "name":     "K3s node down — rio",
+        "type":     "service check",
+        "message":  "Rio cluster node is unreachable. Notify @pagerduty.",
+        "query":    "\"kubernetes_node.ready\".over(\"cluster:rio\").last(2).count_by_status()",
+        "priority": 1,
+        "tags":     ["env:rio", "cluster:rio", "team:platform"]
+      },
+      "pod_oom_killed": {
+        "name":     "Pod OOM killed — rio",
+        "type":     "query alert",
+        "message":  "Pod OOMKilled events spiking. Notify @platform-oncall.",
+        "query":    "sum(last_5m):sum:kubernetes.containers.killed{cluster:rio,reason:oomkilled}.as_count() > 5",
+        "priority": 2
+      }
+    },
+    "splunk_indexes": {
+      "rio_logs": {
+        "name":              "rio-logs",
+        "max_data_size_mb":  10240,
+        "frozen_time_period_in_secs": 7776000
+      }
+    },
+    "splunk_saved_searches": {
+      "rio_errors": {
+        "name":   "rio_errors_last_5m",
+        "search": "index=rio-logs severity=error earliest=-5m",
+        "cron_schedule": "*/5 * * * *",
+        "is_scheduled":  true
+      }
+    }
+  }
+}

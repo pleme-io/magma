@@ -1,0 +1,20 @@
+[package]
+name        = "magma-config"
+description = "magma — Terraform JSON → magma_types::Config typed conversion + ${resource.attribute} interpolation resolver (the small subset of HCL expression evaluation needed for Pangea-rendered JSON). No HCL parsing."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }

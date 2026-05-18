@@ -1,0 +1,56 @@
+{
+  "terraform": {
+    "required_providers": {
+      "aws": { "source": "hashicorp/aws", "version": "~> 5.0" }
+    }
+  },
+  "provider": { "aws": { "region": "us-east-1" } },
+  "resource": {
+    "aws_launch_template": {
+      "nix_builder": {
+        "name":          "nix-builder-arm64",
+        "image_id":      "ami-graviton-nixos",
+        "instance_type": "c7g.4xlarge",
+        "key_name":      "nix-builder-fleet",
+        "iam_instance_profile":   { "name": "nix-builder-instance-profile" },
+        "block_device_mappings": [
+          { "device_name": "/dev/xvda",
+            "ebs": { "volume_size": 200, "volume_type": "gp3", "encrypted": true } }
+        ]
+      }
+    },
+    "aws_autoscaling_group": {
+      "nix_builders": {
+        "name":                 "nix-builders-arm64",
+        "min_size":             0,
+        "max_size":             4,
+        "desired_capacity":     0,
+        "launch_template":      { "id": "${aws_launch_template.nix_builder.id}", "version": "$Latest" },
+        "vpc_zone_identifier":  ["subnet-builders"],
+        "tag": [
+          { "key": "Builder", "value": "nix-arm64", "propagate_at_launch": true }
+        ]
+      }
+    },
+    "aws_lb": {
+      "builders_nlb": {
+        "name":               "nix-builders-nlb",
+        "load_balancer_type": "network",
+        "internal":           false,
+        "subnets":            ["subnet-builders"]
+      }
+    },
+    "aws_cloudwatch_metric_alarm": {
+      "builder_idle": {
+        "alarm_name":          "nix-builder-idle-scale-down",
+        "comparison_operator": "LessThanThreshold",
+        "evaluation_periods":  2,
+        "metric_name":         "CPUUtilization",
+        "namespace":           "AWS/EC2",
+        "period":              300,
+        "statistic":           "Average",
+        "threshold":           5.0
+      }
+    }
+  }
+}

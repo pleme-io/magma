@@ -1,0 +1,33 @@
+{
+  "terraform": {
+    "required_providers": {
+      "cloudflare": { "source": "cloudflare/cloudflare", "version": "~> 4.0" }
+    }
+  },
+  "provider": { "cloudflare": {} },
+  "resource": {
+    "cloudflare_r2_bucket": {
+      "static_assets": {
+        "account_id": "test-account",
+        "name":       "lilitu-static-assets",
+        "location":   "ENAM"
+      }
+    },
+    "cloudflare_record": {
+      "static_cname": {
+        "zone_id": "test-zone",
+        "name":    "static.lilitu.io",
+        "type":    "CNAME",
+        "value":   "${cloudflare_r2_bucket.static_assets.bucket}.r2.cloudflarestorage.com",
+        "proxied": true,
+        "ttl":     1
+      }
+    },
+    "cloudflare_zone_settings_override": {
+      "lilitu": {
+        "zone_id": "test-zone",
+        "settings": { "min_tls_version": "1.2", "ssl": "strict", "tls_1_3": "on" }
+      }
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "terraform": {
+    "required_providers": {
+      "github": { "source": "integrations/github", "version": "~> 6.0" }
+    }
+  },
+  "provider": { "github": { "owner": "pleme-io" } },
+  "resource": {
+    "github_repository": {
+      "magma": {
+        "name":           "magma",
+        "description":    "Rust-native OpenTofu-compatible IaC executor",
+        "visibility":     "public",
+        "has_issues":     true,
+        "has_projects":   false,
+        "has_wiki":       false,
+        "default_branch": "main"
+      },
+      "shigoto": {
+        "name":           "shigoto",
+        "description":    "Typed job-system primitive",
+        "visibility":     "public",
+        "has_issues":     true,
+        "has_projects":   false,
+        "has_wiki":       false,
+        "default_branch": "main"
+      }
+    },
+    "github_branch_protection_v3": {
+      "magma_main": {
+        "repository": "${github_repository.magma.name}",
+        "branch":     "main",
+        "enforce_admins": false,
+        "require_signed_commits": true,
+        "required_pull_request_reviews": { "required_approving_review_count": 1 }
+      }
+    }
+  },
+  "output": {
+    "magma_repo_full_name":   { "value": "${github_repository.magma.full_name}",   "sensitive": false },
+    "shigoto_repo_full_name": { "value": "${github_repository.shigoto.full_name}", "sensitive": false }
+  }
+}

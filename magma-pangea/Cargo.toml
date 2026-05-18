@@ -1,0 +1,42 @@
+[package]
+name        = "magma-pangea"
+description = "magma — Pangea Ruby DSL evaluator (in-process CRuby via magnus + pangea-ruby-eval) + Terraform JSON reader. The canonical input layer per theory/MAGMA.md §II.1 (Pangea-first; HCL is out of scope)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[features]
+# `magnus` feature gates the in-process Ruby evaluator (requires CRuby
+# at build + runtime). Without it, magma-pangea exposes the trait API +
+# the Terraform JSON reader path only — consumers who only deal in
+# Pangea-rendered JSON don't need the Ruby toolchain. The fleet default
+# (substrate's rust-workspace-release build) enables this feature.
+magnus = ["dep:pangea-ruby-eval"]
+default = []
+
+[dependencies]
+magma-types  = { workspace = true }
+magma-config = { workspace = true }
+magma-state  = { workspace = true }
+magma-plan   = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
+async-trait  = { workspace = true }
+petgraph     = { workspace = true }
+
+# In-process Ruby (M0 — Pangea Ruby DSL evaluator). Same crate
+# pangea-operator uses; per theory/MAGMA.md §II.1, the canonical pattern.
+pangea-ruby-eval = { git = "https://github.com/pleme-io/pangea-operator", optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

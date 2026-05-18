@@ -1,0 +1,43 @@
+{
+  "terraform": {
+    "required_providers": {
+      "cloudflare": { "source": "cloudflare/cloudflare", "version": "~> 4.0" }
+    }
+  },
+  "provider": { "cloudflare": {} },
+  "resource": {
+    "cloudflare_zone": {
+      "pleme_io":  { "zone": "pleme.io",    "type": "full" },
+      "lilitu_io": { "zone": "lilitu.io",   "type": "full" }
+    },
+    "cloudflare_record": {
+      "pleme_apex": {
+        "zone_id": "${cloudflare_zone.pleme_io.id}",
+        "name":    "@",
+        "type":    "A",
+        "value":   "192.0.2.1",
+        "proxied": true,
+        "ttl":     1
+      },
+      "lilitu_apex": {
+        "zone_id": "${cloudflare_zone.lilitu_io.id}",
+        "name":    "@",
+        "type":    "A",
+        "value":   "192.0.2.2",
+        "proxied": true,
+        "ttl":     1
+      }
+    },
+    "cloudflare_tunnel": {
+      "openclaw": {
+        "account_id": "test-account",
+        "name":       "openclaw_tunnel",
+        "secret":     "fake-secret-for-testing-only"
+      }
+    }
+  },
+  "output": {
+    "pleme_zone_id":  { "value": "${cloudflare_zone.pleme_io.id}",  "sensitive": false },
+    "lilitu_zone_id": { "value": "${cloudflare_zone.lilitu_io.id}", "sensitive": false }
+  }
+}

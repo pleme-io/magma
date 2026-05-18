@@ -1,0 +1,35 @@
+[package]
+name        = "magma-cli"
+description = "magma — CLI binary. magma <init|plan|apply|destroy|state|import|workspace|output|show|refresh|taint|force-unlock|get|fmt|validate|console>."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+categories  = ["command-line-utilities"]
+keywords    = ["terraform", "opentofu", "iac", "cli", "infrastructure"]
+publish     = true
+
+[[bin]]
+name = "magma"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+magma               = { workspace = true }
+magma-arch-test     = { workspace = true }
+clap                = { workspace = true }
+shikumi             = { workspace = true }
+tokio               = { workspace = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+serde_yaml_ng       = { workspace = true }
+chrono              = { workspace = true }
+hex                 = { workspace = true }
+tracing             = { workspace = true }
+tracing-subscriber  = { workspace = true }
+anyhow              = { workspace = true }

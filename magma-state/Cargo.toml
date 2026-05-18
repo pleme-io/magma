@@ -1,0 +1,27 @@
+[package]
+name        = "magma-state"
+description = "magma — terraform.tfstate v4 read/write, state migrations, state locking, sensitive-value redaction. Byte-exact compat with OpenTofu state-file format."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types   = { workspace = true }
+magma-backend = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+uuid          = { workspace = true }
+chrono        = { workspace = true }
+thiserror     = { workspace = true }
+tokio         = { workspace = true }
+tracing       = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

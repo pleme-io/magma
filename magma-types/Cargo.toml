@@ -1,0 +1,21 @@
+[package]
+name        = "magma-types"
+description = "magma — typed primitives (Plan, Resource, ResourceAddress, Action, Diff, State, Lock, ProviderSchema). Per theory/MAGMA.md §III."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+schemars     = { workspace = true }
+thiserror    = { workspace = true }
+chrono       = { workspace = true }
+uuid         = { workspace = true }

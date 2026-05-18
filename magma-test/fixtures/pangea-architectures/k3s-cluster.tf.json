@@ -1,0 +1,56 @@
+{
+  "terraform": {
+    "required_providers": {
+      "aws": { "source": "hashicorp/aws", "version": "~> 5.0" }
+    }
+  },
+  "provider": { "aws": { "region": "us-east-1" } },
+  "resource": {
+    "aws_autoscaling_group": {
+      "k3s_workers": {
+        "name":                 "k3s-workers",
+        "max_size":             5,
+        "min_size":             1,
+        "desired_capacity":     3,
+        "launch_template":      { "id": "lt-123", "version": "$Latest" },
+        "vpc_zone_identifier":  ["subnet-a", "subnet-b"]
+      }
+    },
+    "aws_launch_template": {
+      "k3s_node": {
+        "name":          "k3s-node",
+        "image_id":      "ami-0c2b0d3fb02824d92",
+        "instance_type": "t3.medium",
+        "user_data":     "IyEvYmluL2Jhc2gKZWNobyAnSGVsbG8nCg=="
+      }
+    },
+    "aws_lb": {
+      "k3s_api": {
+        "name":               "k3s-api-nlb",
+        "load_balancer_type": "network",
+        "internal":           true,
+        "subnets":            ["subnet-a", "subnet-b"]
+      }
+    },
+    "aws_lb_listener": {
+      "api_6443": {
+        "load_balancer_arn": "${aws_lb.k3s_api.arn}",
+        "port":              6443,
+        "protocol":          "TCP",
+        "default_action":    { "type": "forward", "target_group_arn": "${aws_lb_target_group.api.arn}" }
+      }
+    },
+    "aws_lb_target_group": {
+      "api": {
+        "name":     "k3s-api-tg",
+        "port":     6443,
+        "protocol": "TCP",
+        "vpc_id":   "vpc-xxx",
+        "health_check": { "protocol": "TCP", "port": "6443" }
+      }
+    }
+  },
+  "output": {
+    "k3s_api_dns": { "value": "${aws_lb.k3s_api.dns_name}", "sensitive": false }
+  }
+}

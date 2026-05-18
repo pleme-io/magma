@@ -1,0 +1,32 @@
+{
+  "terraform": {
+    "required_providers": {
+      "tailscale": { "source": "tailscale/tailscale", "version": "~> 0.13" }
+    }
+  },
+  "provider": { "tailscale": {} },
+  "resource": {
+    "tailscale_acl": {
+      "main": {
+        "acl": "{\"acls\":[{\"action\":\"accept\",\"src\":[\"*\"],\"dst\":[\"*:*\"]}],\"tagOwners\":{\"tag:server\":[\"autogroup:admin\"]}}"
+      }
+    },
+    "tailscale_dns_nameservers": {
+      "main": {
+        "nameservers": ["1.1.1.1", "9.9.9.9"]
+      }
+    },
+    "tailscale_dns_search_paths": {
+      "main": {
+        "search_paths": ["pleme.io", "lilitu.io"]
+      }
+    },
+    "tailscale_tailnet_settings": {
+      "main": {
+        "devices_approval_on":                  true,
+        "regional_routing_on":                  false,
+        "users_approval_on":                    true
+      }
+    }
+  }
+}

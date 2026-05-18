@@ -1,0 +1,38 @@
+{
+  "terraform": {
+    "required_providers": {
+      "aws":     { "source": "hashicorp/aws",         "version": "~> 5.0" },
+      "porkbun": { "source": "kradalby/porkbun",      "version": "~> 0.2" }
+    }
+  },
+  "provider": {
+    "aws":     { "region": "us-east-1" },
+    "porkbun": { "api_key": "test", "secret_key": "test" }
+  },
+  "resource": {
+    "aws_route53_zone": {
+      "pleme_lol":  { "name": "pleme.lol" },
+      "ben_kar_com":{ "name": "ben-kar.com" }
+    },
+    "aws_route53_record": {
+      "k8s_seph": {
+        "zone_id": "${aws_route53_zone.ben_kar_com.id}",
+        "name":    "api.seph.1.k8s.ben-kar.com",
+        "type":    "CNAME",
+        "ttl":     60,
+        "records": ["nlb-x.elb.us-east-1.amazonaws.com"]
+      }
+    },
+    "porkbun_nameserver": {
+      "pleme_lol": {
+        "domain":      "pleme.lol",
+        "nameservers": [
+          "ns-100.awsdns-01.com",
+          "ns-200.awsdns-02.org",
+          "ns-300.awsdns-03.net",
+          "ns-400.awsdns-04.co.uk"
+        ]
+      }
+    }
+  }
+}

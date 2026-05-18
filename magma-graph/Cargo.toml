@@ -1,0 +1,19 @@
+[package]
+name        = "magma-graph"
+description = "magma — DAG construction over resources, dependency resolution, cycle detection, partial-order wave planning."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types = { workspace = true }
+petgraph    = { workspace = true }
+thiserror   = { workspace = true }
+serde       = { workspace = true }

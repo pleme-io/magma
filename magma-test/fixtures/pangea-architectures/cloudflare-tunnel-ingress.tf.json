@@ -1,0 +1,46 @@
+{
+  "terraform": {
+    "required_providers": {
+      "cloudflare": { "source": "cloudflare/cloudflare", "version": "~> 4.0" }
+    }
+  },
+  "provider": { "cloudflare": {} },
+  "resource": {
+    "cloudflare_tunnel": {
+      "rio": {
+        "account_id": "acc-test",
+        "name":       "rio-cluster-tunnel",
+        "secret":     "stubbed-test-secret"
+      }
+    },
+    "cloudflare_tunnel_config": {
+      "rio": {
+        "account_id": "acc-test",
+        "tunnel_id":  "${cloudflare_tunnel.rio.id}",
+        "config": {
+          "ingress_rule": [
+            { "hostname": "grafana.rio.k8s.ben-kar.com", "service": "http://grafana.observability:3000" },
+            { "hostname": "prometheus.rio.k8s.ben-kar.com", "service": "http://prometheus.observability:9090" },
+            { "service":  "http_status:404" }
+          ]
+        }
+      }
+    },
+    "cloudflare_record": {
+      "grafana": {
+        "zone_id": "zone-test",
+        "name":    "grafana.rio.k8s.ben-kar.com",
+        "type":    "CNAME",
+        "value":   "${cloudflare_tunnel.rio.cname}",
+        "proxied": true
+      },
+      "prometheus": {
+        "zone_id": "zone-test",
+        "name":    "prometheus.rio.k8s.ben-kar.com",
+        "type":    "CNAME",
+        "value":   "${cloudflare_tunnel.rio.cname}",
+        "proxied": true
+      }
+    }
+  }
+}
