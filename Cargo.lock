@@ -1500,6 +1500,7 @@ dependencies = [
  "hex",
  "magma-converge",
  "magma-drift",
+ "magma-fsm",
  "proptest",
  "serde",
  "serde_json",
