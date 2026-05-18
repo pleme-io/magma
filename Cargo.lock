@@ -1307,6 +1307,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "magma-operator-backend"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "magma-backend",
+ "magma-fixtures",
+ "magma-state",
+ "magma-types",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "magma-pangea"
 version = "0.1.0"
 dependencies = [

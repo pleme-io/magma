@@ -1,0 +1,29 @@
+[package]
+name        = "magma-operator-backend"
+description = "magma — adapter that turns any K8s-operator-style state store into a magma_backend::Backend. Exposes the typed AsyncStateStore trait operators implement + the canonical TerraformState → magma::types::State converter. Per theory/MAGMA-OPERATOR-BACKEND.md."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types   = { workspace = true }
+magma-state   = { workspace = true }
+magma-backend = { workspace = true }
+async-trait   = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+thiserror     = { workspace = true }
+uuid          = { workspace = true }
+
+[dev-dependencies]
+magma-fixtures = { workspace = true }
+tokio          = { workspace = true }
+tempfile       = { workspace = true }
+proptest       = { workspace = true }
