@@ -1,0 +1,29 @@
+[package]
+name        = "magma-migrate"
+description = "magma — typed state-organization migration primitive. Move resources between workspaces' state files atomically (no recreate, no data loss, dependent-references rewritten, attestation-continuous). Powers `magma migrate` / `magma split` / `magma merge` CLI subcommands + Pangea::Magma::Migration Ruby type. Per theory/PANGEA-MAGMA-ORCHESTRATION.md §III.3 + §V."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-types   = { workspace = true }
+magma-state   = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+chrono        = { workspace = true }
+uuid          = { workspace = true }
+thiserror     = { workspace = true }
+tracing       = { workspace = true }
+tokio         = { workspace = true }
+blake3        = { workspace = true }
+hex           = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

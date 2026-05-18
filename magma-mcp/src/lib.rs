@@ -163,7 +163,150 @@ pub fn tool_specs() -> Vec<ToolSpec> {
             schema: minimal_schema(&[("workspace_dir", "string", true)]),
             destructive: false,
         },
+        // ── Pangea orchestration tools (M0.6) ──────────────────────
+        ToolSpec {
+            name: "pangea_orchestrate".into(),
+            description: "Drive `magma flow run` over a typed Pangea::Magma::Chain JSON (workspaces + cross-workspace edges). Returns the typed AggregateReport. Non-destructive — performs plan-only across each workspace. Use this to verify a distribution's wiring without applying.".into(),
+            schema: serde_json::json!({
+                "type":     "object",
+                "required": ["flow"],
+                "properties": {
+                    "flow": {
+                        "type":     "object",
+                        "required": ["workspaces"],
+                        "properties": {
+                            "workspaces": {
+                                "type":  "array",
+                                "items": {
+                                    "type":     "object",
+                                    "required": ["name", "dir"],
+                                    "properties": {
+                                        "name": { "type": "string" },
+                                        "dir":  { "type": "string" }
+                                    }
+                                }
+                            },
+                            "edges": {
+                                "type":  "array",
+                                "items": {
+                                    "type":     "object",
+                                    "required": ["from", "from_output", "to", "to_input"],
+                                    "properties": {
+                                        "from":        { "type": "string" },
+                                        "from_output": { "type": "string" },
+                                        "to":          { "type": "string" },
+                                        "to_input":    { "type": "string" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+            destructive: false,
+        },
+        ToolSpec {
+            name: "magma_migrate_dry_run".into(),
+            description: "Validate + preview a typed state-organization migration without writing either state file. Consumes the typed MigrationPlan shape (from/to/moves/preserve) — same shape `magma migrate` reads from disk — and returns a MigrationReceipt with BLAKE3 hashes pre/post + reasoning. Non-destructive variant of the migrate tool; required before `magma_migrate`.".into(),
+            schema: migration_plan_schema(),
+            destructive: false,
+        },
+        ToolSpec {
+            name: "magma_migrate".into(),
+            description: "Atomically move resources between workspaces' state files (no recreate, identity preserved). Requires explicit `confirm: true`. Consumes the typed MigrationPlan shape; returns a MigrationReceipt with BLAKE3 hashes pre/post per theory/PANGEA-MAGMA-ORCHESTRATION.md §V. Two-phase commit: validates source addresses + target collision-free, stages target write, then commits source.".into(),
+            schema: {
+                let mut s = migration_plan_schema();
+                if let Some(props) = s.get_mut("properties").and_then(|v| v.as_object_mut()) {
+                    props.insert("confirm".into(), serde_json::json!({ "type": "boolean" }));
+                }
+                if let Some(req) = s.get_mut("required").and_then(|v| v.as_array_mut()) {
+                    req.push(serde_json::json!("confirm"));
+                }
+                s
+            },
+            destructive: true,
+        },
+        ToolSpec {
+            name: "magma_split".into(),
+            description: "Move a named subset of one workspace's resources into a new workspace. Thin wrapper over magma migrate for the common case of carving out a new state boundary. Requires explicit `confirm: true`.".into(),
+            schema: serde_json::json!({
+                "type":     "object",
+                "required": ["from", "from_state", "to", "to_state", "resources", "confirm"],
+                "properties": {
+                    "from":       { "type": "string" },
+                    "from_state": { "type": "string" },
+                    "to":         { "type": "string" },
+                    "to_state":   { "type": "string" },
+                    "resources":  { "type": "array", "items": { "type": "string" } },
+                    "dry_run":    { "type": "boolean" },
+                    "confirm":    { "type": "boolean" }
+                }
+            }),
+            destructive: true,
+        },
+        ToolSpec {
+            name: "magma_merge".into(),
+            description: "Move every resource from one workspace's state into another. Thin wrapper over magma migrate for the case where every source address moves over verbatim. Requires explicit `confirm: true`.".into(),
+            schema: serde_json::json!({
+                "type":     "object",
+                "required": ["from", "from_state", "to", "to_state", "confirm"],
+                "properties": {
+                    "from":       { "type": "string" },
+                    "from_state": { "type": "string" },
+                    "to":         { "type": "string" },
+                    "to_state":   { "type": "string" },
+                    "dry_run":    { "type": "boolean" },
+                    "confirm":    { "type": "boolean" }
+                }
+            }),
+            destructive: true,
+        },
     ]
+}
+
+fn migration_plan_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type":     "object",
+        "required": ["from", "to", "moves"],
+        "properties": {
+            "from": {
+                "type":     "object",
+                "required": ["name", "state_path"],
+                "properties": {
+                    "name":       { "type": "string" },
+                    "state_path": { "type": "string" }
+                }
+            },
+            "to": {
+                "type":     "object",
+                "required": ["name", "state_path"],
+                "properties": {
+                    "name":       { "type": "string" },
+                    "state_path": { "type": "string" }
+                }
+            },
+            "moves": {
+                "type":  "array",
+                "items": {
+                    "type":     "object",
+                    "required": ["source_address", "target_address"],
+                    "properties": {
+                        "source_address": { "type": "string" },
+                        "target_address": { "type": "string" }
+                    }
+                }
+            },
+            "preserve": {
+                "type": "object",
+                "properties": {
+                    "resource_identity":   { "type": "boolean" },
+                    "tags":                { "type": "boolean" },
+                    "dependent_resources": { "type": "boolean" }
+                }
+            },
+            "dry_run": { "type": "boolean" }
+        }
+    })
 }
 
 fn minimal_schema(params: &[(&str, &str, bool)]) -> serde_json::Value {
@@ -331,6 +474,13 @@ async fn handle_tool_call(
             }))
         }
 
+        // ── Pangea orchestration dispatch (M0.6) ─────────────────
+        "pangea_orchestrate" => dispatch_pangea_orchestrate(params).await,
+        "magma_migrate_dry_run" => dispatch_migrate(params, /*force_dry*/ true).await,
+        "magma_migrate"         => dispatch_migrate(params, /*force_dry*/ false).await,
+        "magma_split"           => dispatch_split(params).await,
+        "magma_merge"           => dispatch_merge(params).await,
+
         // Other tools surface via MCP routing but their full dispatch
         // requires either (a) magma-mcp depending on magma-plan / magma-apply
         // (creating a wider dep graph), or (b) shelling out to the magma
@@ -342,6 +492,214 @@ async fn handle_tool_call(
             "params_received": params,
         })),
     }
+}
+
+// ── M0.6 in-process dispatch (no shelling out to magma binary) ─────
+
+async fn dispatch_migrate(
+    params: &serde_json::Value,
+    force_dry: bool,
+) -> Result<serde_json::Value, McpError> {
+    let mut plan: magma_migrate::MigrationPlan = serde_json::from_value(params.clone())
+        .map_err(|e| McpError::InvalidParams(format!("MigrationPlan: {e}")))?;
+    if force_dry {
+        plan.dry_run = true;
+    }
+    let receipt = magma_migrate::run(plan)
+        .await
+        .map_err(|e| McpError::InvalidParams(format!("migrate: {e}")))?;
+    Ok(serde_json::to_value(receipt)?)
+}
+
+async fn dispatch_split(
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let from        = require_str(params, "from")?;
+    let from_state  = require_str(params, "from_state")?;
+    let to          = require_str(params, "to")?;
+    let to_state    = require_str(params, "to_state")?;
+    let resources   = params.get("resources")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| McpError::InvalidParams("resources array required".into()))?;
+    let dry_run     = params.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if resources.is_empty() {
+        return Err(McpError::InvalidParams("split: resources cannot be empty".into()));
+    }
+
+    let moves: Vec<magma_migrate::ResourceMove> = resources.iter().filter_map(|r| {
+        r.as_str().map(|addr| magma_migrate::ResourceMove {
+            source_address: addr.into(),
+            target_address: addr.into(),
+        })
+    }).collect();
+
+    let plan = magma_migrate::MigrationPlan {
+        from: magma_migrate::WorkspaceRef { name: from.into(), state_path: from_state.into() },
+        to:   magma_migrate::WorkspaceRef { name: to.into(),   state_path: to_state.into()   },
+        moves,
+        preserve: magma_migrate::PreserveFlags::default(),
+        dry_run,
+    };
+    let receipt = magma_migrate::run(plan)
+        .await
+        .map_err(|e| McpError::InvalidParams(format!("split: {e}")))?;
+    Ok(serde_json::to_value(receipt)?)
+}
+
+async fn dispatch_merge(
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let from       = require_str(params, "from")?;
+    let from_state = require_str(params, "from_state")?;
+    let to         = require_str(params, "to")?;
+    let to_state   = require_str(params, "to_state")?;
+    let dry_run    = params.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let from_state_path = std::path::PathBuf::from(from_state);
+    let state = magma_state::read_state(&from_state_path)
+        .await
+        .map_err(|e| McpError::InvalidParams(format!("read source state: {e}")))?;
+
+    let moves: Vec<magma_migrate::ResourceMove> = state.resources.iter().map(|r| {
+        let addr = format!("{}.{}", r.address.type_id.0, r.address.name);
+        magma_migrate::ResourceMove {
+            source_address: addr.clone(),
+            target_address: addr,
+        }
+    }).collect();
+
+    let plan = magma_migrate::MigrationPlan {
+        from: magma_migrate::WorkspaceRef { name: from.into(), state_path: from_state_path },
+        to:   magma_migrate::WorkspaceRef { name: to.into(),   state_path: to_state.into() },
+        moves,
+        preserve: magma_migrate::PreserveFlags::default(),
+        dry_run,
+    };
+    let receipt = magma_migrate::run(plan)
+        .await
+        .map_err(|e| McpError::InvalidParams(format!("merge: {e}")))?;
+    Ok(serde_json::to_value(receipt)?)
+}
+
+#[derive(serde::Deserialize)]
+struct PangeaFlowFile {
+    workspaces: Vec<PangeaFlowWorkspace>,
+    #[serde(default)]
+    edges:      Vec<PangeaFlowEdge>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct PangeaFlowWorkspace {
+    name: String,
+    dir:  std::path::PathBuf,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct PangeaFlowEdge {
+    from:        String,
+    from_output: String,
+    to:          String,
+    to_input:    String,
+}
+
+async fn dispatch_pangea_orchestrate(
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    use magma_backend::Backend as _;
+    use magma_pangea::WorkspaceLoader as _;
+
+    let flow_value = params.get("flow")
+        .ok_or_else(|| McpError::InvalidParams("flow required".into()))?;
+    let flow: PangeaFlowFile = serde_json::from_value(flow_value.clone())
+        .map_err(|e| McpError::InvalidParams(format!("flow: {e}")))?;
+
+    let order = topological_order(&flow)
+        .map_err(|e| McpError::InvalidParams(format!("topo: {e}")))?;
+    let mut outputs_so_far: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    let mut summaries: Vec<serde_json::Value> = vec![];
+
+    for ws_name in order {
+        let entry = flow.workspaces.iter().find(|w| w.name == ws_name)
+            .ok_or_else(|| McpError::InvalidParams(format!("unknown workspace: {ws_name}")))?;
+        let shape = magma_pangea::WorkspaceShape::discover(&entry.dir)
+            .map_err(|e| McpError::InvalidParams(format!("discover {}: {e}", entry.name)))?;
+        let loaded = magma_pangea::TerraformJsonLoader.load(shape)
+            .await
+            .map_err(|e| McpError::InvalidParams(format!("load {}: {e}", entry.name)))?;
+        let cfg = magma_config::Config::from_json(loaded.rendered.clone())
+            .map_err(|e| McpError::InvalidParams(format!("parse {}: {e}", entry.name)))?;
+        let backend = magma_backend::LocalBackend::new(entry.dir.clone());
+        let state = backend.read_state()
+            .await
+            .map_err(|e| McpError::InvalidParams(format!("read state {}: {e}", entry.name)))?;
+        let plan = magma_plan::plan(&cfg, &state)
+            .map_err(|e| McpError::InvalidParams(format!("plan {}: {e}", entry.name)))?;
+
+        let mut workspace_outputs: std::collections::HashMap<String, serde_json::Value> =
+            std::collections::HashMap::new();
+        for (out_name, decl) in &cfg.outputs {
+            workspace_outputs.insert(out_name.clone(), decl.value.clone());
+        }
+        for edge in flow.edges.iter().filter(|e| e.from == entry.name) {
+            if let Some(v) = workspace_outputs.get(&edge.from_output) {
+                outputs_so_far.insert(format!("{}.{}", edge.to, edge.to_input), v.clone());
+            }
+        }
+
+        summaries.push(serde_json::json!({
+            "workspace": entry.name,
+            "plan_id":   hex::encode(plan.id.0),
+            "changes":   plan.resource_changes.len(),
+            "outputs":   workspace_outputs,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "workspaces": summaries,
+        "propagated": outputs_so_far,
+    }))
+}
+
+fn topological_order(flow: &PangeaFlowFile) -> Result<Vec<String>, String> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut indegree: HashMap<String, usize> = flow.workspaces.iter()
+        .map(|w| (w.name.clone(), 0))
+        .collect();
+    for edge in &flow.edges {
+        if !indegree.contains_key(&edge.to) {
+            return Err(format!("edge references unknown workspace: {}", edge.to));
+        }
+        *indegree.entry(edge.to.clone()).or_insert(0) += 1;
+    }
+    let mut queue: VecDeque<String> = indegree.iter()
+        .filter(|&(_, &d)| d == 0).map(|(n, _)| n.clone()).collect();
+    let mut order: Vec<String> = vec![];
+    let mut visited: HashSet<String> = HashSet::new();
+    while let Some(n) = queue.pop_front() {
+        if !visited.insert(n.clone()) { continue; }
+        order.push(n.clone());
+        for edge in flow.edges.iter().filter(|e| e.from == n) {
+            if let Some(d) = indegree.get_mut(&edge.to) {
+                *d = d.saturating_sub(1);
+                if *d == 0 { queue.push_back(edge.to.clone()); }
+            }
+        }
+    }
+    if order.len() < flow.workspaces.len() {
+        return Err("flow has a cycle".into());
+    }
+    Ok(order)
+}
+
+fn require_str<'a>(
+    params: &'a serde_json::Value,
+    key: &str,
+) -> Result<&'a str, McpError> {
+    params.get(key)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams(format!("{key} required")))
 }
 
 async fn read_state_inline(dir: &std::path::Path) -> Result<magma_types::State, McpError> {
@@ -439,4 +797,107 @@ mod tests {
         assert!(required.iter().any(|v| v == "confirm"));
     }
 
+    #[test]
+    fn m06_tools_registered() {
+        let specs = tool_specs();
+        for name in [
+            "pangea_orchestrate", "magma_migrate", "magma_migrate_dry_run",
+            "magma_split", "magma_merge",
+        ] {
+            assert!(specs.iter().any(|t| t.name == name),
+                    "missing M0.6 tool: {name}");
+        }
+        // Destructive gating
+        let destructive_set: std::collections::HashSet<&str> = specs.iter()
+            .filter(|t| t.destructive).map(|t| t.name.as_str()).collect();
+        assert!(destructive_set.contains("magma_migrate"));
+        assert!(destructive_set.contains("magma_split"));
+        assert!(destructive_set.contains("magma_merge"));
+        assert!(!destructive_set.contains("magma_migrate_dry_run"));
+        assert!(!destructive_set.contains("pangea_orchestrate"));
+    }
+
+    #[tokio::test]
+    async fn m06_migrate_dry_run_dispatches_in_process() {
+        // Build a synthetic state in-process, write it to a tempdir,
+        // then drive magma_migrate_dry_run through the JSON-RPC entry
+        // point. The dry-run guarantees nothing on disk changes.
+        use magma_types::{
+            ModulePath, ResourceAddress, ResourceKind, ResourceTypeId,
+            ProviderReference, StateResource, StateInstance, InstanceStatus, State,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let src_path = tmp.path().join("src.tfstate");
+        let dst_path = tmp.path().join("dst.tfstate");
+
+        let resource = StateResource {
+            address: ResourceAddress {
+                module:  ModulePath::default(),
+                kind:    ResourceKind::Managed,
+                type_id: ResourceTypeId("aws_iam_role".into()),
+                name:    "alpha".into(),
+                key:     None,
+            },
+            provider: ProviderReference {
+                source: "hashicorp/aws".into(),
+                name:   "aws".into(),
+                alias:  None,
+            },
+            instances: vec![StateInstance {
+                schema_version: 0,
+                attributes:     serde_json::json!({"name":"alpha"}),
+                private:        vec![],
+                dependencies:   vec![],
+                status:         InstanceStatus::Ready,
+            }],
+        };
+        let state = State {
+            version: 4,
+            terraform_version: "1.7.0".into(),
+            serial:  1,
+            lineage: uuid::Uuid::new_v4(),
+            outputs: Default::default(),
+            resources: vec![resource],
+        };
+        magma_state::write_state(&src_path, &state).await.unwrap();
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id:      serde_json::json!(1),
+            method:  "tools/call/magma_migrate_dry_run".into(),
+            params:  serde_json::json!({
+                "from": { "name": "src", "state_path": src_path },
+                "to":   { "name": "dst", "state_path": dst_path },
+                "moves": [
+                    { "source_address": "aws_iam_role.alpha",
+                      "target_address": "aws_iam_role.alpha" }
+                ],
+                "dry_run": false,  // force_dry should override
+            }),
+        };
+        let resp = dispatch(req).await;
+        assert!(resp.error.is_none(), "dry-run errored: {:?}", resp.error);
+        // Source untouched, destination not written.
+        let src_after = magma_state::read_state(&src_path).await.unwrap();
+        assert_eq!(src_after.resources.len(), 1);
+        assert!(!dst_path.exists(), "dry-run wrote target state");
+    }
+
+    #[tokio::test]
+    async fn m06_destructive_migrate_without_confirm_errs() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id:      serde_json::json!(1),
+            method:  "tools/call/magma_migrate".into(),
+            params:  serde_json::json!({
+                "from": { "name": "x", "state_path": "/tmp/_nope_src.tfstate" },
+                "to":   { "name": "y", "state_path": "/tmp/_nope_dst.tfstate" },
+                "moves": [],
+                "confirm": false,
+            }),
+        };
+        let resp = dispatch(req).await;
+        assert!(resp.error.is_some());
+        assert!(resp.error.unwrap().message.contains("confirm: true"));
+    }
 }

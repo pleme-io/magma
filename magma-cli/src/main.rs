@@ -23,6 +23,8 @@ use clap::{Parser, Subcommand};
 use magma::pangea::WorkspaceLoader as _;
 use magma::backend::Backend as _;
 
+mod tatara_lite;
+
 // ── Drop-in compat: argv[0] sensing ────────────────────────────────
 
 /// Which CLI mode magma is running in. Determined from `argv[0]`'s
@@ -248,6 +250,20 @@ enum Command {
     /// report on "does magma plan this workspace cleanly?" is needed.
     #[command(subcommand)]
     Fixture(FixtureCommand),
+    /// Atomic typed state-organization migration. Moves resources
+    /// between workspaces' state files without recreate. Consumes a
+    /// typed `MigrationPlan` JSON; emits a `MigrationReceipt` JSON
+    /// with BLAKE3 hashes pre/post. Per
+    /// `theory/PANGEA-MAGMA-ORCHESTRATION.md` §III.3 + §V.
+    Migrate(MigrateArgs),
+    /// Split: move a subset of one workspace's resources into a new
+    /// workspace. Thin wrapper over `magma migrate` for the case where
+    /// the target state file is empty.
+    Split(SplitArgs),
+    /// Merge: move every resource from one workspace into another.
+    /// Thin wrapper over `magma migrate` for the case where every
+    /// source address is moved over verbatim.
+    Merge(MergeArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -266,6 +282,57 @@ struct FixtureVerifyArgs {
 #[derive(clap::Args, Debug)]
 struct FixtureVerifyDirArgs {
     dir: PathBuf,
+}
+
+#[derive(clap::Args, Debug)]
+struct MigrateArgs {
+    /// Path to the typed MigrationPlan JSON (see
+    /// `magma_migrate::MigrationPlan`). Pass `-` to read from stdin.
+    plan: PathBuf,
+    /// Override `dry_run` flag in the plan (force preview).
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct SplitArgs {
+    /// Source workspace name.
+    #[arg(long)]
+    from: String,
+    /// Source state file path.
+    #[arg(long)]
+    from_state: PathBuf,
+    /// Target workspace name.
+    #[arg(long)]
+    to: String,
+    /// Target state file path (need not yet exist).
+    #[arg(long)]
+    to_state: PathBuf,
+    /// Resource addresses to split out (repeatable).
+    #[arg(long = "resource")]
+    resources: Vec<String>,
+    /// Preview only — do not write either state file.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct MergeArgs {
+    /// Source workspace name.
+    #[arg(long)]
+    from: String,
+    /// Source state file path.
+    #[arg(long)]
+    from_state: PathBuf,
+    /// Target workspace name.
+    #[arg(long)]
+    to: String,
+    /// Target state file path (need not yet exist).
+    #[arg(long)]
+    to_state: PathBuf,
+    /// Preview only — do not write either state file.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(clap::Args, Debug, Default)]
@@ -423,6 +490,9 @@ fn run(
         Command::Flow(args)    => cmd_flow(args),
         Command::Capabilities  => cmd_capabilities(),
         Command::Fixture(cmd)  => cmd_fixture(cmd),
+        Command::Migrate(args) => cmd_migrate(args),
+        Command::Split(args)   => cmd_split(args),
+        Command::Merge(args)   => cmd_merge(args),
     }
 }
 
@@ -781,7 +851,7 @@ fn cmd_config(cmd: ConfigCommand) -> Result<u8> {
 
 fn cmd_flow(args: FlowArgs) -> Result<u8> {
     // Flow file shape (typed JSON; tatara-lisp .lisp surface compiles
-    // to this same shape in M0.1):
+    // to this same shape in M0.7):
     //
     // {
     //   "workspaces": [
@@ -791,8 +861,27 @@ fn cmd_flow(args: FlowArgs) -> Result<u8> {
     //   "edges": [
     //     { "from": "vpc", "from_output": "vpc_id",
     //       "to":   "cluster", "to_input":  "vpc_id" }
-    //   ]
+    //   ],
+    //   "optimization": {
+    //     "strategy":        "parallel_by_tier",
+    //     "max_concurrency": 4,
+    //     "retries":         { "max": 2, "backoff_ms": 500 }
+    //   }
     // }
+    //
+    // Tatara-lisp surface (M0.7 minimal — `.lisp` / `.tatara` extension):
+    //
+    //   (deforch :name "seph"
+    //     :workspaces (
+    //       (:name "vpc"     :dir "workspaces/seph-vpc")
+    //       (:name "cluster" :dir "workspaces/seph-cluster")
+    //     )
+    //     :edges (
+    //       (:from "vpc" :from-output "vpc_id"
+    //        :to   "cluster" :to-input "vpc_id")
+    //     )
+    //     :optimization (:strategy "parallel_by_tier"
+    //                    :max-concurrency 4))
     //
     // Each workspace dir is a Pangea-rendered Terraform JSON workspace.
     // magma loads + plans each in topological order; output values are
@@ -804,7 +893,19 @@ fn cmd_flow(args: FlowArgs) -> Result<u8> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
         let bytes = tokio::fs::read(&args.flow).await?;
-        let flow: FlowFile = serde_json::from_slice(&bytes)?;
+        let is_lisp = args.flow.extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s == "lisp" || s == "tatara" || s == "scm")
+            .unwrap_or(false);
+        let flow: FlowFile = if is_lisp {
+            let source = std::str::from_utf8(&bytes)
+                .map_err(|e| anyhow::anyhow!("invalid UTF-8 in lisp source: {e}"))?;
+            let value = tatara_lite::parse_deforch(source)
+                .map_err(|e| anyhow::anyhow!("lisp parse: {e}"))?;
+            serde_json::from_value(value)?
+        } else {
+            serde_json::from_slice(&bytes)?
+        };
         let order = topological_order(&flow)?;
         let mut outputs_so_far: std::collections::HashMap<String, serde_json::Value> =
             std::collections::HashMap::new();
@@ -877,6 +978,34 @@ struct FlowFile {
     workspaces: Vec<FlowWorkspace>,
     #[serde(default)]
     edges:      Vec<FlowEdge>,
+    /// Optional typed orchestration hints. M0.4 plumbed; honored once
+    /// `magma flow run` lands its shigoto-wrapped apply path. The
+    /// current plan-only path is sequential regardless of hints.
+    #[serde(default)]
+    #[allow(dead_code)]
+    optimization: Option<OptimizationHints>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+#[allow(dead_code)]
+struct OptimizationHints {
+    #[serde(default)]
+    strategy:         Option<String>,
+    #[serde(default)]
+    max_concurrency:  Option<usize>,
+    #[serde(default)]
+    retries:          Option<OptimizationRetries>,
+    #[serde(default)]
+    timeout_ms:       Option<u64>,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+#[allow(dead_code)]
+struct OptimizationRetries {
+    #[serde(default)]
+    max:        Option<u32>,
+    #[serde(default)]
+    backoff_ms: Option<u64>,
 }
 
 #[derive(serde::Deserialize, Clone)]
@@ -891,6 +1020,114 @@ struct FlowEdge {
     from_output: String,
     to:          String,
     to_input:    String,
+}
+
+// ── Migration / split / merge ──────────────────────────────────────
+
+fn cmd_migrate(args: MigrateArgs) -> Result<u8> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        let raw = if args.plan.as_os_str() == "-" {
+            use tokio::io::AsyncReadExt as _;
+            let mut buf = Vec::new();
+            tokio::io::stdin().read_to_end(&mut buf).await?;
+            buf
+        } else {
+            tokio::fs::read(&args.plan).await?
+        };
+        let mut plan: magma_migrate::MigrationPlan = serde_json::from_slice(&raw)
+            .map_err(|e| anyhow::anyhow!("parse MigrationPlan JSON: {e}"))?;
+        if args.dry_run {
+            plan.dry_run = true;
+        }
+        let receipt = magma_migrate::run(plan)
+            .await
+            .map_err(|e| anyhow::anyhow!("migrate: {e}"))?;
+        println!("{}", serde_json::to_string_pretty(&receipt)?);
+        Ok::<u8, anyhow::Error>(0)
+    })
+}
+
+fn cmd_split(args: SplitArgs) -> Result<u8> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        if args.resources.is_empty() {
+            anyhow::bail!("magma split: at least one --resource is required");
+        }
+        let moves: Vec<magma_migrate::ResourceMove> = args
+            .resources
+            .iter()
+            .map(|addr| magma_migrate::ResourceMove {
+                source_address: addr.clone(),
+                target_address: addr.clone(),
+            })
+            .collect();
+        let plan = magma_migrate::MigrationPlan {
+            from: magma_migrate::WorkspaceRef {
+                name:       args.from,
+                state_path: args.from_state,
+            },
+            to: magma_migrate::WorkspaceRef {
+                name:       args.to,
+                state_path: args.to_state,
+            },
+            moves,
+            preserve: magma_migrate::PreserveFlags::default(),
+            dry_run:  args.dry_run,
+        };
+        let receipt = magma_migrate::run(plan)
+            .await
+            .map_err(|e| anyhow::anyhow!("split: {e}"))?;
+        println!("{}", serde_json::to_string_pretty(&receipt)?);
+        Ok::<u8, anyhow::Error>(0)
+    })
+}
+
+fn cmd_merge(args: MergeArgs) -> Result<u8> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        // Load the source state to enumerate every resource address; the
+        // plan-builder is `magma merge` itself — operators don't need to
+        // hand-author the address list.
+        let bytes = tokio::fs::read(&args.from_state).await
+            .map_err(|e| anyhow::anyhow!("read {:?}: {e}", args.from_state))?;
+        let from_state: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|e| anyhow::anyhow!("parse source state JSON: {e}"))?;
+        let resources = from_state
+            .get("resources")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| anyhow::anyhow!("source state has no resources array"))?;
+        let mut moves: Vec<magma_migrate::ResourceMove> = Vec::new();
+        for r in resources {
+            let kind = r.get("type").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("resource missing `type`"))?;
+            let name = r.get("name").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("resource missing `name`"))?;
+            let addr = format!("{kind}.{name}");
+            moves.push(magma_migrate::ResourceMove {
+                source_address: addr.clone(),
+                target_address: addr,
+            });
+        }
+        let plan = magma_migrate::MigrationPlan {
+            from: magma_migrate::WorkspaceRef {
+                name:       args.from,
+                state_path: args.from_state,
+            },
+            to: magma_migrate::WorkspaceRef {
+                name:       args.to,
+                state_path: args.to_state,
+            },
+            moves,
+            preserve: magma_migrate::PreserveFlags::default(),
+            dry_run:  args.dry_run,
+        };
+        let receipt = magma_migrate::run(plan)
+            .await
+            .map_err(|e| anyhow::anyhow!("merge: {e}"))?;
+        println!("{}", serde_json::to_string_pretty(&receipt)?);
+        Ok::<u8, anyhow::Error>(0)
+    })
 }
 
 fn topological_order(flow: &FlowFile) -> Result<Vec<String>> {

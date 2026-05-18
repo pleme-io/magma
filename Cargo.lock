@@ -1197,6 +1197,7 @@ dependencies = [
  "hex",
  "magma",
  "magma-arch-test",
+ "magma-migrate",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -1232,14 +1233,40 @@ name = "magma-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "hex",
+ "magma-arch-test",
+ "magma-backend",
  "magma-config",
+ "magma-migrate",
+ "magma-pangea",
+ "magma-plan",
  "magma-state",
  "magma-types",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "magma-migrate"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chrono",
+ "hex",
+ "magma-state",
+ "magma-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
