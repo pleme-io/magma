@@ -28,4 +28,6 @@ tracing      = { workspace = true }
 async-trait  = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
+proptest   = { workspace = true }
+serde_json = { workspace = true }
+uuid       = { workspace = true }

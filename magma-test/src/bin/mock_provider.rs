@@ -26,6 +26,10 @@ use base64::engine::general_purpose::STANDARD as B64;
 use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose};
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
+// Identity + ServerTlsConfig stay imported for the M0.x re-enable of
+// server-side mTLS once tonic+rustls cert-acceptance is debugged
+// against go-plugin's strict client-CA validation.
+#[allow(unused_imports)]
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 
