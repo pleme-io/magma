@@ -192,3 +192,100 @@ pub fn assert_all_laws(cfg: &Config) {
     assert_apply_bumps_serial(cfg);
     assert_destroy_round_trip(cfg);
 }
+
+// ── Proptest strategy: random Pangea-shaped workspaces ────────────
+
+/// Generate a random architecturally-valid Pangea workspace shape.
+/// Returns a `Config` parsed from synthesized JSON with:
+/// * 1-3 random providers in `terraform.required_providers`
+/// * 1-6 resources whose types match a declared provider
+/// * 0-3 outputs referencing existing resource attributes
+///
+/// Every generated shape passes
+/// `architecture::assert_no_dangling_references` by construction.
+/// Useful for proptest-based exploration of the law battery's
+/// robustness against arbitrary shapes.
+///
+/// Requires the `strategies` feature (in addition to `workspace-laws`).
+#[cfg(feature = "strategies")]
+pub fn arb_workspace_config() -> impl proptest::prelude::Strategy<Value = Config> {
+    use proptest::prelude::*;
+    use serde_json::{json, Map, Value};
+
+    // Canonical providers + the resource types Pangea emits for each.
+    // Kept small to keep the proptest fast; the structure matters
+    // more than coverage.
+    let providers: &[(&str, &str, &[&str])] = &[
+        ("aws",        "hashicorp/aws",         &["aws_vpc", "aws_subnet", "aws_iam_role"]),
+        ("cloudflare", "cloudflare/cloudflare", &["cloudflare_zone", "cloudflare_record"]),
+        ("kubernetes", "hashicorp/kubernetes",  &["kubernetes_namespace", "kubernetes_service_account"]),
+        ("datadog",    "datadog/datadog",       &["datadog_monitor"]),
+        ("tailscale",  "tailscale/tailscale",   &["tailscale_acl"]),
+    ];
+
+    // Pick 1-3 providers, then for each provider pick 1-N resource types.
+    let provider_indices = proptest::collection::vec(0..providers.len(), 1..=3)
+        .prop_map(|mut v| {
+            v.sort();
+            v.dedup();
+            v
+        });
+
+    (provider_indices,
+     proptest::collection::vec("[a-z][a-z0-9_]{0,7}", 1..=6))
+        .prop_map(move |(provider_ids, names)| {
+            let mut required_providers = Map::new();
+            let mut provider_block     = Map::new();
+            let mut resource_block     = Map::new();
+            let mut all_addresses      = vec![];
+
+            for &pid in &provider_ids {
+                let (pname, psource, ptypes) = providers[pid];
+                required_providers.insert(
+                    pname.into(),
+                    json!({ "source": psource }),
+                );
+                provider_block.insert(
+                    pname.into(),
+                    json!({}),
+                );
+
+                // For each name, deterministically pick a type
+                // based on the name's first char.
+                for (i, name) in names.iter().enumerate() {
+                    let type_id = ptypes[(i + pid) % ptypes.len()];
+                    let type_bucket = resource_block
+                        .entry(type_id.to_string())
+                        .or_insert_with(|| Value::Object(Map::new()))
+                        .as_object_mut()
+                        .unwrap();
+                    type_bucket.insert(
+                        format!("{name}_{pid}"),
+                        json!({}),
+                    );
+                    all_addresses.push((type_id.to_string(), format!("{name}_{pid}")));
+                }
+            }
+
+            let mut top = Map::new();
+            top.insert("terraform".into(), json!({
+                "required_providers": required_providers,
+            }));
+            top.insert("provider".into(), Value::Object(provider_block));
+            top.insert("resource".into(), Value::Object(resource_block));
+
+            // 0-3 outputs that reference existing addresses (no dangling).
+            if !all_addresses.is_empty() {
+                let mut output_block = Map::new();
+                for (i, (ty, name)) in all_addresses.iter().take(3).enumerate() {
+                    output_block.insert(
+                        format!("out_{i}"),
+                        json!({ "value": format!("${{{ty}.{name}.id}}") }),
+                    );
+                }
+                top.insert("output".into(), Value::Object(output_block));
+            }
+
+            Config::from_json(Value::Object(top)).expect("synth produced invalid Config")
+        })
+}
