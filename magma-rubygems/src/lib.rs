@@ -43,6 +43,7 @@ pub mod lockfile;
 pub mod manifest;
 pub mod native;
 pub mod nix;
+pub mod nixhash;
 pub mod resolver;
 pub mod runtime;
 pub mod source;

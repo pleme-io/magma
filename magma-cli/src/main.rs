@@ -284,6 +284,12 @@ enum RubygemsCommand {
     ParseGemfile(RubygemsFileArgs),
     /// Parse a Gemfile.lock + emit the typed Lockfile as JSON.
     ParseLock(RubygemsFileArgs),
+    /// Parse a *.gemspec + emit the typed GemSpec as JSON.
+    ParseGemspec(RubygemsFileArgs),
+    /// Compute the nix-base32 sha256 hash of a file (the format
+    /// nix-prefetch-url emits + `fetchurl` accepts). Used to fill
+    /// the M3-pending sha256 placeholders in gemset.nix.
+    NixHashSha256(RubygemsFileArgs),
 }
 
 #[derive(Args, Debug)]
@@ -589,6 +595,25 @@ async fn cmd_rubygems(cmd: RubygemsCommand) -> Result<u8> {
             let lock = magma_rubygems::lockfile::parse(&source)
                 .map_err(|e| anyhow::anyhow!("parse Gemfile.lock: {e}"))?;
             println!("{}", serde_json::to_string_pretty(&lock)?);
+            Ok(0)
+        }
+        RubygemsCommand::ParseGemspec(args) => {
+            let source = read_input(&args)?;
+            let spec = magma_rubygems::gemspec_parser::parse(&source)
+                .map_err(|e| anyhow::anyhow!("parse gemspec: {e}"))?;
+            println!("{}", serde_json::to_string_pretty(&spec)?);
+            Ok(0)
+        }
+        RubygemsCommand::NixHashSha256(args) => {
+            let bytes = if args.path == "-" {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                std::io::stdin().read_to_end(&mut buf)?;
+                buf
+            } else {
+                std::fs::read(&args.path)?
+            };
+            println!("{}", magma_rubygems::nixhash::sha256_nix(&bytes));
             Ok(0)
         }
     }
