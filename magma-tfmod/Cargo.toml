@@ -1,0 +1,18 @@
+[package]
+name        = "magma-tfmod"
+description = "magma — Terraform module ingestion + Pangea typed primitive generation. Downloads modules from registry.terraform.io / Terraform Cloud / Git, parses their typed variables + outputs (HCL2), emits a Pangea::Architectures::* Ruby wrapper that calls the module via the existing TF provider gRPC protocol. Every TF module ever published becomes a programmable Pangea primitive. Per theory/MAGMA-AS-PLATFORM.md M9+M10."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }

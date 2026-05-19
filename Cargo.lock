@@ -1452,6 +1452,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "magma-nix"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "magma-operator-backend"
 version = "0.1.0"
 dependencies = [
@@ -1699,6 +1710,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "magma-tfmod"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
