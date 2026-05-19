@@ -35,6 +35,7 @@ members = [
     "magma-controller",
     "magma-cli",
     "magma-test",
+    "magma-rubygems",
 ]
 
 [workspace.package]
@@ -88,6 +89,7 @@ magma-budget    = { path = "magma-budget" }
 magma-metrics   = { path = "magma-metrics" }
 magma-controller = { path = "magma-controller" }
 magma-test      = { path = "magma-test" }
+magma-rubygems  = { path = "magma-rubygems" }
 
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──
 shikumi          = { git = "https://github.com/pleme-io/shikumi" }
