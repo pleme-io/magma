@@ -22,5 +22,6 @@ tokio          = { workspace = true }
 tracing        = { workspace = true }
 
 [dev-dependencies]
-futures = { workspace = true }
-chrono  = { workspace = true }
+futures  = { workspace = true }
+chrono   = { workspace = true }
+proptest = { workspace = true }
