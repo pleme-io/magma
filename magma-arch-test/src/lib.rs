@@ -462,6 +462,72 @@ pub async fn verify_directory(dir: impl AsRef<Path>) -> Result<AggregateReport, 
     })
 }
 
+/// Run the full substrate law battery against every `.tf.json` file
+/// under `dir`. Per-fixture pass/fail; emits the same typed
+/// `AggregateReport` shape `verify_directory` uses. Use this for
+/// CI gates: a `failed > 0` means at least one workspace violated a
+/// universal substrate contract.
+pub async fn run_law_battery_directory(
+    dir: impl AsRef<Path>,
+) -> Result<AggregateReport, HarnessError> {
+    let started_at = Utc::now().to_rfc3339();
+    let dir = dir.as_ref();
+    let mut workspaces: Vec<NamedReport> = Vec::new();
+
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.is_file() && p.extension().is_some_and(|ext| ext == "json") {
+                Some(p)
+            } else {
+                None
+            }
+        })
+        .collect();
+    entries.sort();
+
+    let mut passed = 0;
+    let mut failed = 0;
+    for entry in &entries {
+        let name = entry
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        let harness = WorkspaceTestHarness::new(entry.clone());
+        match harness.assert_all_substrate_laws().await {
+            Ok(report) => {
+                passed += 1;
+                workspaces.push(NamedReport {
+                    name,
+                    status: "passed".into(),
+                    report: Some(report),
+                    error:  None,
+                });
+            }
+            Err(e) => {
+                failed += 1;
+                workspaces.push(NamedReport {
+                    name,
+                    status: "violated".into(),
+                    report: None,
+                    error:  Some(e.to_string()),
+                });
+            }
+        }
+    }
+
+    Ok(AggregateReport {
+        total_workspaces: entries.len(),
+        passed,
+        failed,
+        started_at,
+        finished_at: Utc::now().to_rfc3339(),
+        workspaces,
+    })
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]

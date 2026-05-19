@@ -276,6 +276,10 @@ enum FixtureCommand {
     /// law. Use this from CI / pangea-operator preflight / Ruby
     /// rspec to assert the universal substrate contracts.
     LawBattery(FixtureVerifyArgs),
+    /// Run the law battery over every `.tf.json` under a directory.
+    /// Aggregate JSON report; exit 1 if any workspace violated a
+    /// law. Designed for CI gates over fleet workspaces.
+    LawBatteryDir(FixtureVerifyDirArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -573,6 +577,25 @@ async fn cmd_fixture(cmd: FixtureCommand) -> Result<u8> {
                         serde_json::to_string_pretty(&serde_json::json!({
                             "path":   args.path,
                             "status": "violated",
+                            "error":  e.to_string(),
+                        }))?,
+                    );
+                    Ok(1)
+                }
+            }
+        }
+        FixtureCommand::LawBatteryDir(args) => {
+            match magma_arch_test::run_law_battery_directory(&args.dir).await {
+                Ok(agg) => {
+                    println!("{}", serde_json::to_string_pretty(&agg)?);
+                    Ok(if agg.failed == 0 { 0 } else { 1 })
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "dir":    args.dir,
+                            "status": "failed",
                             "error":  e.to_string(),
                         }))?,
                     );
