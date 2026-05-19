@@ -2,7 +2,7 @@
 //! Gemfile.lock end-to-end. Proves the parser handles the actual
 //! shape Pangea workspaces use today.
 
-use magma_rubygems::{attestation::attest_lockfile, lockfile::parse, source::Source};
+use magma_rubygems::{attestation::attest_lockfile, lockfile::{emit, parse}, source::Source};
 
 const FIXTURE: &str = include_str!("fixtures/pangea_architectures.Gemfile.lock");
 
@@ -51,6 +51,42 @@ fn attestation_over_real_lockfile_is_well_formed() {
     // Second pass should be deterministic.
     let b = attest_lockfile(&lock);
     assert_eq!(a, b);
+}
+
+#[test]
+fn real_pangea_lockfile_emit_roundtrips_structurally() {
+    // M0 acceptance gate completion: parse the real Pangea
+    // Gemfile.lock → emit → re-parse yields a structurally
+    // equivalent Lockfile.
+    let lock1 = parse(FIXTURE).unwrap();
+    let emitted = emit(&lock1).unwrap();
+    let lock2 = parse(&emitted).expect("re-parse of emitted lockfile must succeed");
+
+    // Bundler version preserved.
+    assert_eq!(lock1.bundler_version, lock2.bundler_version);
+
+    // Same set of resolved gems (by name + version + source kind).
+    let by_id = |l: &magma_rubygems::lockfile::Lockfile| {
+        let mut v: Vec<(String, String, &'static str)> = l.gems.iter().map(|g| (
+            g.name.clone(),
+            g.version.clone(),
+            match g.source {
+                Source::Path { .. }        => "path",
+                Source::Git { .. }         => "git",
+                Source::RubyGemsOrg { .. } => "rubygems",
+            },
+        )).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(by_id(&lock1), by_id(&lock2),
+        "round-trip lost gems or changed source kinds");
+
+    // BLAKE3 attestation: emitted+re-parsed has same attestation
+    // as the original (because attestation hashes the typed
+    // shape, not the text).
+    assert_eq!(attest_lockfile(&lock1), attest_lockfile(&lock2),
+        "attestation must survive structural round-trip");
 }
 
 #[test]
