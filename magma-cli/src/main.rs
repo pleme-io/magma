@@ -270,6 +270,12 @@ enum FixtureCommand {
     Verify(FixtureVerifyArgs),
     /// Verify every `.tf.json` under a directory; emit aggregate JSON.
     VerifyDir(FixtureVerifyDirArgs),
+    /// Run the full universal substrate law battery against a
+    /// workspace. Architecture composition + workspace lifecycle
+    /// laws — fails fast with a JSON report on the first broken
+    /// law. Use this from CI / pangea-operator preflight / Ruby
+    /// rspec to assert the universal substrate contracts.
+    LawBattery(FixtureVerifyArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -546,6 +552,34 @@ async fn cmd_fixture(cmd: FixtureCommand) -> Result<u8> {
                 Ok(1)
             }
         },
+        FixtureCommand::LawBattery(args) => {
+            let harness = magma_arch_test::WorkspaceTestHarness::new(args.path.clone());
+            match harness.assert_all_substrate_laws().await {
+                Ok(report) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "path":   args.path,
+                            "status": "passed",
+                            "laws":   ["architecture::assert_all_laws", "workspace::assert_all_laws"],
+                            "report": report,
+                        }))?,
+                    );
+                    Ok(0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "path":   args.path,
+                            "status": "violated",
+                            "error":  e.to_string(),
+                        }))?,
+                    );
+                    Ok(1)
+                }
+            }
+        }
     }
 }
 

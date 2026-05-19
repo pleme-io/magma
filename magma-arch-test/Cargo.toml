@@ -18,7 +18,7 @@ magma-config    = { workspace = true }
 magma-pangea    = { workspace = true }
 magma-plan      = { workspace = true }
 magma-state     = { workspace = true }
-magma-test-laws = { workspace = true, features = ["architecture-laws", "workspace-laws"] }
+magma-test-laws = { workspace = true, features = ["preflight"] }
 serde           = { workspace = true }
 serde_json      = { workspace = true }
 thiserror       = { workspace = true }

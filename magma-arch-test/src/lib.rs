@@ -253,9 +253,11 @@ impl WorkspaceTestHarness {
     /// "does this Pangea-rendered workspace pass every universal
     /// substrate contract?"
     ///
-    /// Delegates to magma-test-laws which panics on the first
-    /// violation with a descriptive message naming the broken law.
-    /// Suitable for `#[tokio::test]`.
+    /// Internally uses `magma_test_laws::preflight` wrappers so
+    /// every law violation surfaces as a typed `HarnessError`
+    /// (instead of a panic). Suitable for both `#[tokio::test]`
+    /// AND production preflight (pangea-operator startup, magma CLI
+    /// flight-check).
     pub async fn assert_all_substrate_laws(&self) -> Result<WorkspaceReport, HarnessError> {
         let workspace_dir = self.materialize_workspace_dir().await?;
         let shape = WorkspaceShape::discover(workspace_dir.path())
@@ -271,10 +273,18 @@ impl WorkspaceTestHarness {
             .map_err(|e| HarnessError::Load(e.to_string()))?;
         let cfg = Config::from_json(loaded.rendered)
             .map_err(|e| HarnessError::Parse(e.to_string()))?;
-        // Architecture composition laws — shape invariants.
-        magma_test_laws::architecture::assert_all_laws(&cfg);
-        // Workspace lifecycle laws — plan/apply/destroy round-trip.
-        magma_test_laws::workspace::assert_all_laws(&cfg);
+        // Architecture composition + workspace lifecycle laws as
+        // typed Results (no panic propagation).
+        if let Err(v) = magma_test_laws::preflight::check_architecture(&cfg) {
+            return Err(HarnessError::ExpectationViolated(format!(
+                "{} — {}", v.law, v.message,
+            )));
+        }
+        if let Err(v) = magma_test_laws::preflight::check_workspace(&cfg) {
+            return Err(HarnessError::ExpectationViolated(format!(
+                "{} — {}", v.law, v.message,
+            )));
+        }
         // Final report from one canonical plan run.
         let plan_out = plan(&cfg, &empty_state())
             .map_err(|e| HarnessError::Plan(e.to_string()))?;
