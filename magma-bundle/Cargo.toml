@@ -25,4 +25,5 @@ blake3         = { workspace = true }
 hex            = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio    = { workspace = true }
+proptest = { workspace = true }
