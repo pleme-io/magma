@@ -100,6 +100,32 @@ async fn every_fixture_plan_id_is_deterministic() {
     }
 }
 
+/// The headline test: every fixture passes the FULL substrate law
+/// battery — architecture composition + workspace lifecycle. One
+/// line per fixture (delegated to `assert_all_substrate_laws`),
+/// every law from `magma-test-laws` is exercised.
+///
+/// A regression in any layer (architecture composition checks,
+/// workspace plan determinism, apply convergence, destroy
+/// round-trip, apply enumeration, serial monotonicity) surfaces
+/// here with a clear message naming the broken law.
+#[tokio::test]
+async fn every_fixture_passes_all_substrate_laws() {
+    let root = fixtures_root();
+    for entry in std::fs::read_dir(&root).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "json") {
+            let harness = WorkspaceTestHarness::new(path.clone());
+            harness
+                .assert_all_substrate_laws()
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("fixture {} failed substrate law battery: {e}", path.display())
+                });
+        }
+    }
+}
+
 #[tokio::test]
 async fn coverage_spans_diverse_provider_sources() {
     let root = fixtures_root();

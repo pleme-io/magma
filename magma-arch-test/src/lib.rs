@@ -149,7 +149,7 @@ impl WorkspaceTestHarness {
             .unwrap_or_else(|| std::ffi::OsString::from("rendered.tf.json"));
         let staged = tmp.path().join(&name);
         tokio::fs::copy(&self.workspace_path, &staged).await?;
-        Ok(WorkspaceDir::Staged(tmp, staged))
+        Ok(WorkspaceDir::Staged(tmp))
     }
 
     // ── Assertion helpers ─────────────────────────────────────────
@@ -247,20 +247,53 @@ impl WorkspaceTestHarness {
         }
         Ok(report_from(&cfg, &p1, shape_kind))
     }
+
+    /// Run the full architecture-composition + workspace-lifecycle
+    /// law battery against this workspace. One-line entrypoint for
+    /// "does this Pangea-rendered workspace pass every universal
+    /// substrate contract?"
+    ///
+    /// Delegates to magma-test-laws which panics on the first
+    /// violation with a descriptive message naming the broken law.
+    /// Suitable for `#[tokio::test]`.
+    pub async fn assert_all_substrate_laws(&self) -> Result<WorkspaceReport, HarnessError> {
+        let workspace_dir = self.materialize_workspace_dir().await?;
+        let shape = WorkspaceShape::discover(workspace_dir.path())
+            .map_err(|e| HarnessError::Discover(e.to_string()))?;
+        let shape_kind = match &shape {
+            WorkspaceShape::PangeaRuby     { .. } => "PangeaRuby",
+            WorkspaceShape::TerraformJson  { .. } => "TerraformJson",
+        }
+        .to_string();
+        let loaded = TerraformJsonLoader
+            .load(shape)
+            .await
+            .map_err(|e| HarnessError::Load(e.to_string()))?;
+        let cfg = Config::from_json(loaded.rendered)
+            .map_err(|e| HarnessError::Parse(e.to_string()))?;
+        // Architecture composition laws — shape invariants.
+        magma_test_laws::architecture::assert_all_laws(&cfg);
+        // Workspace lifecycle laws — plan/apply/destroy round-trip.
+        magma_test_laws::workspace::assert_all_laws(&cfg);
+        // Final report from one canonical plan run.
+        let plan_out = plan(&cfg, &empty_state())
+            .map_err(|e| HarnessError::Plan(e.to_string()))?;
+        Ok(report_from(&cfg, &plan_out, shape_kind))
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
 
 enum WorkspaceDir {
     Direct(PathBuf),
-    Staged(tempfile::TempDir, PathBuf),
+    Staged(tempfile::TempDir),
 }
 
 impl WorkspaceDir {
     fn path(&self) -> &Path {
         match self {
-            Self::Direct(p) => p,
-            Self::Staged(tmp, _) => tmp.path(),
+            Self::Direct(p)   => p,
+            Self::Staged(tmp) => tmp.path(),
         }
     }
 }

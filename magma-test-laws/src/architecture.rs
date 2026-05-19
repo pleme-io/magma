@@ -104,8 +104,8 @@ pub fn assert_no_dangling_references(cfg: &Config) {
     // `count.*` / `path.*` / `terraform.*` (HCL-builtin) ref that
     // the renderer leaves intact.
     for r in refs {
-        let head = first_two_segments(&r);
-        let is_builtin = ["var", "local", "each", "count", "path", "terraform", "self"]
+        let head = reference_head(&r);
+        let is_builtin = ["var.", "local.", "each.", "count.", "path.", "terraform.", "self."]
             .iter()
             .any(|b| r.starts_with(b));
         if is_builtin {
@@ -223,15 +223,46 @@ fn collect_references(v: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
-/// Extract the first two `.`-separated segments of a reference path
-/// — e.g. `aws_vpc.main.id` → `aws_vpc.main`. Used to compare
-/// references against declared addresses.
-fn first_two_segments(reference: &str) -> String {
-    let parts: Vec<&str> = reference.splitn(3, '.').collect();
-    match parts.len() {
-        0 => String::new(),
-        1 => parts[0].to_string(),
-        _ => format!("{}.{}", parts[0], parts[1]),
+/// Extract the address head of a reference path. Two cases:
+///
+/// * managed resource ref: `aws_vpc.main.id` → `aws_vpc.main`
+/// * data source ref: `data.aws_vpc.main.id` → `data.aws_vpc.main`
+/// * module ref: `module.foo.output_x` → `module.foo`
+/// * output ref: `output.bar` → `output.bar`
+///
+/// Used to compare references against declared addresses.
+fn reference_head(reference: &str) -> String {
+    let parts: Vec<&str> = reference.split('.').collect();
+    match parts.first().copied() {
+        Some("data") => {
+            // data.<type>.<name>... → 3-segment head
+            match (parts.get(1), parts.get(2)) {
+                (Some(t), Some(n)) => format!("data.{t}.{n}"),
+                _                  => reference.to_string(),
+            }
+        }
+        Some("module") => {
+            // module.<name>.<output>... → 2-segment head
+            match parts.get(1) {
+                Some(n) => format!("module.{n}"),
+                _       => reference.to_string(),
+            }
+        }
+        Some("output") => {
+            // output.<name> — already the head
+            match parts.get(1) {
+                Some(n) => format!("output.{n}"),
+                _       => reference.to_string(),
+            }
+        }
+        _ => {
+            // Managed resource: <type>.<name>... → 2-segment head
+            match (parts.first(), parts.get(1)) {
+                (Some(t), Some(n)) => format!("{t}.{n}"),
+                (Some(t), None)    => t.to_string(),
+                _                  => reference.to_string(),
+            }
+        }
     }
 }
 

@@ -1160,6 +1160,7 @@ dependencies = [
  "magma-pangea",
  "magma-plan",
  "magma-state",
+ "magma-test-laws",
  "magma-types",
  "serde",
  "serde_json",
