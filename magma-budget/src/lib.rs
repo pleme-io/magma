@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
-use magma_converge::{Outcome, Plan, Reconciler, ReconcilerError};
+use magma_converge::{ApplyMetrics, NoMetrics, Outcome, Plan, Reconciler, ReconcilerError};
 
 // ── ConcurrencyLimit ──────────────────────────────────────────────
 
@@ -128,21 +128,43 @@ impl RetryPolicy {
 // ── BudgetedReconciler — the wrapper ──────────────────────────────
 
 /// Wraps any `Reconciler` with a concurrency limit + retry policy.
-/// Every call obeys both.
+/// Every call obeys both. Optional `metrics` handle (any
+/// `ApplyMetrics` impl, including `magma_metrics::Metrics`) auto-
+/// emits in_flight gauge ticks at apply boundaries.
 pub struct BudgetedReconciler<R: Reconciler> {
     inner:       R,
     concurrency: ConcurrencyLimit,
     retry:       RetryPolicy,
+    metrics:     Arc<dyn ApplyMetrics>,
 }
 
 impl<R: Reconciler> BudgetedReconciler<R> {
+    /// Build without instrumentation. Use `with_metrics` when you
+    /// want auto-emitted in_flight gauges.
     pub fn new(inner: R, concurrency: ConcurrencyLimit, retry: RetryPolicy) -> Self {
-        Self { inner, concurrency, retry }
+        Self {
+            inner,
+            concurrency,
+            retry,
+            metrics: Arc::new(NoMetrics),
+        }
+    }
+
+    /// Build with a metrics handle. Every `read_state` / `apply`
+    /// call auto-emits `apply_started` / `apply_finished` ticks.
+    pub fn with_metrics(
+        inner:       R,
+        concurrency: ConcurrencyLimit,
+        retry:       RetryPolicy,
+        metrics:     Arc<dyn ApplyMetrics>,
+    ) -> Self {
+        Self { inner, concurrency, retry, metrics }
     }
 
     /// Run an async closure with concurrency-limited semantics +
-    /// retry. Used internally for the trait methods that mutate.
-    async fn with_budget<F, Fut, T>(&self, mut op: F) -> Result<T, ReconcilerError>
+    /// retry + auto-emitted metrics ticks. Used internally for the
+    /// trait methods that mutate.
+    async fn with_budget<F, Fut, T>(&self, kind: &str, mut op: F) -> Result<T, ReconcilerError>
     where
         F:   FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<T, ReconcilerError>>,
@@ -154,6 +176,14 @@ impl<R: Reconciler> BudgetedReconciler<R> {
             .acquire_owned()
             .await
             .map_err(|e| ReconcilerError::Other(format!("semaphore closed: {e}")))?;
+
+        // Bump in_flight on entry; decrement on every exit path
+        // (success / err / retry-exhaustion) via the RAII guard.
+        self.metrics.apply_started(kind);
+        let _guard = InFlightGuard {
+            metrics: Arc::clone(&self.metrics),
+            kind:    kind.to_string(),
+        };
 
         let mut last_err: Option<ReconcilerError> = None;
         for attempt in 0..=self.retry.max_retries {
@@ -176,6 +206,20 @@ impl<R: Reconciler> BudgetedReconciler<R> {
     }
 }
 
+/// RAII guard pairing `apply_started` with `apply_finished` so the
+/// gauge decrements on every exit path (including panics + early
+/// returns from retry exhaustion).
+struct InFlightGuard {
+    metrics: Arc<dyn ApplyMetrics>,
+    kind:    String,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.metrics.apply_finished(&self.kind);
+    }
+}
+
 #[async_trait]
 impl<R: Reconciler> Reconciler for BudgetedReconciler<R> {
     fn kind(&self) -> &'static str {
@@ -183,17 +227,18 @@ impl<R: Reconciler> Reconciler for BudgetedReconciler<R> {
     }
 
     async fn read_state(&self) -> Result<Value, ReconcilerError> {
-        self.with_budget(|| self.inner.read_state()).await
+        let kind = self.inner.kind();
+        self.with_budget(kind, || self.inner.read_state()).await
     }
 
     fn compute_plan(&self, config: &Value, state: &Value) -> Result<Plan, ReconcilerError> {
-        // compute_plan is pure + synchronous — no need to use the
-        // budget (no I/O, no contention).
+        // compute_plan is pure + synchronous — no budget, no metrics.
         self.inner.compute_plan(config, state)
     }
 
     async fn apply(&self, plan: &Plan) -> Result<Outcome, ReconcilerError> {
-        self.with_budget(|| self.inner.apply(plan)).await
+        let kind = self.inner.kind();
+        self.with_budget(kind, || self.inner.apply(plan)).await
     }
 }
 

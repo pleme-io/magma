@@ -23,7 +23,7 @@ use prometheus::{
 };
 use thiserror::Error;
 
-use magma_converge::{ChangeSeverity, Outcome, Plan};
+use magma_converge::{ApplyMetrics, ChangeSeverity, Outcome, Plan};
 use magma_drift::{DriftDecision, DriftReport};
 
 #[derive(Debug, Error)]
@@ -227,6 +227,18 @@ impl Metrics {
     }
 }
 
+/// `Metrics` satisfies the convergence substrate's `ApplyMetrics`
+/// trait so `BudgetedReconciler::with_metrics(Arc::new(metrics))`
+/// auto-emits `in_flight_applies` without any consumer-side glue.
+impl ApplyMetrics for Metrics {
+    fn apply_started(&self, kind: &str) {
+        Metrics::apply_started(self, kind);
+    }
+    fn apply_finished(&self, kind: &str) {
+        Metrics::apply_finished(self, kind);
+    }
+}
+
 // ── Label helpers ─────────────────────────────────────────────────
 
 fn action_label(a: magma_converge::Action) -> &'static str {
@@ -394,6 +406,23 @@ mod tests {
         assert!(text.contains(r#"magma_in_flight_applies{kind="inmemory_kv"} 2"#));
 
         metrics.apply_finished("inmemory_kv");
+        let text2 = render(&registry);
+        assert!(text2.contains(r#"magma_in_flight_applies{kind="inmemory_kv"} 1"#));
+    }
+
+    #[test]
+    fn metrics_implements_apply_metrics_trait() {
+        // Lock the trait-wiring contract: any consumer with
+        // `Arc::new(Metrics)` as a `dyn ApplyMetrics` gets typed
+        // gauge ticks without prometheus glue.
+        use magma_converge::ApplyMetrics;
+        let (registry, metrics) = fresh();
+        let trait_obj: std::sync::Arc<dyn ApplyMetrics> = std::sync::Arc::new(metrics);
+        trait_obj.apply_started("inmemory_kv");
+        trait_obj.apply_started("inmemory_kv");
+        let text = render(&registry);
+        assert!(text.contains(r#"magma_in_flight_applies{kind="inmemory_kv"} 2"#));
+        trait_obj.apply_finished("inmemory_kv");
         let text2 = render(&registry);
         assert!(text2.contains(r#"magma_in_flight_applies{kind="inmemory_kv"} 1"#));
     }

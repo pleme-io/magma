@@ -241,6 +241,35 @@ pub trait Reconciler: Send + Sync {
 /// Type-erased Arc<dyn Reconciler> for engine storage.
 pub type SharedReconciler = Arc<dyn Reconciler>;
 
+// ── ApplyMetrics — instrumentation seam ────────────────────────────
+
+/// Lightweight metrics hook that wrappers (e.g. `BudgetedReconciler`)
+/// call at apply boundaries. magma-converge stays free of Prometheus
+/// / metrics-rs / OpenTelemetry — implementors plug in whatever they
+/// want. `magma-metrics::Metrics` is the canonical Prometheus impl.
+///
+/// Per `theory/CONVERGENCE-SUBSTRATE.md` §IV.3.
+pub trait ApplyMetrics: Send + Sync {
+    /// Called when a reconciler-driven `apply` begins. Implementors
+    /// typically increment an `in_flight` gauge.
+    fn apply_started(&self, kind: &str);
+
+    /// Called when an apply finishes (success OR failure).
+    /// Implementors typically decrement the same gauge.
+    fn apply_finished(&self, kind: &str);
+}
+
+/// No-op implementation — useful when callers don't want
+/// instrumentation. `Arc::new(NoMetrics)` satisfies the trait
+/// without any side effects.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoMetrics;
+
+impl ApplyMetrics for NoMetrics {
+    fn apply_started(&self,  _kind: &str) {}
+    fn apply_finished(&self, _kind: &str) {}
+}
+
 // ── Convenience helpers ───────────────────────────────────────────
 
 /// Build an `Outcome` shape matching the plan_id + kind, with the

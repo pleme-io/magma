@@ -221,19 +221,31 @@ pub fn classify(plan: &Plan, policy: &DriftPolicy) -> DriftReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result_kind", rename_all = "snake_case")]
 pub enum ReconcileResult {
-    /// Plan was empty — no changes needed.
+    /// Plan was empty — no changes needed. Carries the (empty) Plan
+    /// for downstream consumers that need a typed artifact even for
+    /// no-op reconciles (e.g. magma-bundle).
     NoChange {
-        plan_id: magma_converge::PlanId,
+        plan:    Plan,
     },
     /// Policy permitted every change; applied successfully.
     Applied {
+        plan:    Plan,
+        outcome: Outcome,
+        report:  DriftReport,
+    },
+    /// Apply ran but some resource changes failed. The Outcome
+    /// carries the per-resource breakdown; the operator can
+    /// inspect `outcome.failed`. Distinguished from `Applied` so
+    /// callers + the FSM can route to a Failed phase.
+    AppliedWithFailures {
+        plan:    Plan,
         outcome: Outcome,
         report:  DriftReport,
     },
     /// Policy held the reconcile for approval. Operator must
     /// resume via a separate `apply_held` call after acknowledging.
     HeldForApproval {
-        plan_id: magma_converge::PlanId,
+        plan:    Plan,
         report:  DriftReport,
         /// Number of changes awaiting approval (subset of report).
         held:    usize,
@@ -241,11 +253,58 @@ pub enum ReconcileResult {
     /// Policy refused at least one change. Reconcile aborts;
     /// operator surfaces the refusal to the user.
     Refused {
-        plan_id: magma_converge::PlanId,
+        plan:    Plan,
         report:  DriftReport,
         /// Number of refused changes.
         refused: usize,
     },
+}
+
+impl ReconcileResult {
+    /// Convenience: the Plan id observed in this result. Every
+    /// variant has a plan, so this is total.
+    pub fn plan_id(&self) -> &magma_converge::PlanId {
+        match self {
+            Self::NoChange            { plan }          => &plan.id,
+            Self::Applied             { plan, .. }      => &plan.id,
+            Self::AppliedWithFailures { plan, .. }      => &plan.id,
+            Self::HeldForApproval     { plan, .. }      => &plan.id,
+            Self::Refused             { plan, .. }      => &plan.id,
+        }
+    }
+
+    /// The Plan that drove this reconcile (carries kind + changes).
+    pub fn plan(&self) -> &Plan {
+        match self {
+            Self::NoChange            { plan }          => plan,
+            Self::Applied             { plan, .. }      => plan,
+            Self::AppliedWithFailures { plan, .. }      => plan,
+            Self::HeldForApproval     { plan, .. }      => plan,
+            Self::Refused             { plan, .. }      => plan,
+        }
+    }
+
+    /// Outcome, when one ran (Applied or AppliedWithFailures).
+    pub fn outcome(&self) -> Option<&Outcome> {
+        match self {
+            Self::Applied             { outcome, .. } => Some(outcome),
+            Self::AppliedWithFailures { outcome, .. } => Some(outcome),
+            _ => None,
+        }
+    }
+
+    /// DriftReport carried by every variant except NoChange (where
+    /// an empty plan means no drift). For NoChange the caller can
+    /// `classify(&result.plan(), &policy)` to get an empty report.
+    pub fn report(&self) -> Option<&DriftReport> {
+        match self {
+            Self::NoChange            { .. }            => None,
+            Self::Applied             { report, .. }    => Some(report),
+            Self::AppliedWithFailures { report, .. }    => Some(report),
+            Self::HeldForApproval     { report, .. }    => Some(report),
+            Self::Refused             { report, .. }    => Some(report),
+        }
+    }
 }
 
 /// Compose `read_state → compute_plan → classify → decide → apply`
@@ -267,28 +326,26 @@ pub async fn reconcile_with_policy<R: Reconciler>(
     let plan  = reconciler.compute_plan(config, &state)?;
 
     if plan.is_noop() {
-        return Ok(ReconcileResult::NoChange { plan_id: plan.id });
+        return Ok(ReconcileResult::NoChange { plan });
     }
 
     let report = classify(&plan, policy);
 
     if report.summary.refused > 0 {
-        return Ok(ReconcileResult::Refused {
-            plan_id: plan.id,
-            refused: report.summary.refused,
-            report,
-        });
+        let refused = report.summary.refused;
+        return Ok(ReconcileResult::Refused { plan, refused, report });
     }
     if report.summary.awaiting_approval > 0 {
-        return Ok(ReconcileResult::HeldForApproval {
-            plan_id: plan.id,
-            held:    report.summary.awaiting_approval,
-            report,
-        });
+        let held = report.summary.awaiting_approval;
+        return Ok(ReconcileResult::HeldForApproval { plan, held, report });
     }
 
     let outcome = reconciler.apply(&plan).await?;
-    Ok(ReconcileResult::Applied { outcome, report })
+    Ok(if outcome.fully_succeeded() {
+        ReconcileResult::Applied { plan, outcome, report }
+    } else {
+        ReconcileResult::AppliedWithFailures { plan, outcome, report }
+    })
 }
 
 /// Dedupe consecutive observations of the same drift by fingerprint.
@@ -475,13 +532,17 @@ mod tests {
         let result = reconcile_with_policy(&r, &cfg, &DriftPolicy::conservative_default())
             .await
             .unwrap();
-        match result {
-            ReconcileResult::Applied { outcome, report } => {
+        match &result {
+            ReconcileResult::Applied { outcome, report, plan } => {
                 assert_eq!(outcome.applied.len(), 2);
                 assert_eq!(report.summary.auto_corrected_with_alert, 2);
+                assert_eq!(plan.change_count(), 2);
             }
             other => panic!("expected Applied, got {other:?}"),
         }
+        // Accessors work uniformly across variants.
+        assert!(result.outcome().is_some());
+        assert_eq!(result.plan().change_count(), 2);
         // State now matches config.
         assert_eq!(r.snapshot().get("a"), Some(&json!(1)));
         assert_eq!(r.snapshot().get("b"), Some(&json!(2)));
@@ -499,13 +560,19 @@ mod tests {
         let result = reconcile_with_policy(&r, &cfg, &DriftPolicy::conservative_default())
             .await
             .unwrap();
-        match result {
-            ReconcileResult::HeldForApproval { held, plan_id, .. } => {
-                assert_eq!(held, 1);
-                assert_eq!(plan_id.0.len(), 64);
+        match &result {
+            ReconcileResult::HeldForApproval { held, plan, .. } => {
+                assert_eq!(*held, 1);
+                assert_eq!(plan.id.0.len(), 64);
+                // Plan carries the full change set, not just the id.
+                assert_eq!(plan.changes.len(), 1);
             }
             other => panic!("expected HeldForApproval, got {other:?}"),
         }
+        // Helper accessors.
+        assert_eq!(result.plan().change_count(), 1);
+        assert!(result.report().is_some());
+        assert!(result.outcome().is_none());
         // State NOT mutated.
         assert!(r.snapshot().contains_key("doomed"));
     }
@@ -514,7 +581,6 @@ mod tests {
     async fn reconcile_with_policy_refused_aborts_apply() {
         let r = InMemoryKvReconciler::new();
         let cfg = json!({ "x": 1 });
-        // Custom policy: refuse Create against this prefix.
         let policy = DriftPolicy {
             rules: vec![PolicyRule {
                 name:           "no-creates".into(),
@@ -526,13 +592,32 @@ mod tests {
             fallback: DriftDecision::AutoCorrect,
         };
         let result = reconcile_with_policy(&r, &cfg, &policy).await.unwrap();
-        match result {
-            ReconcileResult::Refused { refused, .. } => {
-                assert_eq!(refused, 1);
+        match &result {
+            ReconcileResult::Refused { refused, plan, .. } => {
+                assert_eq!(*refused, 1);
+                assert_eq!(plan.change_count(), 1);
             }
             other => panic!("expected Refused, got {other:?}"),
         }
-        // State NOT mutated — refused changes never apply.
         assert!(r.snapshot().is_empty());
+    }
+
+    #[test]
+    fn accessors_total_across_variants() {
+        // Lock in that plan() + plan_id() are total — every variant
+        // carries them. Catches future variant additions that forget
+        // to thread them through.
+        use magma_converge::{change, Action};
+        let plan = Plan::new("k", vec![change("a", Action::Create, None, Some(json!(1)))]);
+        let drift = classify(&plan, &DriftPolicy::conservative_default());
+        let variants = vec![
+            ReconcileResult::NoChange { plan: plan.clone() },
+            ReconcileResult::Refused  { plan: plan.clone(), report: drift.clone(), refused: 1 },
+            ReconcileResult::HeldForApproval { plan: plan.clone(), report: drift.clone(), held: 1 },
+        ];
+        for v in &variants {
+            assert!(v.plan().change_count() <= 1);
+            assert_eq!(v.plan_id().0.len(), 64);
+        }
     }
 }

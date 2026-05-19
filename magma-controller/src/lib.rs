@@ -27,18 +27,17 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
 use magma_budget::BudgetedReconciler;
 use magma_bundle::{Bundle, BundleError};
-use magma_converge::{Outcome, Plan, Reconciler, ReconcilerError};
-use magma_drift::{classify, reconcile_with_policy, DriftPolicy, DriftReport, ReconcileResult};
+use magma_converge::{Reconciler, ReconcilerError};
+use magma_drift::{classify, reconcile_with_policy, DriftPolicy, ReconcileResult};
 use magma_fsm::{LifecycleState, Phase, TransitionError};
 use magma_metrics::Metrics;
-use magma_stream::{EventPayload, PlanStream};
+use magma_stream::PlanStream;
 
 // ── Errors ────────────────────────────────────────────────────────
 
@@ -54,37 +53,12 @@ pub enum ControllerError {
 
 // ── Typed terminal result ─────────────────────────────────────────
 
-/// What a single `reconcile(...)` call settled on.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ControllerResult {
-    /// Plan was empty; reconcile is at Stable with no state mutation.
-    NoChange,
-    /// Plan applied successfully; reconcile reached Stable.
-    Applied {
-        outcome: Outcome,
-    },
-    /// Plan apply was partially or fully unsuccessful; reconcile
-    /// transitioned to Failed.
-    AppliedWithFailures {
-        outcome: Outcome,
-    },
-    /// Plan held for human approval — reconcile is at Approving.
-    /// Caller drives further (the held plan_id is in the bundle).
-    HeldForApproval {
-        held: usize,
-    },
-    /// Policy refused; reconcile is at Refused. Terminal until
-    /// operator intervention.
-    Refused {
-        refused: usize,
-    },
-}
-
-/// Output of one `reconcile(...)` call.
+/// Output of one `reconcile(...)` call. Wraps the typed
+/// `ReconcileResult` from magma-drift (no duplicate enum) plus the
+/// FSM lifecycle snapshot and the tamper-evident Bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControllerOutcome {
-    pub result:    ControllerResult,
+    pub result:    ReconcileResult,
     pub bundle:    Bundle,
     pub lifecycle: LifecycleState,
 }
@@ -92,7 +66,7 @@ pub struct ControllerOutcome {
 impl ControllerOutcome {
     /// Convenience: did the reconcile reach Stable?
     pub fn fully_succeeded(&self) -> bool {
-        matches!(self.result, ControllerResult::NoChange | ControllerResult::Applied { .. })
+        matches!(self.result, ReconcileResult::NoChange { .. } | ReconcileResult::Applied { .. })
             && self.lifecycle.current == Phase::Stable
     }
 }
@@ -141,141 +115,65 @@ impl<R: Reconciler> ReconcileController<R> {
     /// Run the full reconcile loop end-to-end.
     pub async fn reconcile(&self, config: &Value) -> Result<ControllerOutcome, ControllerError> {
         let mut lifecycle = LifecycleState::new();
-
-        // Idle → Planning
         lifecycle.transition(Phase::Planning, None, "controller: trigger")?;
 
-        // Read state + compute plan via reconcile_with_policy (the
-        // composed dispatch). The metrics + stream + FSM all hook
-        // into the boundaries.
-        self.metrics.apply_started(self.kind()); // gauge bump-on-entry
-        let result = reconcile_with_policy(&*self.reconciler, config, &self.policy).await;
-        self.metrics.apply_finished(self.kind());
+        // The composed dispatch — magma-budget owns concurrency +
+        // retry; magma-drift owns classify + decide + apply.
+        let result = reconcile_with_policy(&*self.reconciler, config, &self.policy).await?;
 
-        let result = result?;
-
-        match &result {
-            ReconcileResult::NoChange { plan_id } => {
-                // Stable path with zero plan.
-                let plan = Plan {
-                    id:         plan_id.clone(),
-                    kind:       self.kind().to_string(),
-                    created_at: Utc::now(),
-                    changes:    vec![],
-                };
-                self.metrics.record_plan(&plan);
-                self.stream.emit_plan(self.kind(), &plan).await;
-                lifecycle.transition(Phase::Stable, Some(plan_id.clone()), "no changes")?;
-                let drift = classify(&plan, &self.policy);
-                self.stream.emit_drift(&drift).await;
-                let bundle = self.build_bundle(plan, None, drift, lifecycle.clone()).await?;
-                Ok(ControllerOutcome { result: ControllerResult::NoChange, bundle, lifecycle })
-            }
-            ReconcileResult::Refused { plan_id, refused, report } => {
-                // Refused — emit drift + bundle, transition straight to Refused.
-                let plan = self.synthesize_plan(plan_id, &report.events.iter().map(|_| {}).collect::<Vec<_>>());
-                self.metrics.record_drift(report);
-                self.stream.emit_drift(report).await;
-                lifecycle.transition(Phase::Refused, Some(plan_id.clone()),
-                    format!("policy refused {} change(s)", refused))?;
-                let bundle = self.build_bundle(plan, None, report.clone(), lifecycle.clone()).await?;
-                Ok(ControllerOutcome {
-                    result: ControllerResult::Refused { refused: *refused },
-                    bundle,
-                    lifecycle,
-                })
-            }
-            ReconcileResult::HeldForApproval { plan_id, held, report } => {
-                // Held — record + bundle, FSM → Approving.
-                let plan = self.synthesize_plan(plan_id, &report.events.iter().map(|_| {}).collect::<Vec<_>>());
-                self.metrics.record_drift(report);
-                self.stream.emit_drift(report).await;
-                lifecycle.transition(Phase::Approving, Some(plan_id.clone()),
-                    format!("policy requires approval on {} change(s)", held))?;
-                let bundle = self.build_bundle(plan, None, report.clone(), lifecycle.clone()).await?;
-                Ok(ControllerOutcome {
-                    result: ControllerResult::HeldForApproval { held: *held },
-                    bundle,
-                    lifecycle,
-                })
-            }
-            ReconcileResult::Applied { outcome, report } => {
-                // Applied path — drift was clean, apply ran, transition
-                // through Applying → Verifying → Stable (or Failed).
-                let plan = self.synthesize_plan(&outcome.plan_id, &report.events.iter().map(|_| {}).collect::<Vec<_>>());
-                self.metrics.record_plan(&plan);
-                self.metrics.record_drift(report);
-                self.metrics.record_outcome(outcome);
-                self.stream.emit_plan(self.kind(), &plan).await;
-                self.stream.emit_drift(report).await;
-                self.stream.emit_outcome(outcome).await;
-
-                lifecycle.transition(Phase::Applying, Some(outcome.plan_id.clone()), "applying")?;
-                lifecycle.transition(Phase::Verifying, Some(outcome.plan_id.clone()), "applied")?;
-
-                let (final_result, final_phase, reason) = if outcome.fully_succeeded() {
-                    (
-                        ControllerResult::Applied { outcome: outcome.clone() },
-                        Phase::Stable,
-                        "verified, no drift".to_string(),
-                    )
-                } else {
-                    (
-                        ControllerResult::AppliedWithFailures { outcome: outcome.clone() },
-                        Phase::Failed,
-                        format!("{} resource(s) failed apply", outcome.failed.len()),
-                    )
-                };
-                lifecycle.transition(final_phase, Some(outcome.plan_id.clone()), reason)?;
-
-                let bundle = self
-                    .build_bundle(plan, Some(outcome.clone()), report.clone(), lifecycle.clone())
-                    .await?;
-                Ok(ControllerOutcome { result: final_result, bundle, lifecycle })
-            }
+        // Universal metric + stream emission via the typed
+        // ReconcileResult accessors — no per-variant branching.
+        let plan_id = result.plan_id().clone();
+        self.metrics.record_plan(result.plan());
+        self.stream.emit_plan(self.kind(), result.plan()).await;
+        if let Some(report) = result.report() {
+            self.metrics.record_drift(report);
+            self.stream.emit_drift(report).await;
         }
-    }
-
-    /// Build a synthetic plan shape from a plan_id when the underlying
-    /// `reconcile_with_policy` doesn't surface the full Plan (the
-    /// Drift report carries enough metadata for the Bundle).
-    fn synthesize_plan(&self, plan_id: &magma_converge::PlanId, _events_placeholder: &[()])
-        -> Plan
-    {
-        Plan {
-            id:         plan_id.clone(),
-            kind:       self.kind().to_string(),
-            created_at: Utc::now(),
-            // The controller's caller can read the full Plan via
-            // an extra round-trip if they need the changes list.
-            // For the Bundle's canonical projection, the plan_id +
-            // kind are enough (the DriftReport carries the full
-            // change set).
-            changes:    vec![],
+        if let Some(outcome) = result.outcome() {
+            self.metrics.record_outcome(outcome);
+            self.stream.emit_outcome(outcome).await;
         }
-    }
 
-    /// Pack everything into a typed Bundle.
-    async fn build_bundle(
-        &self,
-        plan:      Plan,
-        outcome:   Option<Outcome>,
-        drift:     DriftReport,
-        lifecycle: LifecycleState,
-    ) -> Result<Bundle, BundleError> {
-        Bundle::new(
+        // Drive the FSM through phases based on the typed result kind.
+        let (final_phase, reason) = match &result {
+            ReconcileResult::NoChange { .. } => (Phase::Stable, "no changes".into()),
+            ReconcileResult::Refused { refused, .. } => {
+                (Phase::Refused, format!("policy refused {refused} change(s)"))
+            }
+            ReconcileResult::HeldForApproval { held, .. } => {
+                (Phase::Approving, format!("policy requires approval on {held} change(s)"))
+            }
+            ReconcileResult::Applied { .. } => {
+                lifecycle.transition(Phase::Applying,  Some(plan_id.clone()), "applying")?;
+                lifecycle.transition(Phase::Verifying, Some(plan_id.clone()), "applied")?;
+                (Phase::Stable, "verified, no drift".into())
+            }
+            ReconcileResult::AppliedWithFailures { outcome, .. } => {
+                lifecycle.transition(Phase::Applying,  Some(plan_id.clone()), "applying")?;
+                lifecycle.transition(Phase::Verifying, Some(plan_id.clone()), "applied with failures")?;
+                (Phase::Failed, format!("{} resource(s) failed apply", outcome.failed.len()))
+            }
+        };
+        lifecycle.transition(final_phase, Some(plan_id), reason)?;
+
+        let drift_for_bundle = match result.report() {
+            Some(report) => report.clone(),
+            None         => classify(result.plan(), &self.policy),
+        };
+        let bundle = Bundle::new(
             self.kind(),
             self.workspace.clone(),
-            plan,
-            outcome,
-            drift,
-            lifecycle,
-            // The controller's stream's events aren't in the bundle
-            // by default — the caller can attach them via
-            // Bundle::derive_id if they want chain-attestation.
+            result.plan().clone(),
+            result.outcome().cloned(),
+            drift_for_bundle,
+            lifecycle.clone(),
             vec![],
-        )
+        )?;
+
+        Ok(ControllerOutcome { result, bundle, lifecycle })
     }
+
 }
 
 /// Erased ReconcileController surface, useful when storing many
@@ -331,7 +229,7 @@ mod tests {
         let (controller, _registry) = make_controller();
         // Empty config + empty state → no plan, FSM → Stable.
         let outcome = controller.reconcile(&json!({})).await.unwrap();
-        assert!(matches!(outcome.result, ControllerResult::NoChange));
+        assert!(matches!(outcome.result, ReconcileResult::NoChange { .. }));
         assert_eq!(outcome.lifecycle.current, Phase::Stable);
         assert!(outcome.fully_succeeded());
     }
@@ -341,18 +239,21 @@ mod tests {
         let (controller, _registry) = make_controller();
         // Config with two creates → all Functional → AutoCorrectWithAlert → applied.
         let outcome = controller.reconcile(&json!({ "a": 1, "b": 2 })).await.unwrap();
-        match outcome.result {
-            ControllerResult::Applied { outcome: o } => {
+        match &outcome.result {
+            ReconcileResult::Applied { outcome: o, plan, .. } => {
                 assert!(o.fully_succeeded());
                 assert_eq!(o.applied.len(), 2);
+                // Plan now carries the full change set.
+                assert_eq!(plan.change_count(), 2);
             }
             other => panic!("expected Applied, got {other:?}"),
         }
         assert_eq!(outcome.lifecycle.current, Phase::Stable);
-        // FSM walked: Idle → Planning → Applying → Verifying → Stable
         assert_eq!(outcome.lifecycle.len(), 4);
         let phases: Vec<Phase> = outcome.lifecycle.history.iter().map(|t| t.to).collect();
         assert_eq!(phases, vec![Phase::Planning, Phase::Applying, Phase::Verifying, Phase::Stable]);
+        // Bundle carries the full plan, not the empty-changes hack.
+        assert_eq!(outcome.bundle.change_count(), 2);
     }
 
     #[tokio::test]
@@ -378,7 +279,13 @@ mod tests {
         );
 
         let outcome = controller.reconcile(&json!({})).await.unwrap();
-        assert!(matches!(outcome.result, ControllerResult::HeldForApproval { held: 1 }));
+        match &outcome.result {
+            ReconcileResult::HeldForApproval { held, plan, .. } => {
+                assert_eq!(*held, 1);
+                assert_eq!(plan.change_count(), 1);
+            }
+            other => panic!("expected HeldForApproval, got {other:?}"),
+        }
         assert_eq!(outcome.lifecycle.current, Phase::Approving);
         assert!(!outcome.fully_succeeded());
     }
@@ -408,7 +315,13 @@ mod tests {
         let controller = ReconcileController::new(budgeted, policy, stream, metrics, "ws-refuse");
 
         let outcome = controller.reconcile(&json!({ "x": 1 })).await.unwrap();
-        assert!(matches!(outcome.result, ControllerResult::Refused { refused: 1 }));
+        match &outcome.result {
+            ReconcileResult::Refused { refused, plan, .. } => {
+                assert_eq!(*refused, 1);
+                assert_eq!(plan.change_count(), 1);
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
         assert_eq!(outcome.lifecycle.current, Phase::Refused);
     }
 
