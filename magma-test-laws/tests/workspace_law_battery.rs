@@ -124,3 +124,37 @@ fn apply_enumerates_all_changes_for_real_workspace() {
 fn apply_bumps_serial_for_real_workspace() {
     assert_apply_bumps_serial(&vpc_workspace());
 }
+
+// ── Property: import absorbs externally-discovered resources ───────
+
+#[test]
+fn import_absorbs_a_preexisting_iam_role() {
+    use magma_types::{InstanceStatus, ModulePath, ProviderReference, ResourceAddress,
+                      ResourceKind, ResourceTypeId, StateInstance, StateResource};
+    let cluster = cluster_workspace();
+    assert_import_absorbs(&cluster, |state| {
+        // Simulate `magma import aws_iam_role.cluster` finding a
+        // pre-existing role with id "cluster-role-id".
+        state.resources.push(StateResource {
+            address: ResourceAddress {
+                module:  ModulePath::root(),
+                kind:    ResourceKind::Managed,
+                type_id: ResourceTypeId("aws_iam_role".into()),
+                name:    "cluster".into(),
+                key:     None,
+            },
+            provider: ProviderReference {
+                source: "hashicorp/aws".into(),
+                name:   "aws".into(),
+                alias:  None,
+            },
+            instances: vec![StateInstance {
+                schema_version: 0,
+                attributes:     serde_json::json!({"name": "cluster-role", "id": "cluster-role-id"}),
+                private:        vec![],
+                dependencies:   vec![],
+                status:         InstanceStatus::Ready,
+            }],
+        });
+    });
+}

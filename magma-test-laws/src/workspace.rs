@@ -137,10 +137,54 @@ pub fn assert_apply_bumps_serial(cfg: &Config) {
     );
 }
 
+// ── Law 6: import absorbs externally-discovered resources ──────────
+
+/// Given a state seeded with externally-discovered resources whose
+/// addresses match declarations in `cfg`, planning produces NO
+/// Create actions for those addresses. This is the "tofu import"
+/// + magma-discover adoption flow: when an operator imports a
+/// live resource into the typed state, the next plan must absorb
+/// it (treating it as managed), not propose to re-create it.
+///
+/// `seed_state_with` is invoked once with a fresh empty State so
+/// the caller can populate it with whatever import simulation
+/// shape they want (e.g. a single aws_iam_role with id "node").
+/// The function then asserts the planner sees no Create for the
+/// resources the seed inserted.
+pub fn assert_import_absorbs(
+    cfg: &Config,
+    seed_state_with: impl FnOnce(&mut magma_types::State),
+) {
+    let mut state = empty_state();
+    seed_state_with(&mut state);
+    let seeded_addresses: std::collections::HashSet<String> = state
+        .resources
+        .iter()
+        .map(|r| format!("{}.{}", r.address.type_id.0, r.address.name))
+        .collect();
+    if seeded_addresses.is_empty() {
+        return; // vacuously satisfied
+    }
+    let p = plan(cfg, &state).expect("plan against seeded state failed");
+    for change in &p.resource_changes {
+        let addr = format!("{}.{}", change.address.type_id.0, change.address.name);
+        if seeded_addresses.contains(&addr) {
+            assert!(
+                !matches!(change.action, Action::Create),
+                "Workspace law violated: import absorption failed — imported {addr} planned as Create (should be NoOp or Update)",
+            );
+        }
+    }
+}
+
 // ── Composite ─────────────────────────────────────────────────────
 
 /// Run every workspace lifecycle law. Panics on the first violation
 /// with a clear message naming the broken law.
+///
+/// Does NOT include `assert_import_absorbs` — that one is opt-in
+/// because it requires the caller to provide a seed function for
+/// the imported resources.
 pub fn assert_all_laws(cfg: &Config) {
     assert_plan_deterministic(cfg);
     assert_apply_enumerates_all_changes(cfg);
