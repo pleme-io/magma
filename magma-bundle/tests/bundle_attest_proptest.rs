@@ -9,44 +9,17 @@
 //! Per `theory/CONVERGENCE-SUBSTRATE.md` §VI (attested bundles).
 
 use magma_bundle::{Bundle, BundleError};
-use magma_converge::{change, Action, AppliedChange, Outcome, Plan};
+use magma_converge::{Action, AppliedChange, Outcome, Plan};
 use magma_drift::{classify, DriftPolicy};
-use magma_fsm::{LifecycleState, Phase};
-use magma_stream::{Event, EventPayload};
+use magma_fsm::Phase;
+use magma_stream::EventPayload;
+use magma_test_laws::strategies::{arb_event_chain, arb_lifecycle_happy_walk, arb_plan};
 use chrono::Utc;
 use proptest::prelude::*;
 
-// ── Generators ────────────────────────────────────────────────────
-
-fn arb_action() -> impl Strategy<Value = Action> {
-    prop_oneof![
-        Just(Action::Create),
-        Just(Action::Update),
-        Just(Action::Delete),
-        Just(Action::Replace),
-        Just(Action::NoOp),
-    ]
-}
-
-fn arb_plan() -> impl Strategy<Value = Plan> {
-    (
-        "[a-z][a-z_]{2,11}",
-        proptest::collection::vec(
-            (
-                "[a-z][a-z0-9_]{0,15}\\.[a-z][a-z0-9_]{0,15}",
-                arb_action(),
-            ),
-            0..=8,
-        ),
-    )
-        .prop_map(|(kind, changes_spec)| {
-            let changes = changes_spec
-                .into_iter()
-                .map(|(addr, act)| change(addr, act, None, None))
-                .collect();
-            Plan::new(kind, changes)
-        })
-}
+// ── Local generator for an Outcome derived from a Plan ─────────────
+// (Plans + lifecycle + audit chains come from shared strategies; the
+// Outcome is plan-derived so it stays local.)
 
 fn arb_outcome(plan: &Plan) -> Outcome {
     let applied = plan
@@ -68,50 +41,13 @@ fn arb_outcome(plan: &Plan) -> Outcome {
     }
 }
 
-fn arb_lifecycle() -> impl Strategy<Value = LifecycleState> {
-    // Random number of happy-path transitions.
-    (0usize..=4usize).prop_map(|n| {
-        let mut l = LifecycleState::new();
-        let walk = [
-            Phase::Planning,
-            Phase::Applying,
-            Phase::Verifying,
-            Phase::Stable,
-        ];
-        for p in walk.iter().take(n) {
-            l.transition(*p, None, "test").unwrap();
-        }
-        l
-    })
-}
-
-fn arb_audit() -> impl Strategy<Value = Vec<Event>> {
-    proptest::collection::vec("[a-z]{1,6}", 0..=5).prop_map(|messages| {
-        let mut events = vec![];
-        let mut prev_hash = "0".repeat(64);
-        for (i, msg) in messages.iter().enumerate() {
-            let e = Event::new(
-                i as u64,
-                EventPayload::Custom {
-                    category: "t".into(),
-                    message:  msg.clone(),
-                },
-                prev_hash.clone(),
-            );
-            prev_hash = e.hash.clone();
-            events.push(e);
-        }
-        events
-    })
-}
-
 fn arb_bundle() -> impl Strategy<Value = Bundle> {
     (
         "[a-z]{2,12}",       // kind
         "[a-z][a-z0-9-]{2,15}", // workspace
         arb_plan(),
-        arb_lifecycle(),
-        arb_audit(),
+        arb_lifecycle_happy_walk(),
+        arb_event_chain(5),
         any::<bool>(),       // include outcome?
     )
         .prop_map(|(kind, workspace, plan, lifecycle, audit, has_outcome)| {

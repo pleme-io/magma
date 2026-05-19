@@ -28,6 +28,9 @@
 
 #![deny(unsafe_code)]
 
+#[cfg(feature = "strategies")]
+pub mod strategies;
+
 use magma_converge::Reconciler;
 use serde_json::Value;
 

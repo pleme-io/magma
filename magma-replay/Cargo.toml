@@ -22,6 +22,7 @@ thiserror      = { workspace = true }
 chrono         = { workspace = true }
 
 [dev-dependencies]
-tokio    = { workspace = true }
-tempfile = { workspace = true }
-proptest = { workspace = true }
+tokio           = { workspace = true }
+tempfile        = { workspace = true }
+proptest        = { workspace = true }
+magma-test-laws = { workspace = true, features = ["strategies"] }

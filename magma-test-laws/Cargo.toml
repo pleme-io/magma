@@ -12,10 +12,21 @@ authors.workspace      = true
 [lints]
 workspace = true
 
+[features]
+default    = []
+# Opt into the shared proptest strategy library. Pulls in proptest
+# + magma-stream + magma-fsm so test crates that only need the
+# law battery don't pay for them.
+strategies = ["dep:proptest", "dep:magma-stream", "dep:magma-fsm"]
+
 [dependencies]
 magma-converge = { workspace = true }
 serde_json     = { workspace = true }
 tokio          = { workspace = true }
+# Optional, gated behind `strategies`:
+proptest     = { workspace = true, optional = true }
+magma-stream = { workspace = true, optional = true }
+magma-fsm    = { workspace = true, optional = true }
 
 [dev-dependencies]
 async-trait   = { workspace = true }

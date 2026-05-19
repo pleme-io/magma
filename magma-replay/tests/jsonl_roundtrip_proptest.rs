@@ -14,58 +14,10 @@
 
 use std::sync::Arc;
 
-use magma_converge::PlanId;
 use magma_replay::{parse_jsonl_path, replay_from_jsonl_path};
 use magma_stream::{verify_chain, EventPayload, InMemorySink, JsonLinesSink, PlanStream};
+use magma_test_laws::strategies::arb_event_payload;
 use proptest::prelude::*;
-
-// ── Generator (mirrors chain_proptest in magma-stream) ─────────────
-
-fn arb_payload() -> impl Strategy<Value = EventPayload> {
-    prop_oneof![
-        ("[a-z]{3,12}", "[a-f0-9]{64}", 0usize..32usize).prop_map(|(r, p, c)| {
-            EventPayload::PlanComputed {
-                reconciler: r,
-                plan_id:    PlanId(p),
-                changes:    c,
-            }
-        }),
-        (
-            "[a-z]{3,12}",
-            "[a-f0-9]{64}",
-            0usize..32usize,
-            0usize..16usize,
-            0usize..16usize,
-            0usize..16usize,
-            0usize..16usize,
-        )
-            .prop_map(|(r, p, t, ac, acw, aw, rf)| EventPayload::DriftClassified {
-                reconciler:                r,
-                plan_id:                   PlanId(p),
-                total:                     t,
-                auto_corrected:            ac,
-                auto_corrected_with_alert: acw,
-                awaiting_approval:         aw,
-                refused:                   rf,
-            }),
-        (
-            "[a-z]{3,12}",
-            "[a-f0-9]{64}",
-            0usize..32usize,
-            0usize..16usize,
-        )
-            .prop_map(|(r, p, a, f)| EventPayload::ApplyOutcome {
-                reconciler: r,
-                plan_id:    PlanId(p),
-                applied:    a,
-                failed:     f,
-            }),
-        ("[a-z]{3,12}", "[a-z ]{0,40}").prop_map(|(c, m)| EventPayload::Custom {
-            category: c,
-            message:  m,
-        }),
-    ]
-}
 
 // Emit the payloads through a PlanStream backed by BOTH an
 // in-memory sink (the canonical reference) AND a JsonLinesSink at
@@ -92,7 +44,7 @@ proptest! {
 
     #[test]
     fn jsonl_roundtrip_yields_identical_events(
-        payloads in proptest::collection::vec(arb_payload(), 1..16),
+        payloads in proptest::collection::vec(arb_event_payload(), 1..16),
     ) {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("audit.jsonl");
@@ -117,7 +69,7 @@ proptest! {
 
     #[test]
     fn parsed_chain_passes_verify_chain(
-        payloads in proptest::collection::vec(arb_payload(), 1..16),
+        payloads in proptest::collection::vec(arb_event_payload(), 1..16),
     ) {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("audit.jsonl");
@@ -138,7 +90,7 @@ proptest! {
 
     #[test]
     fn replay_from_jsonl_returns_trusted_report(
-        payloads in proptest::collection::vec(arb_payload(), 1..16),
+        payloads in proptest::collection::vec(arb_event_payload(), 1..16),
     ) {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("audit.jsonl");

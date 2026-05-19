@@ -8,65 +8,10 @@
 //!
 //! Per `theory/CONVERGENCE-SUBSTRATE.md` §IV.2 (tamper evidence).
 
-use magma_converge::PlanId;
 use magma_stream::{verify_chain, Event, EventPayload, InMemorySink, PlanStream};
+use magma_test_laws::strategies::arb_event_payload;
 use proptest::prelude::*;
 use std::sync::Arc;
-
-// ── Random event payload generator ────────────────────────────────
-
-fn arb_payload() -> impl Strategy<Value = EventPayload> {
-    prop_oneof![
-        // PlanComputed
-        (
-            "[a-z]{3,12}",      // reconciler name
-            "[a-f0-9]{64}",     // plan_id
-            0usize..32usize,    // changes
-        )
-            .prop_map(|(r, p, c)| EventPayload::PlanComputed {
-                reconciler: r,
-                plan_id:    PlanId(p),
-                changes:    c,
-            }),
-        // DriftClassified
-        (
-            "[a-z]{3,12}",
-            "[a-f0-9]{64}",
-            0usize..32usize,
-            0usize..16usize,
-            0usize..16usize,
-            0usize..16usize,
-            0usize..16usize,
-        )
-            .prop_map(|(r, p, t, ac, acw, aw, rf)| EventPayload::DriftClassified {
-                reconciler:                r,
-                plan_id:                   PlanId(p),
-                total:                     t,
-                auto_corrected:            ac,
-                auto_corrected_with_alert: acw,
-                awaiting_approval:         aw,
-                refused:                   rf,
-            }),
-        // ApplyOutcome
-        (
-            "[a-z]{3,12}",
-            "[a-f0-9]{64}",
-            0usize..32usize,
-            0usize..16usize,
-        )
-            .prop_map(|(r, p, a, f)| EventPayload::ApplyOutcome {
-                reconciler: r,
-                plan_id:    PlanId(p),
-                applied:    a,
-                failed:     f,
-            }),
-        // Custom
-        ("[a-z]{3,12}", "[a-z ]{0,40}").prop_map(|(c, m)| EventPayload::Custom {
-            category: c,
-            message:  m,
-        }),
-    ]
-}
 
 // Emit N payloads into a fresh PlanStream + return the captured events.
 async fn emit_all(payloads: Vec<EventPayload>) -> Vec<Event> {
@@ -125,7 +70,7 @@ proptest! {
 
     #[test]
     fn freshly_emitted_chain_always_verifies(
-        payloads in proptest::collection::vec(arb_payload(), 1..32),
+        payloads in proptest::collection::vec(arb_event_payload(), 1..32),
     ) {
         let events = tokio::runtime::Runtime::new().unwrap().block_on(emit_all(payloads));
         verify_chain(&events).unwrap_or_else(|i| {
@@ -141,7 +86,7 @@ proptest! {
 
     #[test]
     fn any_single_tamper_is_detected(
-        payloads in proptest::collection::vec(arb_payload(), 2..16),
+        payloads in proptest::collection::vec(arb_event_payload(), 2..16),
         tamper_offset in 0usize..1024usize,
         mutation in 0u8..4u8,
     ) {
@@ -176,7 +121,7 @@ proptest! {
 
     #[test]
     fn chain_head_tracks_last_event_hash(
-        payloads in proptest::collection::vec(arb_payload(), 1..16),
+        payloads in proptest::collection::vec(arb_event_payload(), 1..16),
     ) {
         let sink = Arc::new(InMemorySink::new("test"));
         let mut stream = PlanStream::new();
@@ -196,7 +141,7 @@ proptest! {
 
     #[test]
     fn seq_numbers_are_strictly_monotonic_from_zero(
-        payloads in proptest::collection::vec(arb_payload(), 1..32),
+        payloads in proptest::collection::vec(arb_event_payload(), 1..32),
     ) {
         let events = tokio::runtime::Runtime::new().unwrap().block_on(emit_all(payloads));
         for (idx, e) in events.iter().enumerate() {
@@ -212,7 +157,7 @@ proptest! {
 
     #[test]
     fn prev_hash_chains_correctly(
-        payloads in proptest::collection::vec(arb_payload(), 2..16),
+        payloads in proptest::collection::vec(arb_event_payload(), 2..16),
     ) {
         let events = tokio::runtime::Runtime::new().unwrap().block_on(emit_all(payloads));
         let zeros = "0".repeat(64);
