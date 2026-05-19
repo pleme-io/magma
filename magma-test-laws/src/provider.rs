@@ -151,6 +151,116 @@ pub fn assert_field_is_arn(
     Ok(())
 }
 
+/// Assert a string field looks like a URL (`scheme://host[:port]/path`).
+/// Heuristic check — accepts http/https/grpc/tcp/wss/etc.
+pub fn assert_field_is_url(
+    cfg:     &Config,
+    type_id: &str,
+    name:    &str,
+    field:   &str,
+) -> ProviderResult {
+    let attrs = resource_attrs(cfg, type_id, name)?;
+    let v = attrs.get(field).and_then(|v| v.as_str()).ok_or_else(|| ProviderViolation {
+        resource: format!("{type_id}.{name}"),
+        field:    field.into(),
+        rule:     "url-format".into(),
+        message:  format!("field `{field}` is missing or not a string"),
+    })?;
+    if !looks_like_url(v) {
+        return Err(ProviderViolation {
+            resource: format!("{type_id}.{name}"),
+            field:    field.into(),
+            rule:     "url-format".into(),
+            message:  format!("field `{field}` value `{v}` is not a valid URL"),
+        });
+    }
+    Ok(())
+}
+
+/// Assert an integer field is in the inclusive range [min, max].
+/// Useful for ports (1-65535), replicas (1-N), TTLs.
+pub fn assert_field_is_int_in_range(
+    cfg:     &Config,
+    type_id: &str,
+    name:    &str,
+    field:   &str,
+    min:     i64,
+    max:     i64,
+) -> ProviderResult {
+    let attrs = resource_attrs(cfg, type_id, name)?;
+    let v = attrs.get(field).and_then(|v| v.as_i64()).ok_or_else(|| ProviderViolation {
+        resource: format!("{type_id}.{name}"),
+        field:    field.into(),
+        rule:     "int-in-range".into(),
+        message:  format!("field `{field}` is missing or not an integer"),
+    })?;
+    if v < min || v > max {
+        return Err(ProviderViolation {
+            resource: format!("{type_id}.{name}"),
+            field:    field.into(),
+            rule:     "int-in-range".into(),
+            message:  format!("field `{field}` value {v} not in range [{min}, {max}]"),
+        });
+    }
+    Ok(())
+}
+
+/// Assert a resource has a `tags` object containing every key in
+/// `required_keys`. Pangea workspaces commonly require typed tag
+/// presence (Environment, ManagedBy, etc.).
+pub fn assert_resource_has_tags(
+    cfg:           &Config,
+    type_id:       &str,
+    name:          &str,
+    required_keys: &[&str],
+) -> ProviderResult {
+    let attrs = resource_attrs(cfg, type_id, name)?;
+    let tags = attrs.get("tags").and_then(|v| v.as_object()).ok_or_else(|| ProviderViolation {
+        resource: format!("{type_id}.{name}"),
+        field:    "tags".into(),
+        rule:     "tags-present".into(),
+        message:  "tags block missing or not an object".into(),
+    })?;
+    for k in required_keys {
+        if !tags.contains_key(*k) {
+            return Err(ProviderViolation {
+                resource: format!("{type_id}.{name}"),
+                field:    format!("tags.{k}"),
+                rule:     "tags-required-key".into(),
+                message:  format!("required tag key `{k}` missing"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Assert a string field is non-empty (not whitespace-only). Catches
+/// the common "structurally string but semantically empty" failure
+/// where a Pangea template path is broken.
+pub fn assert_field_non_empty(
+    cfg:     &Config,
+    type_id: &str,
+    name:    &str,
+    field:   &str,
+) -> ProviderResult {
+    let attrs = resource_attrs(cfg, type_id, name)?;
+    let v = attrs.get(field).and_then(|v| v.as_str()).ok_or_else(|| ProviderViolation {
+        resource: format!("{type_id}.{name}"),
+        field:    field.into(),
+        rule:     "non-empty".into(),
+        message:  format!("field `{field}` is missing or not a string"),
+    })?;
+    if v.trim().is_empty() {
+        return Err(ProviderViolation {
+            resource: format!("{type_id}.{name}"),
+            field:    field.into(),
+            rule:     "non-empty".into(),
+            message:  format!("field `{field}` is empty or whitespace-only"),
+        });
+    }
+    Ok(())
+}
+
 /// Assert a string field is one of a fixed allow-list.
 pub fn assert_field_is_one_of<S: AsRef<str>>(
     cfg:        &Config,
@@ -249,6 +359,29 @@ pub fn assert_no_iam_wildcards(cfg: &Config) -> Result<(), Vec<ProviderViolation
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
+
+fn looks_like_url(s: &str) -> bool {
+    // <scheme>://<host>[:<port>][/<path>]
+    let scheme_end = match s.find("://") {
+        Some(i) => i,
+        None => return false,
+    };
+    if scheme_end == 0 {
+        return false;
+    }
+    let scheme = &s[..scheme_end];
+    if !scheme.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.') {
+        return false;
+    }
+    let rest = &s[scheme_end + 3..];
+    if rest.is_empty() {
+        return false;
+    }
+    // Host: at least one non-slash char before path.
+    let host_end = rest.find('/').unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    !host.is_empty()
+}
 
 fn looks_like_cidr(s: &str) -> bool {
     // <ip>/<prefix>; prefix is digits, IP is dotted-quad or
@@ -414,5 +547,87 @@ mod tests {
             }
         }));
         assert_no_iam_wildcards(&c).unwrap();
+    }
+
+    // ── Additional helpers ────────────────────────────────────────
+
+    #[test]
+    fn url_field_validates_https() {
+        let c = cfg_from(json!({
+            "resource": { "cloudflare_record": { "x": { "url": "https://example.com/api" } } }
+        }));
+        assert_field_is_url(&c, "cloudflare_record", "x", "url").unwrap();
+    }
+
+    #[test]
+    fn url_field_rejects_non_url() {
+        let c = cfg_from(json!({
+            "resource": { "cloudflare_record": { "x": { "url": "not-a-url" } } }
+        }));
+        let err = assert_field_is_url(&c, "cloudflare_record", "x", "url").unwrap_err();
+        assert_eq!(err.rule, "url-format");
+    }
+
+    #[test]
+    fn int_in_range_passes_in_range() {
+        let c = cfg_from(json!({
+            "resource": { "aws_db_instance": { "x": { "port": 5432 } } }
+        }));
+        assert_field_is_int_in_range(&c, "aws_db_instance", "x", "port", 1, 65535).unwrap();
+    }
+
+    #[test]
+    fn int_in_range_rejects_out_of_range() {
+        let c = cfg_from(json!({
+            "resource": { "aws_db_instance": { "x": { "port": 70000 } } }
+        }));
+        let err = assert_field_is_int_in_range(&c, "aws_db_instance", "x", "port", 1, 65535).unwrap_err();
+        assert_eq!(err.rule, "int-in-range");
+    }
+
+    #[test]
+    fn resource_has_tags_passes_when_keys_present() {
+        let c = cfg_from(json!({
+            "resource": {
+                "aws_vpc": { "main": { "tags": { "ManagedBy": "pangea", "Environment": "prod" } } }
+            }
+        }));
+        assert_resource_has_tags(&c, "aws_vpc", "main", &["ManagedBy", "Environment"]).unwrap();
+    }
+
+    #[test]
+    fn resource_has_tags_errs_when_key_missing() {
+        let c = cfg_from(json!({
+            "resource": { "aws_vpc": { "main": { "tags": { "ManagedBy": "pangea" } } } }
+        }));
+        let err = assert_resource_has_tags(&c, "aws_vpc", "main", &["ManagedBy", "Environment"]).unwrap_err();
+        assert_eq!(err.rule, "tags-required-key");
+        assert!(err.field.contains("Environment"));
+    }
+
+    #[test]
+    fn resource_has_tags_errs_when_block_missing() {
+        let c = cfg_from(json!({
+            "resource": { "aws_vpc": { "main": {} } }
+        }));
+        let err = assert_resource_has_tags(&c, "aws_vpc", "main", &["ManagedBy"]).unwrap_err();
+        assert_eq!(err.rule, "tags-present");
+    }
+
+    #[test]
+    fn non_empty_field_passes() {
+        let c = cfg_from(json!({
+            "resource": { "aws_iam_role": { "x": { "name": "real-name" } } }
+        }));
+        assert_field_non_empty(&c, "aws_iam_role", "x", "name").unwrap();
+    }
+
+    #[test]
+    fn non_empty_field_rejects_whitespace_only() {
+        let c = cfg_from(json!({
+            "resource": { "aws_iam_role": { "x": { "name": "   " } } }
+        }));
+        let err = assert_field_non_empty(&c, "aws_iam_role", "x", "name").unwrap_err();
+        assert_eq!(err.rule, "non-empty");
     }
 }
