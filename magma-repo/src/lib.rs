@@ -28,10 +28,14 @@
 pub mod attestation;
 pub mod config;
 pub mod discover;
+pub mod executor;
 pub mod reconciler;
 pub mod source;
 pub mod workspace;
 
+pub use executor::{
+    DryRunExecutor, WorkspaceExecutionResult, WorkspaceExecutor, WorkspaceExecutorError,
+};
 pub use reconciler::{PangeaRepoReconciler, RepoObservedState};
 pub use source::{Source, SourceError};
 
