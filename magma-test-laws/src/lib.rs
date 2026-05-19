@@ -1,10 +1,24 @@
-//! magma-test-laws — reusable `Reconciler` law test helpers.
+//! magma-test-laws — universal trait-law test helpers for every
+//! layer of the magma convergence substrate.
 //!
-//! Every `Reconciler` impl in the convergence ecosystem must obey
-//! the five universal laws (see `magma_converge::Reconciler` docs).
-//! This crate packages each law as a typed test helper that any
-//! impl can call:
+//! # Layers covered
 //!
+//! Each layer has a one-line "does this impl satisfy the universal
+//! contract?" entrypoint. Pull only the layers you need via cargo
+//! features — the base crate carries just the Reconciler laws.
+//!
+//! | Layer | Module | Feature | Entrypoint |
+//! |---|---|---|---|
+//! | Reconciler trait | (top-level) | (default) | [`assert_all_laws`] |
+//! | Backend trait | [`backend`] | `backend-laws` | [`backend::assert_all_laws`] |
+//! | Pangea architecture | [`architecture`] | `architecture-laws` | [`architecture::assert_all_laws`] |
+//! | Workspace lifecycle | [`workspace`] | `workspace-laws` | [`workspace::assert_all_laws`] |
+//! | Workspace chain | [`chain`] | `chain-laws` | [`chain::assert_all_laws`] |
+//! | Proptest strategies | [`strategies`] | `strategies` | shared generators |
+//!
+//! # How to author a test
+//!
+//! Reconciler:
 //! ```no_run
 //! # use magma_test_laws::*;
 //! # use magma_converge::inmemory::InMemoryKvReconciler;
@@ -12,19 +26,67 @@
 //! #[tokio::test]
 //! async fn obeys_all_laws() {
 //!     let r = InMemoryKvReconciler::new();
-//!     assert_read_state_idempotent(&r).await;
-//!     assert_empty_plan_noop(&r, &json!({})).await;
-//!     assert_apply_converges(&r, &json!({"a": 1})).await;
-//!     assert_plan_id_deterministic(&r, &json!({"a": 1}), &json!({})).await;
-//!     assert_plan_id_differs_with_changed_config(
-//!         &r, &json!({"a": 1}), &json!({"a": 2}), &json!({}),
+//!     assert_all_laws(
+//!         &r,
+//!         &json!({"a": 1}),       // config_a
+//!         &json!({"a": 2}),       // config_b (different)
+//!         &json!({}),             // initial state
+//!         &json!({}),             // empty config
 //!     ).await;
 //! }
 //! ```
 //!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §VII. The helpers panic
-//! with a clear message on law violation — they're meant to be
-//! used INSIDE `#[tokio::test]` functions, not standalone.
+//! Backend (feature = `backend-laws`):
+//! ```ignore
+//! #[tokio::test]
+//! async fn local_backend_obeys_all_laws() {
+//!     let b = LocalBackend::new(tempdir().path());
+//!     magma_test_laws::backend::assert_all_laws(&b).await;
+//! }
+//! ```
+//!
+//! Workspace (feature = `workspace-laws`):
+//! ```ignore
+//! #[test]
+//! fn seph_vpc_lifecycle() {
+//!     let cfg = Config::from_json(read_workspace_json("seph-vpc")).unwrap();
+//!     magma_test_laws::workspace::assert_all_laws(&cfg);
+//! }
+//! ```
+//!
+//! Architecture (feature = `architecture-laws`):
+//! ```ignore
+//! #[test]
+//! fn secure_vpc_composition_invariants() {
+//!     let cfg = Config::from_json(SecureVpc::render()).unwrap();
+//!     magma_test_laws::architecture::assert_all_laws(&cfg);
+//! }
+//! ```
+//!
+//! Chain (feature = `chain-laws`):
+//! ```ignore
+//! #[test]
+//! fn constellation_chain_invariants() {
+//!     let flow: FlowFile = serde_json::from_str(&read_file("constellation.json")).unwrap();
+//!     magma_test_laws::chain::assert_all_laws(&flow);
+//! }
+//! ```
+//!
+//! # Why universal trait laws
+//!
+//! Every new impl (a new Reconciler, a new Backend, a new
+//! architecture, a new workspace, a new chain) plugs into the
+//! universal law battery in one line. The contract is enforced
+//! at the substrate, not in downstream tests. A regression that
+//! breaks the contract surfaces immediately in CI with a clear
+//! message naming the broken law.
+//!
+//! Per `theory/CONVERGENCE-SUBSTRATE.md` §VII +
+//! `theory/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md` (every promise
+//! becomes a derivable theorem). The helpers panic with a
+//! descriptive message on law violation — they're meant to be
+//! used INSIDE `#[test]` / `#[tokio::test]` functions, not
+//! standalone.
 
 #![deny(unsafe_code)]
 
