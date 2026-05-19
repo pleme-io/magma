@@ -392,14 +392,27 @@ mod tests {
 
     fn dag_strategy() -> impl Strategy<Value = FlowFile> {
         proptest::collection::vec("[a-z][a-z0-9]{0,4}", 2..=6).prop_flat_map(|names| {
-            // Dedup names to avoid HashMap collisions.
+            // Dedup names to avoid HashMap collisions; ensure at
+            // least 2 unique nodes survive (caller's strategy
+            // doesn't guarantee that after dedup).
             let unique: Vec<String> = {
                 let mut seen = std::collections::HashSet::new();
-                names.into_iter().filter(|n| seen.insert(n.clone())).collect()
+                let mut v: Vec<_> = names.into_iter().filter(|n| seen.insert(n.clone())).collect();
+                while v.len() < 2 {
+                    v.push(format!("node{}", v.len()));
+                }
+                v
             };
             let n = unique.len();
+            // Inherently-acyclic edge generator: pick `lo ∈ 0..(n-1)`
+            // then `hi ∈ (lo+1)..n`. Every produced pair has
+            // lo < hi strictly, so the resulting graph is upper-
+            // triangular and DAG by construction. No rejection
+            // sampling, no proptest local-reject pressure.
             let edge_strategy = proptest::collection::vec(
-                (0..n, 0..n).prop_filter("acyclic", |(a, b)| a < b),
+                (0..(n - 1)).prop_flat_map(move |lo| {
+                    ((lo + 1)..n).prop_map(move |hi| (lo, hi))
+                }),
                 0..=(n * 2),
             );
             (Just(unique), edge_strategy).prop_map(|(names, edges)| {

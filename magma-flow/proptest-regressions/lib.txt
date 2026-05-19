@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a8c387e644b87bbb82f2fc21c01d39ae5b5ba5e998f05e5844a066d08ca91fb4 # shrinks to flow = FlowFile { workspaces: [FlowWorkspace { name: "a", dir: "/tmp/a" }], edges: [FlowEdge { from: "a", from_output: "out", to: "a", to_input: "in" }], optimization: None }
+cc 0dce92d944077ab67d1086441a0fa2c70ca35fa17772ade2ed1f4472325eefeb # shrinks to flow = FlowFile { workspaces: [FlowWorkspace { name: "a", dir: "/tmp/a" }], edges: [FlowEdge { from: "a", from_output: "out", to: "a", to_input: "in" }], optimization: None }
+cc 0a36ae7501294d93b0b54d48f5525ca003befe01fd431faa812b12b65de991dc # shrinks to flow = FlowFile { workspaces: [FlowWorkspace { name: "a", dir: "/tmp/a" }], edges: [FlowEdge { from: "a", from_output: "out", to: "a", to_input: "in" }], optimization: None }

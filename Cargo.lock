@@ -1559,6 +1559,7 @@ dependencies = [
  "magma-converge",
  "magma-fsm",
  "magma-stream",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
