@@ -17,3 +17,6 @@ magma-types = { workspace = true }
 petgraph    = { workspace = true }
 thiserror   = { workspace = true }
 serde       = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

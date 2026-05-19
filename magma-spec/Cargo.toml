@@ -19,5 +19,6 @@ serde_json     = { workspace = true }
 thiserror      = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
-tokio    = { workspace = true }
+proptest        = { workspace = true }
+tokio           = { workspace = true }
+magma-test-laws = { workspace = true, features = ["strategies"] }
