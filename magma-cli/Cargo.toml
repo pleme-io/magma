@@ -25,6 +25,7 @@ magma-arch-test     = { workspace = true }
 magma-migrate       = { workspace = true }
 magma-flow          = { workspace = true }
 magma-tatara        = { workspace = true }
+magma-rubygems      = { workspace = true }
 clap                = { workspace = true }
 shikumi             = { workspace = true }
 tokio               = { workspace = true }

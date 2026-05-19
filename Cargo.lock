@@ -1245,6 +1245,7 @@ dependencies = [
  "magma-arch-test",
  "magma-flow",
  "magma-migrate",
+ "magma-rubygems",
  "magma-tatara",
  "serde",
  "serde_json",

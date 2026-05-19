@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use magma::pangea::WorkspaceLoader as _;
 use magma::backend::Backend as _;
 
@@ -262,6 +262,35 @@ enum Command {
     /// Thin wrapper over `magma migrate` for the case where every
     /// source address is moved over verbatim.
     Merge(MergeArgs),
+
+    /// Pangea Ruby gem operations — in-memory bundler+bundix
+    /// replacement. Parses Gemfile / Gemfile.lock, emits gemset.nix,
+    /// attests the gem closure with BLAKE3.
+    #[command(subcommand)]
+    Rubygems(RubygemsCommand),
+}
+
+#[derive(Subcommand, Debug)]
+enum RubygemsCommand {
+    /// Parse a Gemfile.lock + emit gemset.nix to stdout. Replaces
+    /// the `bundix` subprocess for Pangea workspace flakes.
+    GemsetFromLock(RubygemsFileArgs),
+    /// Parse a Gemfile.lock + print the BLAKE3 attestation hex.
+    /// The attestation is order-independent over the resolved
+    /// gem closure; identical closures hash to the same value
+    /// regardless of bundler's emission order.
+    AttestLock(RubygemsFileArgs),
+    /// Parse a Gemfile + emit the typed Manifest as JSON.
+    ParseGemfile(RubygemsFileArgs),
+    /// Parse a Gemfile.lock + emit the typed Lockfile as JSON.
+    ParseLock(RubygemsFileArgs),
+}
+
+#[derive(Args, Debug)]
+struct RubygemsFileArgs {
+    /// Path to the Gemfile / Gemfile.lock. Defaults to stdin if "-".
+    #[arg(default_value = "-")]
+    path: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -514,6 +543,54 @@ async fn run(
         Command::Migrate(args) => cmd_migrate(args).await,
         Command::Split(args)   => cmd_split(args).await,
         Command::Merge(args)   => cmd_merge(args).await,
+        Command::Rubygems(cmd) => cmd_rubygems(cmd).await,
+    }
+}
+
+async fn cmd_rubygems(cmd: RubygemsCommand) -> Result<u8> {
+    use std::io::Read;
+    let read_input = |args: &RubygemsFileArgs| -> Result<String> {
+        if args.path == "-" {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            Ok(buf)
+        } else {
+            Ok(std::fs::read_to_string(&args.path)?)
+        }
+    };
+
+    match cmd {
+        RubygemsCommand::GemsetFromLock(args) => {
+            let source = read_input(&args)?;
+            let lock = magma_rubygems::lockfile::parse(&source)
+                .map_err(|e| anyhow::anyhow!("parse Gemfile.lock: {e}"))?;
+            let text = magma_rubygems::nix::emit_gemset(&lock)
+                .map_err(|e| anyhow::anyhow!("emit gemset.nix: {e}"))?;
+            print!("{text}");
+            Ok(0)
+        }
+        RubygemsCommand::AttestLock(args) => {
+            let source = read_input(&args)?;
+            let lock = magma_rubygems::lockfile::parse(&source)
+                .map_err(|e| anyhow::anyhow!("parse Gemfile.lock: {e}"))?;
+            let attestation = magma_rubygems::attestation::attest_lockfile(&lock);
+            println!("{attestation}");
+            Ok(0)
+        }
+        RubygemsCommand::ParseGemfile(args) => {
+            let source = read_input(&args)?;
+            let manifest = magma_rubygems::gemfile_parser::parse(&source)
+                .map_err(|e| anyhow::anyhow!("parse Gemfile: {e}"))?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+            Ok(0)
+        }
+        RubygemsCommand::ParseLock(args) => {
+            let source = read_input(&args)?;
+            let lock = magma_rubygems::lockfile::parse(&source)
+                .map_err(|e| anyhow::anyhow!("parse Gemfile.lock: {e}"))?;
+            println!("{}", serde_json::to_string_pretty(&lock)?);
+            Ok(0)
+        }
     }
 }
 
