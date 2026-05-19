@@ -1328,6 +1328,7 @@ dependencies = [
  "chrono",
  "hex",
  "magma-converge",
+ "magma-test-laws",
  "proptest",
  "serde",
  "serde_json",
