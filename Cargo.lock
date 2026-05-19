@@ -1589,6 +1589,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "magma-repo"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "chrono",
+ "hex",
+ "magma-converge",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "magma-rubygems"
 version = "0.1.0"
 dependencies = [

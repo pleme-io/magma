@@ -1,0 +1,28 @@
+[package]
+name        = "magma-repo"
+description = "magma — typed Pangea repository primitive. Parses pangea.yml + workspace dirs + fleet.yaml from a directory shaped like pangea-architectures, then drives continuous reconciliation via the universal Reconciler trait. Per theory/PANGEA-REPOSITORY.md."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait    = { workspace = true }
+blake3         = { workspace = true }
+chrono         = { workspace = true }
+hex            = { workspace = true }
+magma-converge = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+serde_yaml_ng  = { workspace = true }
+thiserror      = { workspace = true }
+tokio          = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
