@@ -11,10 +11,12 @@
 //! |---|---|---|---|
 //! | Reconciler trait | (top-level) | (default) | [`assert_all_laws`] |
 //! | Backend trait | [`backend`] | `backend-laws` | [`backend::assert_all_laws`] |
+//! | Provider resource | [`provider`] | `provider-laws` | [`provider::assert_resource_has_field`] |
 //! | Pangea architecture | [`architecture`] | `architecture-laws` | [`architecture::assert_all_laws`] |
 //! | Workspace lifecycle | [`workspace`] | `workspace-laws` | [`workspace::assert_all_laws`] |
 //! | Workspace chain | [`chain`] | `chain-laws` | [`chain::assert_all_laws`] |
 //! | Proptest strategies | [`strategies`] | `strategies` | shared generators |
+//! | Non-panic preflight | [`preflight`] | `preflight` | [`preflight::check_workspace_full`] |
 //!
 //! # How to author a test
 //!
@@ -104,6 +106,9 @@ pub mod chain;
 
 #[cfg(feature = "workspace-laws")]
 pub mod workspace;
+
+#[cfg(feature = "provider-laws")]
+pub mod provider;
 
 #[cfg(feature = "preflight")]
 pub mod preflight;

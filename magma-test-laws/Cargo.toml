@@ -30,6 +30,11 @@ chain-laws        = ["dep:magma-flow"]
 # + import absorbs). Pulls magma-plan + magma-apply + magma-config +
 # magma-state.
 workspace-laws    = ["dep:magma-config", "dep:magma-plan", "dep:magma-apply", "dep:magma-state", "dep:magma-types"]
+# Provider-resource laws over individual TF resources within a
+# Config — generic field validators (required field present, CIDR
+# format, ARN format, IAM wildcards refused). Complements
+# architecture-laws (composition) with per-resource invariants.
+provider-laws     = ["dep:magma-config"]
 # Non-panic Result-returning preflight wrappers. Operators (pangea-
 # operator startup, magma CLI flight-check) call these to convert
 # law violations into typed errors instead of panics. Composes
