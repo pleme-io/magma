@@ -105,6 +105,9 @@ pub mod chain;
 #[cfg(feature = "workspace-laws")]
 pub mod workspace;
 
+#[cfg(feature = "preflight")]
+pub mod preflight;
+
 use magma_converge::Reconciler;
 use serde_json::Value;
 

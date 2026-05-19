@@ -30,9 +30,16 @@ chain-laws        = ["dep:magma-flow"]
 # + import absorbs). Pulls magma-plan + magma-apply + magma-config +
 # magma-state.
 workspace-laws    = ["dep:magma-config", "dep:magma-plan", "dep:magma-apply", "dep:magma-state", "dep:magma-types"]
+# Non-panic Result-returning preflight wrappers. Operators (pangea-
+# operator startup, magma CLI flight-check) call these to convert
+# law violations into typed errors instead of panics. Composes
+# architecture-laws + workspace-laws + chain-laws (consumer opts in
+# to whichever apply).
+preflight         = ["architecture-laws", "workspace-laws", "chain-laws"]
 
 [dependencies]
 magma-converge = { workspace = true }
+serde          = { workspace = true }
 serde_json     = { workspace = true }
 tokio          = { workspace = true }
 # Optional, gated behind features:
