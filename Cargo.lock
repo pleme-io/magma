@@ -1673,6 +1673,7 @@ dependencies = [
  "magma-plugin",
  "magma-protocol",
  "magma-state",
+ "magma-test-laws",
  "magma-types",
  "proptest",
  "prost",
