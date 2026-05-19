@@ -1672,9 +1672,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "magma-apply",
  "magma-backend",
+ "magma-config",
  "magma-converge",
+ "magma-flow",
  "magma-fsm",
+ "magma-plan",
  "magma-state",
  "magma-stream",
  "magma-types",

@@ -19,6 +19,17 @@ strategies   = ["dep:proptest", "dep:magma-stream", "dep:magma-fsm"]
 # Universal Backend trait laws — pulls magma-backend + magma-types
 # + magma-state. Any Backend impl can pass `assert_backend_all_laws`.
 backend-laws = ["dep:magma-backend", "dep:magma-types", "dep:magma-state"]
+# Architecture composition laws over rendered Terraform JSON —
+# pulls magma-config. Every Pangea-rendered architecture can pass
+# `assert_architecture_all_laws(&cfg)`.
+architecture-laws = ["dep:magma-config"]
+# Workspace chain laws over magma-flow FlowFile.
+# Pulls magma-flow.
+chain-laws        = ["dep:magma-flow"]
+# Workspace lifecycle laws (apply convergence + destroy round-trip
+# + import absorbs). Pulls magma-plan + magma-apply + magma-config +
+# magma-state.
+workspace-laws    = ["dep:magma-config", "dep:magma-plan", "dep:magma-apply", "dep:magma-state", "dep:magma-types"]
 
 [dependencies]
 magma-converge = { workspace = true }
@@ -31,6 +42,10 @@ magma-fsm     = { workspace = true, optional = true }
 magma-backend = { workspace = true, optional = true }
 magma-types   = { workspace = true, optional = true }
 magma-state   = { workspace = true, optional = true }
+magma-config  = { workspace = true, optional = true }
+magma-flow    = { workspace = true, optional = true }
+magma-plan    = { workspace = true, optional = true }
+magma-apply   = { workspace = true, optional = true }
 
 [dev-dependencies]
 async-trait   = { workspace = true }
