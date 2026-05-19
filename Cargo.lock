@@ -1279,6 +1279,7 @@ dependencies = [
  "magma-metrics",
  "magma-stream",
  "prometheus",
+ "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
