@@ -1,0 +1,234 @@
+PATH
+  remote: ../pangea-akeyless
+  specs:
+    pangea-akeyless (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-aws
+  specs:
+    pangea-aws (0.2.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-azure
+  specs:
+    pangea-azure (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-cloudflare
+  specs:
+    pangea-cloudflare (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-core
+  specs:
+    pangea-core (0.3.0)
+      base64
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      terraform-synthesizer (>= 0.0.28)
+
+PATH
+  remote: ../pangea-dashboards
+  specs:
+    pangea-dashboards (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+
+PATH
+  remote: ../pangea-datadog
+  specs:
+    pangea-datadog (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-gcp
+  specs:
+    pangea-gcp (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-github
+  specs:
+    pangea-github (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-hcloud
+  specs:
+    pangea-hcloud (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-kubernetes
+  specs:
+    pangea-kubernetes (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-porkbun
+  specs:
+    pangea-porkbun (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-splunk
+  specs:
+    pangea-splunk (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-spot
+  specs:
+    pangea-spot (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-aws (~> 0.1)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: ../pangea-tailscale
+  specs:
+    pangea-tailscale (0.1.0)
+      dry-struct (~> 1.6)
+      dry-types (~> 1.7)
+      pangea-core (~> 0.2)
+      terraform-synthesizer (~> 0.0.28)
+
+PATH
+  remote: .
+  specs:
+    pangea-architectures (0.1.0)
+      pangea-akeyless
+      pangea-aws
+      pangea-azure
+      pangea-cloudflare
+      pangea-core (~> 0.2)
+      pangea-datadog
+      pangea-gcp
+      pangea-hcloud
+      pangea-kubernetes
+      pangea-splunk
+      pangea-spot
+      terraform-synthesizer (~> 0.0.28)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    abstract-synthesizer (0.0.15)
+    base64 (0.3.0)
+    bigdecimal (4.0.1)
+    concurrent-ruby (1.3.6)
+    diff-lcs (1.6.2)
+    docile (1.4.1)
+    dry-core (1.2.0)
+      concurrent-ruby (~> 1.0)
+      logger
+      zeitwerk (~> 2.6)
+    dry-inflector (1.3.1)
+    dry-logic (1.6.0)
+      bigdecimal
+      concurrent-ruby (~> 1.0)
+      dry-core (~> 1.1)
+      zeitwerk (~> 2.6)
+    dry-struct (1.8.1)
+      dry-core (~> 1.1)
+      dry-types (~> 1.8, >= 1.8.2)
+      ice_nine (~> 0.11)
+      zeitwerk (~> 2.6)
+    dry-types (1.9.1)
+      bigdecimal (>= 3.0)
+      concurrent-ruby (~> 1.0)
+      dry-core (~> 1.0)
+      dry-inflector (~> 1.0)
+      dry-logic (~> 1.4)
+      zeitwerk (~> 2.6)
+    ice_nine (0.11.2)
+    logger (1.7.0)
+    rspec (3.13.2)
+      rspec-core (~> 3.13.0)
+      rspec-expectations (~> 3.13.0)
+      rspec-mocks (~> 3.13.0)
+    rspec-core (3.13.6)
+      rspec-support (~> 3.13.0)
+    rspec-expectations (3.13.5)
+      diff-lcs (>= 1.2.0, < 2.0)
+      rspec-support (~> 3.13.0)
+    rspec-mocks (3.13.8)
+      diff-lcs (>= 1.2.0, < 2.0)
+      rspec-support (~> 3.13.0)
+    rspec-support (3.13.7)
+    simplecov (0.22.0)
+      docile (~> 1.1)
+      simplecov-html (~> 0.11)
+      simplecov_json_formatter (~> 0.1)
+    simplecov-html (0.13.2)
+    simplecov_json_formatter (0.1.4)
+    terraform-synthesizer (0.0.28)
+      abstract-synthesizer
+    zeitwerk (2.7.5)
+
+PLATFORMS
+  arm64-darwin-25
+  ruby
+
+DEPENDENCIES
+  pangea-akeyless!
+  pangea-architectures!
+  pangea-aws!
+  pangea-azure!
+  pangea-cloudflare!
+  pangea-core!
+  pangea-dashboards!
+  pangea-datadog!
+  pangea-gcp!
+  pangea-github!
+  pangea-hcloud!
+  pangea-kubernetes!
+  pangea-porkbun!
+  pangea-splunk!
+  pangea-spot!
+  pangea-tailscale!
+  rspec (~> 3.12)
+  simplecov (~> 0.22)
+
+BUNDLED WITH
+   2.5.22

@@ -34,13 +34,7 @@ mod tests {
 
     #[test]
     fn empty_lockfile_attestation_is_64_hex_chars() {
-        let lock = Lockfile {
-            bundler_version: None,
-            ruby:            None,
-            gems:            vec![],
-            specs:           vec![],
-            dependencies:    vec![],
-        };
+        let lock = Lockfile::default();
         let attestation = attest_lockfile(&lock);
         assert_eq!(attestation.len(), 64);
         assert!(attestation.chars().all(|c| c.is_ascii_hexdigit()));
@@ -48,13 +42,7 @@ mod tests {
 
     #[test]
     fn attestation_changes_when_a_gem_is_added() {
-        let lock_a = Lockfile {
-            bundler_version: None,
-            ruby:            None,
-            gems:            vec![],
-            specs:           vec![],
-            dependencies:    vec![],
-        };
+        let lock_a = Lockfile::default();
         let mut lock_b = lock_a.clone();
         lock_b.gems.push(crate::lockfile::ResolvedGem {
             name:       "pangea-aws".into(),
@@ -67,18 +55,14 @@ mod tests {
 
     #[test]
     fn attestation_is_deterministic() {
-        let lock = Lockfile {
-            bundler_version: None,
-            ruby:            None,
-            gems:            vec![crate::lockfile::ResolvedGem {
-                name: "pangea-core".into(),
-                version: "1.0.0".into(),
-                source: Source::default_rubygems(),
-                depends_on: vec![],
-            }],
-            specs:        vec![],
-            dependencies: vec!["pangea-core".into()],
-        };
+        let mut lock = Lockfile::default();
+        lock.gems.push(crate::lockfile::ResolvedGem {
+            name:       "pangea-core".into(),
+            version:    "1.0.0".into(),
+            source:     Source::default_rubygems(),
+            depends_on: vec![],
+        });
+        lock.dependencies.push("pangea-core".into());
         let a = attest_lockfile(&lock);
         let b = attest_lockfile(&lock);
         assert_eq!(a, b);
