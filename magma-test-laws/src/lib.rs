@@ -31,6 +31,9 @@
 #[cfg(feature = "strategies")]
 pub mod strategies;
 
+#[cfg(feature = "backend-laws")]
+pub mod backend;
+
 use magma_converge::Reconciler;
 use serde_json::Value;
 

@@ -84,7 +84,15 @@ impl LocalBackend {
 impl Backend for LocalBackend {
     async fn read_state(&self) -> Result<State, BackendError> {
         if !self.state_path.exists() {
-            return Ok(empty_state_inline());
+            // First read materializes the empty state on disk so
+            // subsequent reads see a stable lineage (matches
+            // OpenTofu's `tofu init` behavior). Without this,
+            // `empty_state_inline()` would generate a fresh UUID
+            // on every call — violating the Backend trait law
+            // that read_state is referentially transparent.
+            let empty = empty_state_inline();
+            self.write_state(&empty).await?;
+            return Ok(empty);
         }
         let bytes = tokio::fs::read(&self.state_path).await?;
         Ok(serde_json::from_slice(&bytes)?)

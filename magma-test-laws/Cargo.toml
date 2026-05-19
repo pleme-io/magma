@@ -13,22 +13,27 @@ authors.workspace      = true
 workspace = true
 
 [features]
-default    = []
-# Opt into the shared proptest strategy library. Pulls in proptest
-# + magma-stream + magma-fsm so test crates that only need the
-# law battery don't pay for them.
-strategies = ["dep:proptest", "dep:magma-stream", "dep:magma-fsm"]
+default      = []
+# Shared proptest strategies — pulls proptest + magma-stream + magma-fsm.
+strategies   = ["dep:proptest", "dep:magma-stream", "dep:magma-fsm"]
+# Universal Backend trait laws — pulls magma-backend + magma-types
+# + magma-state. Any Backend impl can pass `assert_backend_all_laws`.
+backend-laws = ["dep:magma-backend", "dep:magma-types", "dep:magma-state"]
 
 [dependencies]
 magma-converge = { workspace = true }
 serde_json     = { workspace = true }
 tokio          = { workspace = true }
-# Optional, gated behind `strategies`:
-proptest     = { workspace = true, optional = true }
-magma-stream = { workspace = true, optional = true }
-magma-fsm    = { workspace = true, optional = true }
+# Optional, gated behind features:
+proptest      = { workspace = true, optional = true }
+magma-stream  = { workspace = true, optional = true }
+magma-fsm     = { workspace = true, optional = true }
+magma-backend = { workspace = true, optional = true }
+magma-types   = { workspace = true, optional = true }
+magma-state   = { workspace = true, optional = true }
 
 [dev-dependencies]
 async-trait   = { workspace = true }
 chrono        = { workspace = true }
 magma-backend = { workspace = true }
+tempfile      = { workspace = true }

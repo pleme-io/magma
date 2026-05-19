@@ -1675,9 +1675,12 @@ dependencies = [
  "magma-backend",
  "magma-converge",
  "magma-fsm",
+ "magma-state",
  "magma-stream",
+ "magma-types",
  "proptest",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
