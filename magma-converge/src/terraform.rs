@@ -183,38 +183,11 @@ impl<B: magma_backend::Backend + 'static> Reconciler for TerraformReconciler<B> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magma_backend::Backend as _;
-    use std::sync::Mutex;
-
-    // Tiny in-memory backend stand-in for tests.
-    struct MemBackend(Mutex<magma_types::State>);
-
-    impl Default for MemBackend {
-        fn default() -> Self {
-            Self(Mutex::new(magma_state::empty_state()))
-        }
-    }
-
-    #[async_trait]
-    impl magma_backend::Backend for MemBackend {
-        async fn read_state(&self) -> Result<magma_types::State, magma_backend::BackendError> {
-            Ok(self.0.lock().unwrap().clone())
-        }
-        async fn write_state(&self, s: &magma_types::State) -> Result<(), magma_backend::BackendError> {
-            *self.0.lock().unwrap() = s.clone();
-            Ok(())
-        }
-        async fn lock(&self) -> Result<magma_backend::LockId, magma_backend::BackendError> {
-            Ok(magma_backend::LockId::new())
-        }
-        async fn unlock(&self, _: &magma_backend::LockId) -> Result<(), magma_backend::BackendError> {
-            Ok(())
-        }
-    }
+    use magma_backend::{Backend as _, InMemoryBackend};
 
     #[tokio::test]
     async fn empty_backend_yields_empty_state() {
-        let r = TerraformReconciler::new(Arc::new(MemBackend::default()));
+        let r = TerraformReconciler::new(Arc::new(InMemoryBackend::new()));
         let state = r.read_state().await.unwrap();
         let parsed: magma_types::State = serde_json::from_value(state).unwrap();
         assert_eq!(parsed.resources.len(), 0);
@@ -222,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn plan_on_empty_state_produces_creates_for_config_resources() {
-        let r = TerraformReconciler::new(Arc::new(MemBackend::default()));
+        let r = TerraformReconciler::new(Arc::new(InMemoryBackend::new()));
         let config = serde_json::json!({
             "provider": { "aws": { "region": "us-east-1" } },
             "resource": { "aws_iam_role": { "node": { "name": "node-role" } } },
@@ -236,7 +209,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_converges_state() {
-        let backend = Arc::new(MemBackend::default());
+        let backend = Arc::new(InMemoryBackend::new());
         let r = TerraformReconciler::new(Arc::clone(&backend));
         let config = serde_json::json!({
             "provider": { "aws": { "region": "us-east-1" } },

@@ -160,6 +160,56 @@ fn empty_state_inline() -> State {
     }
 }
 
+// ── InMemoryBackend ────────────────────────────────────────────────
+
+/// Pure-memory Backend impl used by tests, the magma-converge
+/// law battery, and any in-process pipeline that doesn't need
+/// durability. Locks are no-ops (always succeed).
+///
+/// Compounding rule: this is the canonical in-memory backend. Any
+/// crate that wants one should use this — do NOT redefine a
+/// per-crate `MemBackend` test helper.
+#[derive(Debug)]
+pub struct InMemoryBackend {
+    state: std::sync::Mutex<State>,
+}
+
+impl Default for InMemoryBackend {
+    fn default() -> Self {
+        Self { state: std::sync::Mutex::new(empty_state_inline()) }
+    }
+}
+
+impl InMemoryBackend {
+    pub fn new() -> Self { Self::default() }
+
+    /// Seed the backend with an explicit initial State (useful for
+    /// drift tests that need pre-existing resources).
+    pub fn with_state(state: State) -> Self {
+        Self { state: std::sync::Mutex::new(state) }
+    }
+}
+
+#[async_trait]
+impl Backend for InMemoryBackend {
+    async fn read_state(&self) -> Result<State, BackendError> {
+        Ok(self.state.lock().unwrap().clone())
+    }
+
+    async fn write_state(&self, state: &State) -> Result<(), BackendError> {
+        *self.state.lock().unwrap() = state.clone();
+        Ok(())
+    }
+
+    async fn lock(&self) -> Result<LockId, BackendError> {
+        Ok(LockId::new())
+    }
+
+    async fn unlock(&self, _lock_id: &LockId) -> Result<(), BackendError> {
+        Ok(())
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -198,5 +248,29 @@ mod tests {
         let bogus = LockId("not-the-real-id".into());
         let err = backend.unlock(&bogus).await.unwrap_err();
         assert!(matches!(err, BackendError::LockIdMismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn inmemory_backend_round_trips() {
+        let b = InMemoryBackend::new();
+        let s = b.read_state().await.unwrap();
+        assert_eq!(s.version, 4);
+        assert_eq!(s.resources.len(), 0);
+        let mut s2 = s.clone();
+        s2.serial = 99;
+        b.write_state(&s2).await.unwrap();
+        let s3 = b.read_state().await.unwrap();
+        assert_eq!(s3.serial, 99);
+    }
+
+    #[tokio::test]
+    async fn inmemory_backend_lock_unlock_is_noop_friendly() {
+        let b = InMemoryBackend::new();
+        let id_a = b.lock().await.unwrap();
+        // No exclusion — second lock also succeeds. InMemoryBackend
+        // is for in-process pipelines that don't need cross-process
+        // mutual exclusion.
+        let _id_b = b.lock().await.unwrap();
+        b.unlock(&id_a).await.unwrap();
     }
 }
