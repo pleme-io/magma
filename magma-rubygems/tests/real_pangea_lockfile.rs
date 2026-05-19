@@ -2,7 +2,12 @@
 //! Gemfile.lock end-to-end. Proves the parser handles the actual
 //! shape Pangea workspaces use today.
 
-use magma_rubygems::{attestation::attest_lockfile, lockfile::{emit, parse}, source::Source};
+use magma_rubygems::{
+    attestation::attest_lockfile,
+    lockfile::{emit, parse},
+    nix::emit_gemset,
+    source::Source,
+};
 
 const FIXTURE: &str = include_str!("fixtures/pangea_architectures.Gemfile.lock");
 
@@ -51,6 +56,58 @@ fn attestation_over_real_lockfile_is_well_formed() {
     // Second pass should be deterministic.
     let b = attest_lockfile(&lock);
     assert_eq!(a, b);
+}
+
+#[test]
+fn real_pangea_lockfile_emits_structurally_valid_gemset_nix() {
+    // M7 acceptance: parse the real Pangea Gemfile.lock + emit
+    // gemset.nix that name-matches the checked-in bundix output.
+    let lock = parse(FIXTURE).unwrap();
+    let gemset = emit_gemset(&lock).expect("gemset.nix emission must succeed");
+
+    // Structural sanity: braces + sorted + every gem name appears.
+    assert!(gemset.starts_with("{\n"));
+    assert!(gemset.trim_end().ends_with("}"));
+
+    // Every gem in the lockfile appears in the gemset.
+    for gem in &lock.gems {
+        let expected = format!("  {} = {{", gem.name);
+        assert!(
+            gemset.contains(&expected),
+            "gemset.nix missing entry for `{}`",
+            gem.name,
+        );
+        let expected_version = format!("version = \"{}\";", gem.version);
+        assert!(
+            gemset.contains(&expected_version),
+            "gemset.nix missing version `{}` for `{}`",
+            gem.version, gem.name,
+        );
+    }
+
+    // PATH-sourced gems emit `type = "path";`.
+    let path_count = lock
+        .gems
+        .iter()
+        .filter(|g| matches!(g.source, Source::Path { .. }))
+        .count();
+    let path_type_count = gemset.matches("type = \"path\";").count();
+    assert_eq!(
+        path_type_count, path_count,
+        "expected {path_count} path-type entries, got {path_type_count}",
+    );
+
+    // RubyGems-sourced gems emit `type = "gem";`.
+    let rubygems_count = lock
+        .gems
+        .iter()
+        .filter(|g| matches!(g.source, Source::RubyGemsOrg { .. }))
+        .count();
+    let gem_type_count = gemset.matches("type = \"gem\";").count();
+    assert_eq!(
+        gem_type_count, rubygems_count,
+        "expected {rubygems_count} gem-type entries, got {gem_type_count}",
+    );
 }
 
 #[test]

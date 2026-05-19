@@ -42,6 +42,7 @@ pub mod gemspec_parser;
 pub mod lockfile;
 pub mod manifest;
 pub mod native;
+pub mod nix;
 pub mod resolver;
 pub mod runtime;
 pub mod source;
