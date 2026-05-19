@@ -1835,9 +1835,9 @@ dependencies = [
 
 [[package]]
 name = "num-conv"
-version = "0.2.2"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
+checksum = "c6673768db2d862beb9b39a78fdcb1a69439615d5794a1be50caa9bc92c81967"
 
 [[package]]
 name = "num-traits"
@@ -1863,7 +1863,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "pangea-ruby-eval"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/pangea-operator#f02c8ad810f522f3ab86213282c341807b8ff16e"
+source = "git+https://github.com/pleme-io/pangea-operator#33c599f230f2e3d1be782aa41c84da9bf5396366"
 dependencies = [
  "magnus",
  "serde",
@@ -2646,7 +2646,7 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 [[package]]
 name = "shigoto"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#d8b154f7c40e58dc0a4d98f08a6d847122471181"
+source = "git+https://github.com/pleme-io/shigoto#45b288fa5234530bd1121cf5448263bb7c18c4e4"
 dependencies = [
  "shigoto-budget",
  "shigoto-dag",
@@ -2660,7 +2660,7 @@ dependencies = [
 [[package]]
 name = "shigoto-budget"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#d8b154f7c40e58dc0a4d98f08a6d847122471181"
+source = "git+https://github.com/pleme-io/shigoto#45b288fa5234530bd1121cf5448263bb7c18c4e4"
 dependencies = [
  "serde",
  "shigoto-types",
@@ -2670,7 +2670,7 @@ dependencies = [
 [[package]]
 name = "shigoto-dag"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#d8b154f7c40e58dc0a4d98f08a6d847122471181"
+source = "git+https://github.com/pleme-io/shigoto#45b288fa5234530bd1121cf5448263bb7c18c4e4"
 dependencies = [
  "petgraph 0.6.5",
  "serde",
@@ -2681,7 +2681,7 @@ dependencies = [
 [[package]]
 name = "shigoto-emit"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#d8b154f7c40e58dc0a4d98f08a6d847122471181"
+source = "git+https://github.com/pleme-io/shigoto#45b288fa5234530bd1121cf5448263bb7c18c4e4"
 dependencies = [
  "async-trait",
  "serde",
@@ -2693,7 +2693,7 @@ dependencies = [
 [[package]]
 name = "shigoto-gate"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#d8b154f7c40e58dc0a4d98f08a6d847122471181"
+source = "git+https://github.com/pleme-io/shigoto#45b288fa5234530bd1121cf5448263bb7c18c4e4"
 dependencies = [
  "shigoto-dag",
  "shigoto-types",
@@ -2702,7 +2702,7 @@ dependencies = [
 [[package]]
 name = "shigoto-retry"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#d8b154f7c40e58dc0a4d98f08a6d847122471181"
+source = "git+https://github.com/pleme-io/shigoto#45b288fa5234530bd1121cf5448263bb7c18c4e4"
 dependencies = [
  "serde",
  "shigoto-types",
@@ -2711,7 +2711,7 @@ dependencies = [
 [[package]]
 name = "shigoto-scheduler"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#d8b154f7c40e58dc0a4d98f08a6d847122471181"
+source = "git+https://github.com/pleme-io/shigoto#45b288fa5234530bd1121cf5448263bb7c18c4e4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2730,7 +2730,7 @@ dependencies = [
 [[package]]
 name = "shigoto-types"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#d8b154f7c40e58dc0a4d98f08a6d847122471181"
+source = "git+https://github.com/pleme-io/shigoto#45b288fa5234530bd1121cf5448263bb7c18c4e4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2743,7 +2743,7 @@ dependencies = [
 [[package]]
 name = "shikumi"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shikumi#f573f2bb60ea3b1f54612c36801d8570d30dd1be"
+source = "git+https://github.com/pleme-io/shikumi#a2f2f40a196513fef17d140833174fc35a545772"
 dependencies = [
  "arc-swap",
  "async-trait",

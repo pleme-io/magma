@@ -67,6 +67,15 @@ pub struct Bundle {
     /// Audit events (typically the magma-stream chain for this
     /// reconcile). May be empty if no stream was wired.
     pub audit:       Vec<Event>,
+    /// BLAKE3 attestation of the materialized `magma-rubygems`
+    /// gem tree this reconcile ran against. `None` means the
+    /// reconcile ran outside a magma-rubygems-materialized
+    /// closure (e.g. legacy `bundle install` workspace). Once
+    /// per theory/MAGMA-RUBYGEMS.md M5 lands, every Pangea-side
+    /// reconcile populates this — operators can verify the gem
+    /// closure end-to-end alongside plan + drift + lifecycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gem_tree_attestation: Option<String>,
 }
 
 impl Bundle {
@@ -81,10 +90,30 @@ impl Bundle {
         lifecycle: LifecycleState,
         audit:     Vec<Event>,
     ) -> Result<Self, BundleError> {
+        Self::new_with_gem_tree(kind, workspace, plan, outcome, drift, lifecycle, audit, None)
+    }
+
+    /// Like `new`, but also records a `magma-rubygems` gem tree
+    /// attestation alongside the reconcile artifacts. Once
+    /// magma-rubygems M5 lands, every Pangea-side reconcile
+    /// constructs the bundle via this path; legacy
+    /// bundle-install workspaces still go through `new` and set
+    /// the field to `None`.
+    pub fn new_with_gem_tree(
+        kind:                 impl Into<String>,
+        workspace:            impl Into<String>,
+        plan:                 Plan,
+        outcome:              Option<Outcome>,
+        drift:                DriftReport,
+        lifecycle:            LifecycleState,
+        audit:                Vec<Event>,
+        gem_tree_attestation: Option<String>,
+    ) -> Result<Self, BundleError> {
         let kind = kind.into();
         let workspace = workspace.into();
         let bundle_id = Self::derive_id(
             &kind, &workspace, &plan, &outcome, &drift, &lifecycle, &audit,
+            gem_tree_attestation.as_deref(),
         )?;
         Ok(Self {
             bundle_id,
@@ -96,18 +125,23 @@ impl Bundle {
             drift,
             lifecycle,
             audit,
+            gem_tree_attestation,
         })
     }
 
-    /// Re-derive `bundle_id` from the canonical projection.
+    /// Re-derive `bundle_id` from the canonical projection. The
+    /// optional `gem_tree_attestation` is included in the projection
+    /// so identical reconciles against different gem closures hash
+    /// to different bundle_ids (catches gem-closure drift).
     pub fn derive_id(
-        kind:      &str,
-        workspace: &str,
-        plan:      &Plan,
-        outcome:   &Option<Outcome>,
-        drift:     &DriftReport,
-        lifecycle: &LifecycleState,
-        audit:     &[Event],
+        kind:                 &str,
+        workspace:            &str,
+        plan:                 &Plan,
+        outcome:              &Option<Outcome>,
+        drift:                &DriftReport,
+        lifecycle:            &LifecycleState,
+        audit:                &[Event],
+        gem_tree_attestation: Option<&str>,
     ) -> Result<String, BundleError> {
         // Plan and Outcome carry timestamps that vary across runs.
         // We project the plan via its (stable) id + canonical
@@ -150,6 +184,7 @@ impl Bundle {
                 "prev_hash": e.prev_hash,
                 "hash":      e.hash,
             })).collect::<Vec<_>>(),
+            "gem_tree_attestation": gem_tree_attestation,
         });
         let bytes = serde_json::to_vec(&canonical)?;
         Ok(hex::encode(blake3::hash(&bytes).as_bytes()))
@@ -166,6 +201,7 @@ impl Bundle {
             &self.drift,
             &self.lifecycle,
             &self.audit,
+            self.gem_tree_attestation.as_deref(),
         )?;
         if recomputed != self.bundle_id {
             return Err(BundleError::IdMismatch {
@@ -294,12 +330,57 @@ mod tests {
         let id1 = Bundle::derive_id(
             "terraform", "ws-1",
             &plan, &Some(outcome.clone()), &drift, &lifecycle, &audit,
+            None,
         ).unwrap();
         let id2 = Bundle::derive_id(
             "terraform", "ws-1",
             &plan, &Some(outcome), &drift, &lifecycle, &audit,
+            None,
         ).unwrap();
         assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn bundle_id_changes_when_gem_tree_attestation_differs() {
+        // Two bundles with identical reconcile inputs but different
+        // gem-tree closures must hash differently. Catches the
+        // "same Plan ran against a drifted gem tree" case.
+        let plan = sample_plan();
+        let outcome = sample_outcome(&plan);
+        let drift = classify(&plan, &DriftPolicy::conservative_default());
+        let lifecycle = sample_lifecycle(&plan.id);
+        let audit = sample_audit();
+        let id_a = Bundle::derive_id(
+            "terraform", "ws-1",
+            &plan, &Some(outcome.clone()), &drift, &lifecycle, &audit,
+            Some("a".repeat(64).as_str()),
+        ).unwrap();
+        let id_b = Bundle::derive_id(
+            "terraform", "ws-1",
+            &plan, &Some(outcome), &drift, &lifecycle, &audit,
+            Some("b".repeat(64).as_str()),
+        ).unwrap();
+        assert_ne!(id_a, id_b);
+    }
+
+    #[test]
+    fn gem_tree_attestation_round_trips_through_serde() {
+        // The optional field round-trips through serde JSON
+        // serialization without disturbing the bundle_id.
+        let plan = sample_plan();
+        let outcome = sample_outcome(&plan);
+        let drift = classify(&plan, &DriftPolicy::conservative_default());
+        let lifecycle = sample_lifecycle(&plan.id);
+        let audit = sample_audit();
+        let bundle = Bundle::new_with_gem_tree(
+            "terraform", "ws-1",
+            plan, Some(outcome), drift, lifecycle, audit,
+            Some("c".repeat(64)),
+        ).unwrap();
+        let v = bundle.to_json().unwrap();
+        let back = Bundle::from_json_verified(v).unwrap();
+        assert_eq!(back.gem_tree_attestation.as_deref(), Some("c".repeat(64).as_str()));
+        assert_eq!(back.bundle_id, bundle.bundle_id);
     }
 
     #[test]
