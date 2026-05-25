@@ -100,6 +100,8 @@ magma-repo      = { path = "magma-repo" }
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──
 shikumi          = { git = "https://github.com/pleme-io/shikumi" }
 shigoto          = { git = "https://github.com/pleme-io/shigoto" }
+magma-lava       = { git = "https://github.com/pleme-io/magma-lava", branch = "main" }
+indexmap         = { version = "2", features = ["serde"] }
 # pangea-ruby-eval is consumed via the `magnus` feature on magma-pangea —
 # the actual git dep is declared there to avoid forcing CRuby on every
 # downstream consumer's build.

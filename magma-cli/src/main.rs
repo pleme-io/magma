@@ -401,6 +401,21 @@ struct PlanArgs {
     /// Write the plan to a file (consumed later by `magma apply -plan-id`).
     #[arg(short = 'o', long)]
     out: Option<PathBuf>,
+    /// Path to a `.tlisp` lava architecture. When set, bypasses the
+    /// workspace-on-disk path entirely and synthesizes via magma-lava.
+    /// The state is still read from the workspace dir (or in-memory
+    /// empty state when --tlisp-state-dir is unset).
+    #[arg(long)]
+    tlisp: Option<PathBuf>,
+    /// Repeatable `key=value` binding for the .tlisp architecture's
+    /// `:inputs` slot. Required for any architecture whose interface
+    /// declares non-optional inputs.
+    #[arg(long = "tlisp-binding", value_name = "KEY=VALUE")]
+    tlisp_bindings: Vec<String>,
+    /// Optional typed-interface gate name. Validated against bundled
+    /// interfaces via lava-architectures.
+    #[arg(long)]
+    tlisp_gate: Option<String>,
 }
 
 #[derive(clap::Args, Debug, Default)]
@@ -413,6 +428,16 @@ struct ApplyArgs {
     /// Skip the interactive approval prompt (Terraform's `-auto-approve`).
     #[arg(long)]
     auto_approve: bool,
+    /// Path to a `.tlisp` lava architecture. Same semantics as
+    /// `plan --tlisp`.
+    #[arg(long)]
+    tlisp: Option<PathBuf>,
+    /// Repeatable `key=value` binding.
+    #[arg(long = "tlisp-binding", value_name = "KEY=VALUE")]
+    tlisp_bindings: Vec<String>,
+    /// Optional typed-interface gate name.
+    #[arg(long)]
+    tlisp_gate: Option<String>,
 }
 
 #[derive(clap::Args, Debug, Default)]
@@ -808,6 +833,38 @@ fn cmd_init(args: InitArgs) -> Result<u8> {
 /// operates on a Pangea-rendered workspace shares this prelude;
 /// keeping it in one helper means future load-bearing changes
 /// (e.g. caching, multi-file workspace support) land in one place.
+/// Synthesize a tlisp-sourced workspace. State still comes from
+/// `state_dir`'s local backend, so plan/apply work the same way they
+/// do with rendered terraform.json sources.
+async fn synthesize_via_tlisp(
+    tlisp_path: &std::path::Path,
+    bindings: &[String],
+    gate: Option<&str>,
+    state_dir: &std::path::Path,
+) -> Result<(magma::config::Config, magma::backend::LocalBackend, magma::types::State)> {
+    let mut typed_bindings: indexmap::IndexMap<String, magma_lava::Binding> =
+        indexmap::IndexMap::new();
+    for kv in bindings {
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("--tlisp-binding must be KEY=VALUE: `{kv}`"))?;
+        typed_bindings.insert(k.to_string(), magma_lava::Binding::Scalar(v.to_string()));
+    }
+    let source = magma_lava::LavaSource::Path {
+        path: tlisp_path.to_path_buf(),
+    };
+    let plan = magma_lava::synthesize_source(&source, &typed_bindings, gate)
+        .map_err(|e| anyhow::anyhow!("magma-lava synthesize: {e}"))?;
+    let cfg = magma::config::Config::from_json(plan.terraform_json)
+        .map_err(|e| anyhow::anyhow!("parse synthesized terraform.json: {e}"))?;
+    let backend = magma::backend::LocalBackend::new(state_dir.to_path_buf());
+    let state = backend
+        .read_state()
+        .await
+        .map_err(|e| anyhow::anyhow!("read state: {e}"))?;
+    Ok((cfg, backend, state))
+}
+
 async fn load_workspace_and_state(
     dir: &std::path::Path,
 ) -> Result<(magma::config::Config, magma::backend::LocalBackend, magma::types::State)> {
@@ -828,7 +885,11 @@ async fn load_workspace_and_state(
 }
 
 async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
-    let (cfg, _backend, state) = load_workspace_and_state(&args.dir).await?;
+    let (cfg, _backend, state) = if let Some(tlisp_path) = &args.tlisp {
+        synthesize_via_tlisp(tlisp_path, &args.tlisp_bindings, args.tlisp_gate.as_deref(), &args.dir).await?
+    } else {
+        load_workspace_and_state(&args.dir).await?
+    };
     let plan = magma::plan::plan(&cfg, &state)
         .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
     let summary = serde_json::json!({
@@ -851,7 +912,11 @@ async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
 }
 
 async fn cmd_apply(args: ApplyArgs) -> Result<u8> {
-    let (cfg, backend, mut state) = load_workspace_and_state(&args.dir).await?;
+    let (cfg, backend, mut state) = if let Some(tlisp_path) = &args.tlisp {
+        synthesize_via_tlisp(tlisp_path, &args.tlisp_bindings, args.tlisp_gate.as_deref(), &args.dir).await?
+    } else {
+        load_workspace_and_state(&args.dir).await?
+    };
     let plan = magma::plan::plan(&cfg, &state)
         .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
 

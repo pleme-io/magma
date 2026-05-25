@@ -21,6 +21,8 @@ workspace = true
 
 [dependencies]
 magma               = { workspace = true }
+magma-lava          = { workspace = true }
+indexmap            = { workspace = true }
 magma-arch-test     = { workspace = true }
 magma-migrate       = { workspace = true }
 magma-flow          = { workspace = true }
