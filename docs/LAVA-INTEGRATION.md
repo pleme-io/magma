@@ -181,3 +181,50 @@ Today: a caixa-* repo is a typed package + lifecycle (caixa-core directive). Cai
 4. Render → `magma_types::Plan` → apply via tfplugin providers
 
 One operator command. Multiple typed primitives layered. Pure tatara-lisp authoring throughout.
+
+## Status — 2026-05-25
+
+The upstream lava substrate now ships everything magma needs to
+consume `.tlisp` end-to-end:
+
+- `pleme-io/lava-core` — typed Architecture + Synthesizer trait
+- `pleme-io/lava-eval` — `.tlisp` interpreter (`eval_architecture` +
+  `eval_architecture_with_schema` + `interfaces_in_source` +
+  `tests_in_source`)
+- `pleme-io/lava-architectures` — bundled catalog (6 architectures,
+  each with a `(deflava-interface …)` header)
+- `pleme-io/lava-test` — typed TDD framework (6 built-in assertion
+  variants + `(deflava-test …)` form)
+- `pleme-io/magma-lava` — façade: `synthesize(LavaPlanArgs) → LavaPlan`
+  with `plan.terraform_json` already in the shape `magma_config::Config::from_json`
+  accepts
+- `pleme-io/lava` CLI — `plan` / `apply` / `destroy` / `plan-engine` /
+  `graph` / `show` / `test` / `validate` / `ls`. Default engine is
+  `--engine embedded`; the surface is already wired and prints a
+  typed "library API surface not yet bundled" message until magma
+  publishes its library API (this doc).
+
+### M0 — magma plan --tlisp wiring
+
+Add a `magma-tlisp` workspace member that depends on `magma-lava`
+(git, branch=main) + `magma-config`. The subcommand body becomes:
+
+```rust
+let plan = magma_lava::synthesize(&LavaPlanArgs::for_path(path).gated_by(iface))?;
+let cfg = magma_config::Config::from_json(plan.terraform_json)?;
+let plan = magma_plan::plan(&cfg, &state)?;
+magma_apply::apply(&plan, &state)?;
+```
+
+magma-cli registers the subcommand under `magma plan/apply --tlisp <path>`.
+
+### M1 — embedded lava in the lava CLI
+
+The `lava apply --engine embedded` slot calls into magma's library
+API. The same plumbing magma uses for its own `--tlisp` flag is
+re-exported under `magma-lava-embedded` so lava's CLI can drive it
+without going through the magma subprocess.
+
+Both M0 and M1 only require magma to expose its workspace members
+as git dependencies (or to its-own crates.io publish). No new code
+on the lava side.
