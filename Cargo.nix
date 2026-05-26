@@ -4143,7 +4143,7 @@ rec {
       };
       "magma" = rec {
         crateName = "magma";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma; };
         authors = [
@@ -4210,7 +4210,7 @@ rec {
       };
       "magma-apply" = rec {
         crateName = "magma-apply";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-apply; };
         libName = "magma_apply";
@@ -4299,7 +4299,7 @@ rec {
       };
       "magma-arch-test" = rec {
         crateName = "magma-arch-test";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-arch-test; };
         libName = "magma_arch_test";
@@ -4368,7 +4368,7 @@ rec {
       };
       "magma-attest" = rec {
         crateName = "magma-attest";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-attest; };
         libName = "magma_attest";
@@ -4417,7 +4417,7 @@ rec {
       };
       "magma-backend" = rec {
         crateName = "magma-backend";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-backend; };
         libName = "magma_backend";
@@ -4471,7 +4471,7 @@ rec {
       };
       "magma-budget" = rec {
         crateName = "magma-budget";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-budget; };
         libName = "magma_budget";
@@ -4529,7 +4529,7 @@ rec {
       };
       "magma-bundle" = rec {
         crateName = "magma-bundle";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-bundle; };
         libName = "magma_bundle";
@@ -4600,7 +4600,7 @@ rec {
       };
       "magma-cli" = rec {
         crateName = "magma-cli";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         crateBin = [
           {
@@ -4707,7 +4707,7 @@ rec {
       };
       "magma-config" = rec {
         crateName = "magma-config";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-config; };
         libName = "magma_config";
@@ -4741,7 +4741,7 @@ rec {
       };
       "magma-controller" = rec {
         crateName = "magma-controller";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-controller; };
         libName = "magma_controller";
@@ -4823,7 +4823,7 @@ rec {
       };
       "magma-converge" = rec {
         crateName = "magma-converge";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-converge; };
         libName = "magma_converge";
@@ -4910,7 +4910,7 @@ rec {
       };
       "magma-discover" = rec {
         crateName = "magma-discover";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-discover; };
         libName = "magma_discover";
@@ -4955,7 +4955,7 @@ rec {
       };
       "magma-drift" = rec {
         crateName = "magma-drift";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-drift; };
         libName = "magma_drift";
@@ -5014,7 +5014,7 @@ rec {
       };
       "magma-fixtures" = rec {
         crateName = "magma-fixtures";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-fixtures; };
         libName = "magma_fixtures";
@@ -5053,7 +5053,7 @@ rec {
       };
       "magma-flow" = rec {
         crateName = "magma-flow";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-flow; };
         libName = "magma_flow";
@@ -5126,7 +5126,7 @@ rec {
       };
       "magma-fsm" = rec {
         crateName = "magma-fsm";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-fsm; };
         libName = "magma_fsm";
@@ -5167,7 +5167,7 @@ rec {
       };
       "magma-graph" = rec {
         crateName = "magma-graph";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-graph; };
         libName = "magma_graph";
@@ -5259,7 +5259,7 @@ rec {
       };
       "magma-mcp" = rec {
         crateName = "magma-mcp";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-mcp; };
         libName = "magma_mcp";
@@ -5353,7 +5353,7 @@ rec {
       };
       "magma-metrics" = rec {
         crateName = "magma-metrics";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-metrics; };
         libName = "magma_metrics";
@@ -5398,7 +5398,7 @@ rec {
       };
       "magma-migrate" = rec {
         crateName = "magma-migrate";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-migrate; };
         libName = "magma_migrate";
@@ -5465,7 +5465,7 @@ rec {
       };
       "magma-nix" = rec {
         crateName = "magma-nix";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-nix; };
         libName = "magma_nix";
@@ -5499,7 +5499,7 @@ rec {
       };
       "magma-operator-backend" = rec {
         crateName = "magma-operator-backend";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-operator-backend; };
         libName = "magma_operator_backend";
@@ -5565,7 +5565,7 @@ rec {
       };
       "magma-pangea" = rec {
         crateName = "magma-pangea";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-pangea; };
         libName = "magma_pangea";
@@ -5638,7 +5638,7 @@ rec {
       };
       "magma-plan" = rec {
         crateName = "magma-plan";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-plan; };
         libName = "magma_plan";
@@ -5721,7 +5721,7 @@ rec {
       };
       "magma-plugin" = rec {
         crateName = "magma-plugin";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-plugin; };
         libName = "magma_plugin";
@@ -5813,7 +5813,7 @@ rec {
       };
       "magma-protocol" = rec {
         crateName = "magma-protocol";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-protocol; };
         libName = "magma_protocol";
@@ -5862,7 +5862,7 @@ rec {
       };
       "magma-providers" = rec {
         crateName = "magma-providers";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-providers; };
         libName = "magma_providers";
@@ -5905,7 +5905,7 @@ rec {
       };
       "magma-replay" = rec {
         crateName = "magma-replay";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-replay; };
         libName = "magma_replay";
@@ -5968,7 +5968,7 @@ rec {
       };
       "magma-repo" = rec {
         crateName = "magma-repo";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-repo; };
         libName = "magma_repo";
@@ -6030,7 +6030,7 @@ rec {
       };
       "magma-rubygems" = rec {
         crateName = "magma-rubygems";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-rubygems; };
         libName = "magma_rubygems";
@@ -6068,7 +6068,7 @@ rec {
       };
       "magma-spec" = rec {
         crateName = "magma-spec";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-spec; };
         libName = "magma_spec";
@@ -6114,7 +6114,7 @@ rec {
       };
       "magma-state" = rec {
         crateName = "magma-state";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-state; };
         libName = "magma_state";
@@ -6173,7 +6173,7 @@ rec {
       };
       "magma-stream" = rec {
         crateName = "magma-stream";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-stream; };
         libName = "magma_stream";
@@ -6252,7 +6252,7 @@ rec {
       };
       "magma-tatara" = rec {
         crateName = "magma-tatara";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-tatara; };
         libName = "magma_tatara";
@@ -6279,7 +6279,7 @@ rec {
       };
       "magma-test" = rec {
         crateName = "magma-test";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         crateBin = [
           {
@@ -6415,7 +6415,7 @@ rec {
       };
       "magma-test-laws" = rec {
         crateName = "magma-test-laws";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-test-laws; };
         libName = "magma_test_laws";
@@ -6524,7 +6524,7 @@ rec {
       };
       "magma-tfmod" = rec {
         crateName = "magma-tfmod";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-tfmod; };
         libName = "magma_tfmod";
@@ -6550,7 +6550,7 @@ rec {
       };
       "magma-types" = rec {
         crateName = "magma-types";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./magma-types; };
         libName = "magma_types";
