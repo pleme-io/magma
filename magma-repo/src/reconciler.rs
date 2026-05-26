@@ -15,12 +15,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use magma_converge::{
-    change, Action, AppliedChange, Outcome, Plan, PlanId, Reconciler, ReconcilerError,
+    Action, AppliedChange, Outcome, Plan, PlanId, Reconciler, ReconcilerError, change,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{source::Source, DiscoveredRepo};
+use crate::{DiscoveredRepo, source::Source};
 
 /// Reconciler over a Pangea repository. Each `read_state` reads
 /// the latest typed `DiscoveredRepo` from the source; each
@@ -29,7 +29,7 @@ use crate::{source::Source, DiscoveredRepo};
 /// each `apply` invokes the configured `WorkspaceExecutor` on
 /// every workspace + records per-workspace bundle_ids.
 pub struct PangeaRepoReconciler {
-    pub source:   Source,
+    pub source: Source,
     pub work_dir: std::path::PathBuf,
     /// Per-workspace executor. None = M0 bookkeeping-only mode
     /// (records attestation; doesn't actually invoke MagmaExecutor).
@@ -40,17 +40,18 @@ pub struct PangeaRepoReconciler {
 
 impl PangeaRepoReconciler {
     pub fn new(source: Source, work_dir: impl Into<std::path::PathBuf>) -> Self {
-        Self { source, work_dir: work_dir.into(), executor: None }
+        Self {
+            source,
+            work_dir: work_dir.into(),
+            executor: None,
+        }
     }
 
     /// Attach a per-workspace executor. The reconciler drives
     /// every workspace through `executor.execute()` on each
     /// apply cycle. Per-workspace bundle_ids are recorded in
     /// `RepoObservedState.workspaces`.
-    pub fn with_executor(
-        mut self,
-        executor: Arc<dyn crate::executor::WorkspaceExecutor>,
-    ) -> Self {
+    pub fn with_executor(mut self, executor: Arc<dyn crate::executor::WorkspaceExecutor>) -> Self {
         self.executor = Some(executor);
         self
     }
@@ -75,7 +76,9 @@ pub struct RepoObservedState {
 
 #[async_trait]
 impl Reconciler for PangeaRepoReconciler {
-    fn kind(&self) -> &'static str { "pangea_repo" }
+    fn kind(&self) -> &'static str {
+        "pangea_repo"
+    }
 
     async fn read_state(&self) -> Result<Value, ReconcilerError> {
         // M0: state lives on disk at <work_dir>/magma-repo-state.json.
@@ -90,13 +93,14 @@ impl Reconciler for PangeaRepoReconciler {
             .map_err(|e| ReconcilerError::ReadState(format!("read {state_path:?}: {e}")))?;
         let state: RepoObservedState = serde_json::from_slice(&bytes)
             .map_err(|e| ReconcilerError::ReadState(format!("parse state: {e}")))?;
-        serde_json::to_value(state)
-            .map_err(|e| ReconcilerError::ReadState(e.to_string()))
+        serde_json::to_value(state).map_err(|e| ReconcilerError::ReadState(e.to_string()))
     }
 
     fn compute_plan(&self, _config: &Value, state: &Value) -> Result<Plan, ReconcilerError> {
         // Materialize the source + discover the typed repo.
-        let local = self.source.materialize(&self.work_dir)
+        let local = self
+            .source
+            .materialize(&self.work_dir)
             .map_err(|e| ReconcilerError::ComputePlan(format!("materialize: {e}")))?;
         let repo = crate::discover(local)
             .map_err(|e| ReconcilerError::ComputePlan(format!("discover: {e}")))?;
@@ -113,11 +117,11 @@ impl Reconciler for PangeaRepoReconciler {
         for w in &repo.workspaces {
             let address = format!("pangea_repo.{}", w.name);
             let previously_known = observed.workspaces.contains_key(&w.name);
-            let attestation_match = observed.last_attestation.as_deref()
-                == Some(repo.repo_attestation.as_str());
+            let attestation_match =
+                observed.last_attestation.as_deref() == Some(repo.repo_attestation.as_str());
             let action = match (previously_known, attestation_match) {
-                (false, _)    => Action::Create,
-                (true, true)  => Action::NoOp,
+                (false, _) => Action::Create,
+                (true, true) => Action::NoOp,
                 (true, false) => Action::Update,
             };
             changes.push(change(
@@ -142,10 +146,12 @@ impl Reconciler for PangeaRepoReconciler {
         // mode), apply just records the new attestation.
         let started_at = chrono::Utc::now();
 
-        let local = self.source.materialize(&self.work_dir)
+        let local = self
+            .source
+            .materialize(&self.work_dir)
             .map_err(|e| ReconcilerError::Apply(format!("materialize: {e}")))?;
-        let repo = crate::discover(local)
-            .map_err(|e| ReconcilerError::Apply(format!("discover: {e}")))?;
+        let repo =
+            crate::discover(local).map_err(|e| ReconcilerError::Apply(format!("discover: {e}")))?;
 
         let mut applied = vec![];
         let mut failed: Vec<magma_converge::FailedChange> = vec![];
@@ -171,7 +177,10 @@ impl Reconciler for PangeaRepoReconciler {
                 .copied()
                 .unwrap_or(magma_converge::Action::NoOp);
             if matches!(action, magma_converge::Action::NoOp) {
-                applied.push(AppliedChange { address: address.clone(), action });
+                applied.push(AppliedChange {
+                    address: address.clone(),
+                    action,
+                });
                 continue;
             }
             // Drive the executor if wired; otherwise just record
@@ -191,10 +200,10 @@ impl Reconciler for PangeaRepoReconciler {
             } else {
                 crate::executor::WorkspaceExecutionResult {
                     bundle_id: None,
-                    applied:   0,
-                    failed:    0,
-                    phase:     "Idle".into(),
-                    error:     None,
+                    applied: 0,
+                    failed: 0,
+                    phase: "Idle".into(),
+                    error: None,
                 }
             };
 
@@ -202,7 +211,7 @@ impl Reconciler for PangeaRepoReconciler {
                 failed.push(magma_converge::FailedChange {
                     address: address.clone(),
                     action,
-                    error:   err.clone(),
+                    error: err.clone(),
                 });
                 continue;
             }
@@ -211,10 +220,7 @@ impl Reconciler for PangeaRepoReconciler {
             // bundle_id when executor not wired or skipped). This
             // keeps `compute_plan`'s previously_known flag
             // correct across cycles.
-            workspace_bundles.insert(
-                w.name.clone(),
-                result.bundle_id.unwrap_or_default(),
-            );
+            workspace_bundles.insert(w.name.clone(), result.bundle_id.unwrap_or_default());
             applied.push(AppliedChange { address, action });
         }
         // Plus record every other discovered workspace too (even
@@ -229,8 +235,8 @@ impl Reconciler for PangeaRepoReconciler {
         // Persist new state.
         let new_state = RepoObservedState {
             last_attestation: Some(repo.repo_attestation.clone()),
-            last_commit_sha:  None, // M3 fills this once Git fetch lands
-            workspaces:       workspace_bundles,
+            last_commit_sha: None, // M3 fills this once Git fetch lands
+            workspaces: workspace_bundles,
         };
         let state_path = self.work_dir.join("magma-repo-state.json");
         std::fs::write(
@@ -241,8 +247,8 @@ impl Reconciler for PangeaRepoReconciler {
         .map_err(|e| ReconcilerError::Apply(format!("write state: {e}")))?;
 
         Ok(Outcome {
-            plan_id:     plan.id.clone(),
-            kind:        "pangea_repo".into(),
+            plan_id: plan.id.clone(),
+            kind: "pangea_repo".into(),
             applied,
             failed,
             started_at,
@@ -253,7 +259,9 @@ impl Reconciler for PangeaRepoReconciler {
 
 // Required for Plan::new to compile with the chrono::Utc import.
 #[allow(unused)]
-fn _kept_alive() -> PlanId { PlanId(String::new()) }
+fn _kept_alive() -> PlanId {
+    PlanId(String::new())
+}
 
 #[cfg(test)]
 mod tests {
@@ -277,7 +285,9 @@ mod tests {
         let tmp = stage_repo();
         let work = tempfile::tempdir().unwrap();
         let r = PangeaRepoReconciler::new(
-            Source::Local { path: tmp.path().to_path_buf() },
+            Source::Local {
+                path: tmp.path().to_path_buf(),
+            },
             work.path(),
         );
         let state = r.read_state().await.unwrap();
@@ -293,7 +303,9 @@ mod tests {
         let tmp = stage_repo();
         let work = tempfile::tempdir().unwrap();
         let r = PangeaRepoReconciler::new(
-            Source::Local { path: tmp.path().to_path_buf() },
+            Source::Local {
+                path: tmp.path().to_path_buf(),
+            },
             work.path(),
         );
         // First cycle: plan + apply.
@@ -316,7 +328,11 @@ mod tests {
         invoked: std::sync::Mutex<Vec<String>>,
     }
     impl RecordingExecutor {
-        fn new() -> Self { Self { invoked: std::sync::Mutex::new(vec![]) } }
+        fn new() -> Self {
+            Self {
+                invoked: std::sync::Mutex::new(vec![]),
+            }
+        }
         fn invocations(&self) -> Vec<String> {
             self.invoked.lock().unwrap().clone()
         }
@@ -326,15 +342,17 @@ mod tests {
         async fn execute(
             &self,
             workspace: &crate::DiscoveredWorkspace,
-        ) -> Result<crate::executor::WorkspaceExecutionResult, crate::executor::WorkspaceExecutorError>
-        {
+        ) -> Result<
+            crate::executor::WorkspaceExecutionResult,
+            crate::executor::WorkspaceExecutorError,
+        > {
             self.invoked.lock().unwrap().push(workspace.name.clone());
             Ok(crate::executor::WorkspaceExecutionResult {
                 bundle_id: Some(format!("bundle-{}", workspace.name)),
-                applied:   1,
-                failed:    0,
-                phase:     "Stable".into(),
-                error:     None,
+                applied: 1,
+                failed: 0,
+                phase: "Stable".into(),
+                error: None,
             })
         }
     }
@@ -345,9 +363,12 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         let recorder = std::sync::Arc::new(RecordingExecutor::new());
         let r = PangeaRepoReconciler::new(
-            Source::Local { path: tmp.path().to_path_buf() },
+            Source::Local {
+                path: tmp.path().to_path_buf(),
+            },
             work.path(),
-        ).with_executor(recorder.clone());
+        )
+        .with_executor(recorder.clone());
 
         let state = r.read_state().await.unwrap();
         let plan = r.compute_plan(&serde_json::json!({}), &state).unwrap();
@@ -367,8 +388,14 @@ mod tests {
         let state_bytes = fs::read(&state_path).unwrap();
         let observed: RepoObservedState = serde_json::from_slice(&state_bytes).unwrap();
         assert_eq!(observed.workspaces.len(), 2);
-        assert_eq!(observed.workspaces.get("alpha").map(String::as_str), Some("bundle-alpha"));
-        assert_eq!(observed.workspaces.get("beta").map(String::as_str),  Some("bundle-beta"));
+        assert_eq!(
+            observed.workspaces.get("alpha").map(String::as_str),
+            Some("bundle-alpha")
+        );
+        assert_eq!(
+            observed.workspaces.get("beta").map(String::as_str),
+            Some("bundle-beta")
+        );
     }
 
     /// Executor that fails the second workspace. Apply must
@@ -379,23 +406,25 @@ mod tests {
         async fn execute(
             &self,
             workspace: &crate::DiscoveredWorkspace,
-        ) -> Result<crate::executor::WorkspaceExecutionResult, crate::executor::WorkspaceExecutorError>
-        {
+        ) -> Result<
+            crate::executor::WorkspaceExecutionResult,
+            crate::executor::WorkspaceExecutorError,
+        > {
             if workspace.name == "beta" {
                 return Ok(crate::executor::WorkspaceExecutionResult {
                     bundle_id: None,
-                    applied:   0,
-                    failed:    1,
-                    phase:     "Failed".into(),
-                    error:     Some("beta refused".into()),
+                    applied: 0,
+                    failed: 1,
+                    phase: "Failed".into(),
+                    error: Some("beta refused".into()),
                 });
             }
             Ok(crate::executor::WorkspaceExecutionResult {
                 bundle_id: Some(format!("bundle-{}", workspace.name)),
-                applied:   1,
-                failed:    0,
-                phase:     "Stable".into(),
-                error:     None,
+                applied: 1,
+                failed: 0,
+                phase: "Stable".into(),
+                error: None,
             })
         }
     }
@@ -405,9 +434,12 @@ mod tests {
         let tmp = stage_repo();
         let work = tempfile::tempdir().unwrap();
         let r = PangeaRepoReconciler::new(
-            Source::Local { path: tmp.path().to_path_buf() },
+            Source::Local {
+                path: tmp.path().to_path_buf(),
+            },
             work.path(),
-        ).with_executor(std::sync::Arc::new(PartialFailExecutor));
+        )
+        .with_executor(std::sync::Arc::new(PartialFailExecutor));
 
         let state = r.read_state().await.unwrap();
         let plan = r.compute_plan(&serde_json::json!({}), &state).unwrap();
@@ -425,7 +457,9 @@ mod tests {
         let tmp = stage_repo();
         let work = tempfile::tempdir().unwrap();
         let r = PangeaRepoReconciler::new(
-            Source::Local { path: tmp.path().to_path_buf() },
+            Source::Local {
+                path: tmp.path().to_path_buf(),
+            },
             work.path(),
         );
         // Initial reconcile.
@@ -448,6 +482,6 @@ mod tests {
             .collect();
         assert_eq!(by_addr.get("pangea_repo.gamma"), Some(&Action::Create));
         assert_eq!(by_addr.get("pangea_repo.alpha"), Some(&Action::Update));
-        assert_eq!(by_addr.get("pangea_repo.beta"),  Some(&Action::Update));
+        assert_eq!(by_addr.get("pangea_repo.beta"), Some(&Action::Update));
     }
 }

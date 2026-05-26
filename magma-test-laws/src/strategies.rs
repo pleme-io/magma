@@ -16,7 +16,7 @@
 //! `magma-test-laws = { version = "…", features = ["strategies"] }`
 //! in `[dev-dependencies]`.
 
-use magma_converge::{change, Action, Plan, PlanId};
+use magma_converge::{Action, Plan, PlanId, change};
 use magma_fsm::{LifecycleState, Phase};
 use magma_stream::{Event, EventPayload};
 use proptest::prelude::*;
@@ -54,10 +54,7 @@ pub fn arb_plan() -> impl Strategy<Value = Plan> {
     (
         "[a-z][a-z_]{2,11}", // reconciler kind
         proptest::collection::vec(
-            (
-                "[a-z][a-z0-9_]{0,15}\\.[a-z][a-z0-9_]{0,15}",
-                arb_action(),
-            ),
+            ("[a-z][a-z0-9_]{0,15}\\.[a-z][a-z0-9_]{0,15}", arb_action()),
             0..=8,
         ),
     )
@@ -114,13 +111,13 @@ pub fn arb_lifecycle_happy_walk() -> impl Strategy<Value = LifecycleState> {
 pub fn arb_event_payload() -> impl Strategy<Value = EventPayload> {
     prop_oneof![
         // PlanComputed
-        ("[a-z]{3,12}", arb_plan_id(), 0usize..32usize).prop_map(
-            |(r, p, c)| EventPayload::PlanComputed {
+        ("[a-z]{3,12}", arb_plan_id(), 0usize..32usize).prop_map(|(r, p, c)| {
+            EventPayload::PlanComputed {
                 reconciler: r,
-                plan_id:    p,
-                changes:    c,
+                plan_id: p,
+                changes: c,
             }
-        ),
+        }),
         // DriftClassified
         (
             "[a-z]{3,12}",
@@ -132,13 +129,13 @@ pub fn arb_event_payload() -> impl Strategy<Value = EventPayload> {
             0usize..16usize,
         )
             .prop_map(|(r, p, t, ac, acw, aw, rf)| EventPayload::DriftClassified {
-                reconciler:                r,
-                plan_id:                   p,
-                total:                     t,
-                auto_corrected:            ac,
+                reconciler: r,
+                plan_id: p,
+                total: t,
+                auto_corrected: ac,
                 auto_corrected_with_alert: acw,
-                awaiting_approval:         aw,
-                refused:                   rf,
+                awaiting_approval: aw,
+                refused: rf,
             }),
         // ApplyOutcome
         (
@@ -149,14 +146,14 @@ pub fn arb_event_payload() -> impl Strategy<Value = EventPayload> {
         )
             .prop_map(|(r, p, a, f)| EventPayload::ApplyOutcome {
                 reconciler: r,
-                plan_id:    p,
-                applied:    a,
-                failed:     f,
+                plan_id: p,
+                applied: a,
+                failed: f,
             }),
         // Custom
         ("[a-z]{3,12}", "[a-z ]{0,40}").prop_map(|(c, m)| EventPayload::Custom {
             category: c,
-            message:  m,
+            message: m,
         }),
     ]
 }

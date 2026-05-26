@@ -34,7 +34,7 @@ use thiserror::Error;
 use magma_budget::BudgetedReconciler;
 use magma_bundle::{Bundle, BundleError};
 use magma_converge::{Reconciler, ReconcilerError};
-use magma_drift::{classify, reconcile_with_policy, DriftPolicy, ReconcileResult};
+use magma_drift::{DriftPolicy, ReconcileResult, classify, reconcile_with_policy};
 use magma_fsm::{LifecycleState, Phase, TransitionError};
 use magma_metrics::Metrics;
 use magma_stream::PlanStream;
@@ -58,16 +58,18 @@ pub enum ControllerError {
 /// FSM lifecycle snapshot and the tamper-evident Bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControllerOutcome {
-    pub result:    ReconcileResult,
-    pub bundle:    Bundle,
+    pub result: ReconcileResult,
+    pub bundle: Bundle,
     pub lifecycle: LifecycleState,
 }
 
 impl ControllerOutcome {
     /// Convenience: did the reconcile reach Stable?
     pub fn fully_succeeded(&self) -> bool {
-        matches!(self.result, ReconcileResult::NoChange { .. } | ReconcileResult::Applied { .. })
-            && self.lifecycle.current == Phase::Stable
+        matches!(
+            self.result,
+            ReconcileResult::NoChange { .. } | ReconcileResult::Applied { .. }
+        ) && self.lifecycle.current == Phase::Stable
     }
 }
 
@@ -78,24 +80,24 @@ pub struct ReconcileController<R: Reconciler> {
     /// Wrapped reconciler with budget + retry built in.
     reconciler: Arc<BudgetedReconciler<R>>,
     /// Drift classification policy.
-    policy:     DriftPolicy,
+    policy: DriftPolicy,
     /// Shared event stream (typically wired with K8sEventSink +
     /// JsonLinesSink + TracingSink by the operator).
-    stream:     Arc<PlanStream>,
+    stream: Arc<PlanStream>,
     /// Prometheus metrics handle (shared across kinds).
-    metrics:    Arc<Metrics>,
+    metrics: Arc<Metrics>,
     /// Workspace identifier (CR name + namespace, or the
     /// operator-side state-name triple).
-    workspace:  String,
+    workspace: String,
 }
 
 impl<R: Reconciler> ReconcileController<R> {
     pub fn new(
         reconciler: BudgetedReconciler<R>,
-        policy:     DriftPolicy,
-        stream:     Arc<PlanStream>,
-        metrics:    Arc<Metrics>,
-        workspace:  impl Into<String>,
+        policy: DriftPolicy,
+        stream: Arc<PlanStream>,
+        metrics: Arc<Metrics>,
+        workspace: impl Into<String>,
     ) -> Self {
         Self {
             reconciler: Arc::new(reconciler),
@@ -138,28 +140,37 @@ impl<R: Reconciler> ReconcileController<R> {
         // Drive the FSM through phases based on the typed result kind.
         let (final_phase, reason) = match &result {
             ReconcileResult::NoChange { .. } => (Phase::Stable, "no changes".into()),
-            ReconcileResult::Refused { refused, .. } => {
-                (Phase::Refused, format!("policy refused {refused} change(s)"))
-            }
-            ReconcileResult::HeldForApproval { held, .. } => {
-                (Phase::Approving, format!("policy requires approval on {held} change(s)"))
-            }
+            ReconcileResult::Refused { refused, .. } => (
+                Phase::Refused,
+                format!("policy refused {refused} change(s)"),
+            ),
+            ReconcileResult::HeldForApproval { held, .. } => (
+                Phase::Approving,
+                format!("policy requires approval on {held} change(s)"),
+            ),
             ReconcileResult::Applied { .. } => {
-                lifecycle.transition(Phase::Applying,  Some(plan_id.clone()), "applying")?;
+                lifecycle.transition(Phase::Applying, Some(plan_id.clone()), "applying")?;
                 lifecycle.transition(Phase::Verifying, Some(plan_id.clone()), "applied")?;
                 (Phase::Stable, "verified, no drift".into())
             }
             ReconcileResult::AppliedWithFailures { outcome, .. } => {
-                lifecycle.transition(Phase::Applying,  Some(plan_id.clone()), "applying")?;
-                lifecycle.transition(Phase::Verifying, Some(plan_id.clone()), "applied with failures")?;
-                (Phase::Failed, format!("{} resource(s) failed apply", outcome.failed.len()))
+                lifecycle.transition(Phase::Applying, Some(plan_id.clone()), "applying")?;
+                lifecycle.transition(
+                    Phase::Verifying,
+                    Some(plan_id.clone()),
+                    "applied with failures",
+                )?;
+                (
+                    Phase::Failed,
+                    format!("{} resource(s) failed apply", outcome.failed.len()),
+                )
             }
         };
         lifecycle.transition(final_phase, Some(plan_id), reason)?;
 
         let drift_for_bundle = match result.report() {
             Some(report) => report.clone(),
-            None         => classify(result.plan(), &self.policy),
+            None => classify(result.plan(), &self.policy),
         };
         let bundle = Bundle::new(
             self.kind(),
@@ -171,9 +182,12 @@ impl<R: Reconciler> ReconcileController<R> {
             vec![],
         )?;
 
-        Ok(ControllerOutcome { result, bundle, lifecycle })
+        Ok(ControllerOutcome {
+            result,
+            bundle,
+            lifecycle,
+        })
     }
-
 }
 
 /// Erased ReconcileController surface, useful when storing many
@@ -206,11 +220,8 @@ mod tests {
 
     fn make_controller() -> (ReconcileController<InMemoryKvReconciler>, Registry) {
         let inner = InMemoryKvReconciler::new();
-        let budgeted = BudgetedReconciler::new(
-            inner,
-            ConcurrencyLimit::new(4),
-            RetryPolicy::none(),
-        );
+        let budgeted =
+            BudgetedReconciler::new(inner, ConcurrencyLimit::new(4), RetryPolicy::none());
         let registry = Registry::new();
         let metrics = Arc::new(Metrics::register(&registry).unwrap());
         let stream = Arc::new(PlanStream::new());
@@ -238,9 +249,14 @@ mod tests {
     async fn applied_path_walks_full_fsm() {
         let (controller, _registry) = make_controller();
         // Config with two creates → all Functional → AutoCorrectWithAlert → applied.
-        let outcome = controller.reconcile(&json!({ "a": 1, "b": 2 })).await.unwrap();
+        let outcome = controller
+            .reconcile(&json!({ "a": 1, "b": 2 }))
+            .await
+            .unwrap();
         match &outcome.result {
-            ReconcileResult::Applied { outcome: o, plan, .. } => {
+            ReconcileResult::Applied {
+                outcome: o, plan, ..
+            } => {
                 assert!(o.fully_succeeded());
                 assert_eq!(o.applied.len(), 2);
                 // Plan now carries the full change set.
@@ -251,7 +267,15 @@ mod tests {
         assert_eq!(outcome.lifecycle.current, Phase::Stable);
         assert_eq!(outcome.lifecycle.len(), 4);
         let phases: Vec<Phase> = outcome.lifecycle.history.iter().map(|t| t.to).collect();
-        assert_eq!(phases, vec![Phase::Planning, Phase::Applying, Phase::Verifying, Phase::Stable]);
+        assert_eq!(
+            phases,
+            vec![
+                Phase::Planning,
+                Phase::Applying,
+                Phase::Verifying,
+                Phase::Stable
+            ]
+        );
         // Bundle carries the full plan, not the empty-changes hack.
         assert_eq!(outcome.bundle.change_count(), 2);
     }
@@ -262,11 +286,8 @@ mod tests {
         let inner = InMemoryKvReconciler::with_state(
             [("doomed".to_string(), json!("x"))].into_iter().collect(),
         );
-        let budgeted = BudgetedReconciler::new(
-            inner,
-            ConcurrencyLimit::new(1),
-            RetryPolicy::none(),
-        );
+        let budgeted =
+            BudgetedReconciler::new(inner, ConcurrencyLimit::new(1), RetryPolicy::none());
         let registry = Registry::new();
         let metrics = Arc::new(Metrics::register(&registry).unwrap());
         let stream = Arc::new(PlanStream::new());
@@ -293,22 +314,19 @@ mod tests {
     #[tokio::test]
     async fn refused_path_stops_at_refused() {
         let inner = InMemoryKvReconciler::new();
-        let budgeted = BudgetedReconciler::new(
-            inner,
-            ConcurrencyLimit::new(1),
-            RetryPolicy::none(),
-        );
+        let budgeted =
+            BudgetedReconciler::new(inner, ConcurrencyLimit::new(1), RetryPolicy::none());
         let registry = Registry::new();
         let metrics = Arc::new(Metrics::register(&registry).unwrap());
         let stream = Arc::new(PlanStream::new());
         // Refuse-everything policy.
         let policy = DriftPolicy {
             rules: vec![magma_drift::PolicyRule {
-                name:           "refuse-all".into(),
-                severity:       None,
-                action:         None,
+                name: "refuse-all".into(),
+                severity: None,
+                action: None,
                 address_prefix: None,
-                decision:       magma_drift::DriftDecision::Refuse,
+                decision: magma_drift::DriftDecision::Refuse,
             }],
             fallback: magma_drift::DriftDecision::Refuse,
         };
@@ -336,7 +354,9 @@ mod tests {
         prometheus::Encoder::encode(&encoder, &mfs, &mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains(r#"magma_plan_computed_total{kind="inmemory_kv"} 1"#));
-        assert!(text.contains(r#"magma_apply_outcome_total{kind="inmemory_kv",result="applied"} 1"#));
+        assert!(
+            text.contains(r#"magma_apply_outcome_total{kind="inmemory_kv",result="applied"} 1"#)
+        );
     }
 
     #[tokio::test]

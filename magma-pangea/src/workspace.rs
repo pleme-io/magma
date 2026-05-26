@@ -43,9 +43,9 @@ pub enum WorkspaceError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconcileResult {
     pub workspace_name: String,
-    pub plan:           Plan,
-    pub new_state:      State,
-    pub outputs:        HashMap<String, serde_json::Value>,
+    pub plan: Plan,
+    pub new_state: State,
+    pub outputs: HashMap<String, serde_json::Value>,
 }
 
 // ── Workspace trait ───────────────────────────────────────────────
@@ -68,10 +68,8 @@ pub trait Workspace: Send + Sync {
     /// Render this workspace's `Config` from typed inputs. Pure
     /// (no side effects); called by `reconcile` and standalone for
     /// dry-run / synth flows.
-    fn render(
-        &self,
-        inputs: &HashMap<String, serde_json::Value>,
-    ) -> Result<Config, WorkspaceError>;
+    fn render(&self, inputs: &HashMap<String, serde_json::Value>)
+    -> Result<Config, WorkspaceError>;
 
     /// Reconcile against current state. Returns the typed plan +
     /// (post-apply) state + extracted outputs.
@@ -85,31 +83,20 @@ pub trait Workspace: Send + Sync {
 // ── InlineWorkspace — closure-built for tests + dynamic flows ─────
 
 type RenderFn = Box<
-    dyn Fn(
-            &HashMap<String, serde_json::Value>,
-        ) -> Result<Config, WorkspaceError>
-        + Send
-        + Sync,
+    dyn Fn(&HashMap<String, serde_json::Value>) -> Result<Config, WorkspaceError> + Send + Sync,
 >;
 
-type OutputFn = Box<
-    dyn Fn(
-            &Config,
-            &State,
-        ) -> HashMap<String, serde_json::Value>
-        + Send
-        + Sync,
->;
+type OutputFn = Box<dyn Fn(&Config, &State) -> HashMap<String, serde_json::Value> + Send + Sync>;
 
 /// A `Workspace` built from closures. Used heavily in tests + for
 /// dynamically-constructed flows (tatara-lisp `(defmagma-workspace …)`
 /// compiles to InlineWorkspace instances at runtime in M0.x).
 pub struct InlineWorkspace {
-    name:         String,
-    input_slots:  Vec<String>,
+    name: String,
+    input_slots: Vec<String>,
     output_slots: Vec<String>,
-    render_fn:    RenderFn,
-    output_fn:    OutputFn,
+    render_fn: RenderFn,
+    output_fn: OutputFn,
 }
 
 impl InlineWorkspace {
@@ -125,10 +112,7 @@ impl InlineWorkspace {
             + Send
             + Sync
             + 'static,
-        O: Fn(&Config, &State) -> HashMap<String, serde_json::Value>
-            + Send
-            + Sync
-            + 'static,
+        O: Fn(&Config, &State) -> HashMap<String, serde_json::Value> + Send + Sync + 'static,
     {
         Self {
             name: name.into(),
@@ -142,9 +126,15 @@ impl InlineWorkspace {
 
 #[async_trait]
 impl Workspace for InlineWorkspace {
-    fn name(&self) -> &str { &self.name }
-    fn input_slots(&self) -> Vec<String> { self.input_slots.clone() }
-    fn output_slots(&self) -> Vec<String> { self.output_slots.clone() }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn input_slots(&self) -> Vec<String> {
+        self.input_slots.clone()
+    }
+    fn output_slots(&self) -> Vec<String> {
+        self.output_slots.clone()
+    }
 
     fn render(
         &self,
@@ -190,15 +180,16 @@ mod tests {
             vec!["x".into()],
             vec!["y".into()],
             |inputs| {
-                let x = inputs.get("x").and_then(|v| v.as_str()).unwrap_or("default");
+                let x = inputs
+                    .get("x")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default");
                 Config::from_json(json!({
                     "resource": { "aws_vpc": { "main": { "cidr_block": x } } }
                 }))
                 .map_err(WorkspaceError::Config)
             },
-            |_cfg, _state| {
-                HashMap::from([("y".to_string(), json!("y-value"))])
-            },
+            |_cfg, _state| HashMap::from([("y".to_string(), json!("y-value"))]),
         );
         let mut inputs = HashMap::new();
         inputs.insert("x".into(), json!("10.0.0.0/16"));
@@ -212,9 +203,13 @@ mod tests {
     #[tokio::test]
     async fn workspace_idempotent_re_reconcile() {
         let ws = InlineWorkspace::new(
-            "idem", vec![], vec![],
-            |_| Config::from_json(json!({ "resource": { "aws_vpc": { "main": {} } } }))
-                .map_err(WorkspaceError::Config),
+            "idem",
+            vec![],
+            vec![],
+            |_| {
+                Config::from_json(json!({ "resource": { "aws_vpc": { "main": {} } } }))
+                    .map_err(WorkspaceError::Config)
+            },
             |_, _| HashMap::new(),
         );
         // empty_state() generates a new lineage uuid each call, which

@@ -35,7 +35,8 @@ pub fn assert_resource_addresses_unique(cfg: &Config) {
             assert!(
                 seen.insert(key.clone()),
                 "Architecture law violated: duplicate resource address: {}.{}",
-                key.0, key.1,
+                key.0,
+                key.1,
             );
         }
     }
@@ -45,7 +46,8 @@ pub fn assert_resource_addresses_unique(cfg: &Config) {
             assert!(
                 seen.insert(key.clone()),
                 "Architecture law violated: duplicate data source address: {}.{}",
-                key.0, key.1,
+                key.0,
+                key.1,
             );
         }
     }
@@ -105,9 +107,17 @@ pub fn assert_no_dangling_references(cfg: &Config) {
     // the renderer leaves intact.
     for r in refs {
         let head = reference_head(&r);
-        let is_builtin = ["var.", "local.", "each.", "count.", "path.", "terraform.", "self."]
-            .iter()
-            .any(|b| r.starts_with(b));
+        let is_builtin = [
+            "var.",
+            "local.",
+            "each.",
+            "count.",
+            "path.",
+            "terraform.",
+            "self.",
+        ]
+        .iter()
+        .any(|b| r.starts_with(b));
         if is_builtin {
             continue;
         }
@@ -167,7 +177,7 @@ pub fn assert_every_resource_type_has_a_provider(cfg: &Config) {
         // `cloudflare_record`, `kubernetes_namespace`.
         let provider = match type_name.split_once('_') {
             Some((p, _)) => p,
-            None         => continue, // single-token type, skip
+            None => continue, // single-token type, skip
         };
         assert!(
             providers.contains(provider),
@@ -238,29 +248,29 @@ fn reference_head(reference: &str) -> String {
             // data.<type>.<name>... → 3-segment head
             match (parts.get(1), parts.get(2)) {
                 (Some(t), Some(n)) => format!("data.{t}.{n}"),
-                _                  => reference.to_string(),
+                _ => reference.to_string(),
             }
         }
         Some("module") => {
             // module.<name>.<output>... → 2-segment head
             match parts.get(1) {
                 Some(n) => format!("module.{n}"),
-                _       => reference.to_string(),
+                _ => reference.to_string(),
             }
         }
         Some("output") => {
             // output.<name> — already the head
             match parts.get(1) {
                 Some(n) => format!("output.{n}"),
-                _       => reference.to_string(),
+                _ => reference.to_string(),
             }
         }
         _ => {
             // Managed resource: <type>.<name>... → 2-segment head
             match (parts.first(), parts.get(1)) {
                 (Some(t), Some(n)) => format!("{t}.{n}"),
-                (Some(t), None)    => t.to_string(),
-                _                  => reference.to_string(),
+                (Some(t), None) => t.to_string(),
+                _ => reference.to_string(),
             }
         }
     }
@@ -316,4 +326,6 @@ pub fn collect_all_references(cfg: &Config) -> Vec<String> {
 // Avoid `unused` warning when feature is enabled but no caller uses
 // HashMap.
 #[allow(dead_code)]
-fn _hashmap_keeplive() -> HashMap<String, String> { HashMap::new() }
+fn _hashmap_keeplive() -> HashMap<String, String> {
+    HashMap::new()
+}

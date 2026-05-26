@@ -58,29 +58,29 @@ pub enum HarnessError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceReport {
     /// Workspace shape detected by `magma_pangea::WorkspaceShape::discover`.
-    pub shape:                String,
+    pub shape: String,
     /// Number of resource changes the plan emits against empty state.
     pub resource_change_count: usize,
     /// Action histogram across all changes (Create/Delete/NoOp/etc.).
-    pub action_histogram:     HashMap<String, usize>,
+    pub action_histogram: HashMap<String, usize>,
     /// Distinct provider sources referenced by the workspace.
-    pub providers:            Vec<String>,
+    pub providers: Vec<String>,
     /// Distinct resource type names that appear in the rendered JSON.
-    pub resource_types:       Vec<String>,
+    pub resource_types: Vec<String>,
     /// The BLAKE3 PlanId of this run (hex-encoded). Deterministic when
     /// inputs are fixed.
-    pub plan_id:              String,
+    pub plan_id: String,
     /// Plan creation timestamp (RFC3339).
-    pub created_at:           String,
+    pub created_at: String,
     /// Compatibility summary — derived from the planner output.
-    pub compatibility:        CompatibilitySummary,
+    pub compatibility: CompatibilitySummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompatibilitySummary {
-    pub parses:                bool,
-    pub plans_cleanly:         bool,
-    pub all_creates:           bool,
+    pub parses: bool,
+    pub plans_cleanly: bool,
+    pub all_creates: bool,
     pub uses_in_memory_chains: bool,
 }
 
@@ -96,10 +96,14 @@ pub struct WorkspaceTestHarness {
 
 impl WorkspaceTestHarness {
     pub fn new(workspace_path: impl Into<PathBuf>) -> Self {
-        Self { workspace_path: workspace_path.into() }
+        Self {
+            workspace_path: workspace_path.into(),
+        }
     }
 
-    pub fn path(&self) -> &Path { &self.workspace_path }
+    pub fn path(&self) -> &Path {
+        &self.workspace_path
+    }
 
     /// Run the full pipeline (discover → load → parse → plan) and
     /// return a typed `WorkspaceReport`. Doesn't mutate state on
@@ -111,8 +115,8 @@ impl WorkspaceTestHarness {
         let shape = WorkspaceShape::discover(workspace_dir.path())
             .map_err(|e| HarnessError::Discover(e.to_string()))?;
         let shape_kind = match &shape {
-            WorkspaceShape::PangeaRuby     { .. } => "PangeaRuby",
-            WorkspaceShape::TerraformJson  { .. } => "TerraformJson",
+            WorkspaceShape::PangeaRuby { .. } => "PangeaRuby",
+            WorkspaceShape::TerraformJson { .. } => "TerraformJson",
         }
         .to_string();
 
@@ -120,10 +124,9 @@ impl WorkspaceTestHarness {
             .load(shape)
             .await
             .map_err(|e| HarnessError::Load(e.to_string()))?;
-        let cfg = Config::from_json(loaded.rendered)
-            .map_err(|e| HarnessError::Parse(e.to_string()))?;
-        let plan_out = plan(&cfg, &empty_state())
-            .map_err(|e| HarnessError::Plan(e.to_string()))?;
+        let cfg =
+            Config::from_json(loaded.rendered).map_err(|e| HarnessError::Parse(e.to_string()))?;
+        let plan_out = plan(&cfg, &empty_state()).map_err(|e| HarnessError::Plan(e.to_string()))?;
 
         Ok(report_from(&cfg, &plan_out, shape_kind))
     }
@@ -225,16 +228,16 @@ impl WorkspaceTestHarness {
         let shape = WorkspaceShape::discover(workspace_dir.path())
             .map_err(|e| HarnessError::Discover(e.to_string()))?;
         let shape_kind = match &shape {
-            WorkspaceShape::PangeaRuby     { .. } => "PangeaRuby",
-            WorkspaceShape::TerraformJson  { .. } => "TerraformJson",
+            WorkspaceShape::PangeaRuby { .. } => "PangeaRuby",
+            WorkspaceShape::TerraformJson { .. } => "TerraformJson",
         }
         .to_string();
         let loaded = TerraformJsonLoader
             .load(shape)
             .await
             .map_err(|e| HarnessError::Load(e.to_string()))?;
-        let cfg = Config::from_json(loaded.rendered)
-            .map_err(|e| HarnessError::Parse(e.to_string()))?;
+        let cfg =
+            Config::from_json(loaded.rendered).map_err(|e| HarnessError::Parse(e.to_string()))?;
         let fixed_state = empty_state();
         let p1 = plan(&cfg, &fixed_state).map_err(|e| HarnessError::Plan(e.to_string()))?;
         let p2 = plan(&cfg, &fixed_state).map_err(|e| HarnessError::Plan(e.to_string()))?;
@@ -263,31 +266,32 @@ impl WorkspaceTestHarness {
         let shape = WorkspaceShape::discover(workspace_dir.path())
             .map_err(|e| HarnessError::Discover(e.to_string()))?;
         let shape_kind = match &shape {
-            WorkspaceShape::PangeaRuby     { .. } => "PangeaRuby",
-            WorkspaceShape::TerraformJson  { .. } => "TerraformJson",
+            WorkspaceShape::PangeaRuby { .. } => "PangeaRuby",
+            WorkspaceShape::TerraformJson { .. } => "TerraformJson",
         }
         .to_string();
         let loaded = TerraformJsonLoader
             .load(shape)
             .await
             .map_err(|e| HarnessError::Load(e.to_string()))?;
-        let cfg = Config::from_json(loaded.rendered)
-            .map_err(|e| HarnessError::Parse(e.to_string()))?;
+        let cfg =
+            Config::from_json(loaded.rendered).map_err(|e| HarnessError::Parse(e.to_string()))?;
         // Architecture composition + workspace lifecycle laws as
         // typed Results (no panic propagation).
         if let Err(v) = magma_test_laws::preflight::check_architecture(&cfg) {
             return Err(HarnessError::ExpectationViolated(format!(
-                "{} — {}", v.law, v.message,
+                "{} — {}",
+                v.law, v.message,
             )));
         }
         if let Err(v) = magma_test_laws::preflight::check_workspace(&cfg) {
             return Err(HarnessError::ExpectationViolated(format!(
-                "{} — {}", v.law, v.message,
+                "{} — {}",
+                v.law, v.message,
             )));
         }
         // Final report from one canonical plan run.
-        let plan_out = plan(&cfg, &empty_state())
-            .map_err(|e| HarnessError::Plan(e.to_string()))?;
+        let plan_out = plan(&cfg, &empty_state()).map_err(|e| HarnessError::Plan(e.to_string()))?;
         Ok(report_from(&cfg, &plan_out, shape_kind))
     }
 }
@@ -302,7 +306,7 @@ enum WorkspaceDir {
 impl WorkspaceDir {
     fn path(&self) -> &Path {
         match self {
-            Self::Direct(p)   => p,
+            Self::Direct(p) => p,
             Self::Staged(tmp) => tmp.path(),
         }
     }
@@ -344,11 +348,11 @@ fn report_from(cfg: &Config, plan_out: &Plan, shape: String) -> WorkspaceReport 
         action_histogram,
         providers,
         resource_types,
-        plan_id:               hex::encode(plan_id_bytes(&plan_out.id)),
-        created_at:            plan_out.created_at.to_rfc3339(),
+        plan_id: hex::encode(plan_id_bytes(&plan_out.id)),
+        created_at: plan_out.created_at.to_rfc3339(),
         compatibility: CompatibilitySummary {
-            parses:                true,
-            plans_cleanly:         true,
+            parses: true,
+            plans_cleanly: true,
             all_creates,
             // Always true when consumed via this harness — the harness
             // *is* the in-memory chain. Materializing to disk happens
@@ -358,17 +362,19 @@ fn report_from(cfg: &Config, plan_out: &Plan, shape: String) -> WorkspaceReport 
     }
 }
 
-fn plan_id_bytes(id: &PlanId) -> &[u8; 32] { &id.0 }
+fn plan_id_bytes(id: &PlanId) -> &[u8; 32] {
+    &id.0
+}
 
 fn action_name(a: Action) -> &'static str {
     match a {
-        Action::NoOp             => "no_op",
-        Action::Create           => "create",
-        Action::Read             => "read",
-        Action::Update           => "update",
-        Action::Replace          => "replace",
-        Action::Delete           => "delete",
-        Action::Forget           => "forget",
+        Action::NoOp => "no_op",
+        Action::Create => "create",
+        Action::Read => "read",
+        Action::Update => "update",
+        Action::Replace => "replace",
+        Action::Delete => "delete",
+        Action::Forget => "forget",
         Action::CreateThenDelete => "create_then_delete",
         Action::DeleteThenCreate => "delete_then_create",
     }
@@ -382,21 +388,21 @@ fn action_name(a: Action) -> &'static str {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregateReport {
     pub total_workspaces: usize,
-    pub passed:           usize,
-    pub failed:           usize,
-    pub started_at:       String,
-    pub finished_at:      String,
-    pub workspaces:       Vec<NamedReport>,
+    pub passed: usize,
+    pub failed: usize,
+    pub started_at: String,
+    pub finished_at: String,
+    pub workspaces: Vec<NamedReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamedReport {
-    pub name:   String,
+    pub name: String,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<WorkspaceReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error:  Option<String>,
+    pub error: Option<String>,
 }
 
 /// Run the harness against every `.tf.json` file under `dir`. Emits a
@@ -437,7 +443,7 @@ pub async fn verify_directory(dir: impl AsRef<Path>) -> Result<AggregateReport, 
                     name,
                     status: "passed".into(),
                     report: Some(report),
-                    error:  None,
+                    error: None,
                 });
             }
             Err(e) => {
@@ -446,7 +452,7 @@ pub async fn verify_directory(dir: impl AsRef<Path>) -> Result<AggregateReport, 
                     name,
                     status: "failed".into(),
                     report: None,
-                    error:  Some(e.to_string()),
+                    error: Some(e.to_string()),
                 });
             }
         }
@@ -503,7 +509,7 @@ pub async fn run_law_battery_directory(
                     name,
                     status: "passed".into(),
                     report: Some(report),
-                    error:  None,
+                    error: None,
                 });
             }
             Err(e) => {
@@ -512,7 +518,7 @@ pub async fn run_law_battery_directory(
                     name,
                     status: "violated".into(),
                     report: None,
-                    error:  Some(e.to_string()),
+                    error: Some(e.to_string()),
                 });
             }
         }
@@ -543,8 +549,10 @@ mod tests {
             &json_path,
             serde_json::to_string(&json!({
                 "resource": { "aws_vpc": { "main": { "cidr_block": "10.0.0.0/16" } } }
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
 
         let harness = WorkspaceTestHarness::new(tmp.path().to_path_buf());
         let report = harness.verify().await.unwrap();
@@ -565,8 +573,10 @@ mod tests {
                     "aws_vpc":    { "main":    {} },
                     "aws_subnet": { "public":  {} }
                 }
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
 
         let harness = WorkspaceTestHarness::new(json_path.clone());
         let report = harness.verify().await.unwrap();
@@ -584,8 +594,10 @@ mod tests {
                     "required_providers": { "aws": { "source": "hashicorp/aws" } }
                 },
                 "resource": { "aws_vpc": { "main": {} } }
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
 
         let harness = WorkspaceTestHarness::new(tmp.path().to_path_buf());
         let report = harness.assert_uses_provider("hashicorp/aws").await.unwrap();
@@ -603,8 +615,10 @@ mod tests {
             &json_path,
             serde_json::to_string(&json!({
                 "resource": { "aws_vpc": { "main": {} } }
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
 
         let harness = WorkspaceTestHarness::new(tmp.path().to_path_buf());
         harness.assert_plan_id_deterministic().await.unwrap();
@@ -618,14 +632,16 @@ mod tests {
                 tmp.path().join(format!("{name}.tf.json")),
                 serde_json::to_string(&json!({
                     "resource": { "aws_vpc": { name: {} } }
-                })).unwrap(),
-            ).unwrap();
+                }))
+                .unwrap(),
+            )
+            .unwrap();
         }
 
         let agg = verify_directory(tmp.path()).await.unwrap();
         assert_eq!(agg.total_workspaces, 3);
-        assert_eq!(agg.passed,           3);
-        assert_eq!(agg.failed,           0);
+        assert_eq!(agg.passed, 3);
+        assert_eq!(agg.failed, 0);
         for w in &agg.workspaces {
             assert_eq!(w.status, "passed");
             assert!(w.report.is_some());

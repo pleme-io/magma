@@ -16,9 +16,7 @@ use std::collections::HashSet;
 use chrono::Utc;
 use magma_attest::hash_plan_inputs;
 use magma_config::Config;
-use magma_types::{
-    Action, ChangeReason, Plan, ResourceAddress, ResourceChange, State,
-};
+use magma_types::{Action, ChangeReason, Plan, ResourceAddress, ResourceChange, State};
 
 // ── Errors ─────────────────────────────────────────────────────────
 
@@ -39,7 +37,7 @@ pub enum PlanError {
 /// the `PlanResourceChange` integration.
 pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     let config_addrs: HashSet<ResourceAddress> = config.resource_addresses().collect();
-    let state_addrs:  HashSet<ResourceAddress> =
+    let state_addrs: HashSet<ResourceAddress> =
         state.resources.iter().map(|r| r.address.clone()).collect();
 
     let mut changes: Vec<ResourceChange> = Vec::new();
@@ -49,8 +47,8 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         let after = lookup_config_value(config, addr);
         changes.push(ResourceChange {
             address: addr.clone(),
-            action:  Action::Create,
-            before:  None,
+            action: Action::Create,
+            before: None,
             after,
             reasons: vec![ChangeReason::NewResource],
         });
@@ -61,9 +59,9 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         let before = lookup_state_value(state, addr);
         changes.push(ResourceChange {
             address: addr.clone(),
-            action:  Action::Delete,
+            action: Action::Delete,
             before,
-            after:   None,
+            after: None,
             reasons: vec![ChangeReason::DeletedResource],
         });
     }
@@ -71,10 +69,10 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     // Update: in both. M0 stub — NoOp until provider RPC integration.
     for addr in config_addrs.intersection(&state_addrs) {
         let before = lookup_state_value(state, addr);
-        let after  = lookup_config_value(config, addr);
+        let after = lookup_config_value(config, addr);
         changes.push(ResourceChange {
             address: addr.clone(),
-            action:  Action::NoOp, // TODO(M0.x): provider PlanResourceChange RPC.
+            action: Action::NoOp, // TODO(M0.x): provider PlanResourceChange RPC.
             before,
             after,
             reasons: vec![],
@@ -99,12 +97,12 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     let plan_id = hash_plan_inputs(&canonical);
 
     Ok(Plan {
-        id:               plan_id,
-        created_at:       Utc::now(),
-        config_root:      std::path::PathBuf::new(),
-        variables:        Default::default(),
+        id: plan_id,
+        created_at: Utc::now(),
+        config_root: std::path::PathBuf::new(),
+        variables: Default::default(),
         resource_changes: changes,
-        output_changes:   Vec::new(),
+        output_changes: Vec::new(),
     })
 }
 
@@ -127,8 +125,8 @@ fn lookup_state_value(state: &State, addr: &ResourceAddress) -> Option<serde_jso
 
 #[derive(serde::Serialize)]
 struct PlanInputs<'a> {
-    changes:       &'a [ResourceChange],
-    state_serial:  u64,
+    changes: &'a [ResourceChange],
+    state_serial: u64,
     state_lineage: uuid::Uuid,
 }
 
@@ -142,12 +140,12 @@ mod tests {
 
     fn empty_state() -> State {
         State {
-            version:           4,
+            version: 4,
             terraform_version: "1.7.0".into(),
-            serial:            0,
-            lineage:           uuid::Uuid::new_v4(),
-            outputs:           Default::default(),
-            resources:         Vec::new(),
+            serial: 0,
+            lineage: uuid::Uuid::new_v4(),
+            outputs: Default::default(),
+            resources: Vec::new(),
         }
     }
 
@@ -165,7 +163,7 @@ mod tests {
     #[test]
     fn empty_in_empty_out() {
         let cfg = Config::default();
-        let st  = empty_state();
+        let st = empty_state();
         let p = plan(&cfg, &st).unwrap();
         assert!(p.resource_changes.is_empty());
     }
@@ -173,7 +171,7 @@ mod tests {
     #[test]
     fn one_resource_creates() {
         let cfg = cfg_with_vpc();
-        let st  = empty_state();
+        let st = empty_state();
         let p = plan(&cfg, &st).unwrap();
         assert_eq!(p.resource_changes.len(), 1);
         assert_eq!(p.resource_changes[0].action, Action::Create);
@@ -186,23 +184,23 @@ mod tests {
         let mut st = empty_state();
         st.resources.push(StateResource {
             address: ResourceAddress {
-                module:  magma_types::ModulePath::root(),
-                kind:    magma_types::ResourceKind::Managed,
+                module: magma_types::ModulePath::root(),
+                kind: magma_types::ResourceKind::Managed,
                 type_id: magma_types::ResourceTypeId("aws_vpc".into()),
-                name:    "main".into(),
-                key:     None,
+                name: "main".into(),
+                key: None,
             },
             provider: ProviderReference {
                 source: "hashicorp/aws".into(),
-                name:   "aws".into(),
-                alias:  None,
+                name: "aws".into(),
+                alias: None,
             },
             instances: vec![StateInstance {
                 schema_version: 0,
-                attributes:     json!({"id": "vpc-abc"}),
-                private:        Vec::new(),
-                dependencies:   Vec::new(),
-                status:         InstanceStatus::Ready,
+                attributes: json!({"id": "vpc-abc"}),
+                private: Vec::new(),
+                dependencies: Vec::new(),
+                status: InstanceStatus::Ready,
             }],
         });
         let p = plan(&cfg, &st).unwrap();
@@ -216,23 +214,23 @@ mod tests {
         let mut st = empty_state();
         st.resources.push(StateResource {
             address: ResourceAddress {
-                module:  magma_types::ModulePath::root(),
-                kind:    magma_types::ResourceKind::Managed,
+                module: magma_types::ModulePath::root(),
+                kind: magma_types::ResourceKind::Managed,
                 type_id: magma_types::ResourceTypeId("aws_vpc".into()),
-                name:    "main".into(),
-                key:     None,
+                name: "main".into(),
+                key: None,
             },
             provider: ProviderReference {
                 source: "hashicorp/aws".into(),
-                name:   "aws".into(),
-                alias:  None,
+                name: "aws".into(),
+                alias: None,
             },
             instances: vec![StateInstance {
                 schema_version: 0,
-                attributes:     json!({"cidr_block": "10.0.0.0/16"}),
-                private:        Vec::new(),
-                dependencies:   Vec::new(),
-                status:         InstanceStatus::Ready,
+                attributes: json!({"cidr_block": "10.0.0.0/16"}),
+                private: Vec::new(),
+                dependencies: Vec::new(),
+                status: InstanceStatus::Ready,
             }],
         });
         let p = plan(&cfg, &st).unwrap();
@@ -244,7 +242,7 @@ mod tests {
     #[test]
     fn plan_id_deterministic_for_same_inputs() {
         let cfg = cfg_with_vpc();
-        let st  = empty_state();
+        let st = empty_state();
         let p1 = plan(&cfg, &st).unwrap();
         let p2 = plan(&cfg, &st).unwrap();
         // PlanId only depends on inputs + structural changes, not timestamp.

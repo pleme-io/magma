@@ -121,9 +121,9 @@ fn parse_edge_list(s: &Sexpr) -> Result<Value, ParseError> {
         let inner_kwargs = collect_kwargs(inner)?;
         let mut entry = Map::new();
         for k in ["from", "from_output", "to", "to_input"] {
-            let v = inner_kwargs
-                .get(k)
-                .ok_or_else(|| ParseError(format!("edge entry missing :{}", k.replace('_', "-"))))?;
+            let v = inner_kwargs.get(k).ok_or_else(|| {
+                ParseError(format!("edge entry missing :{}", k.replace('_', "-")))
+            })?;
             entry.insert(k.into(), sexpr_to_json(v)?);
         }
         out.push(Value::Object(entry));
@@ -138,7 +138,12 @@ fn sexpr_kwargs_to_json(s: &Sexpr) -> Result<Value, ParseError> {
     for (k, v) in kw {
         // Recursive: keyword-list values become nested objects.
         let json = match &v {
-            Sexpr::List(inner) if inner.first().map(|x| matches!(x, Sexpr::Keyword(_))).unwrap_or(false) => {
+            Sexpr::List(inner)
+                if inner
+                    .first()
+                    .map(|x| matches!(x, Sexpr::Keyword(_)))
+                    .unwrap_or(false) =>
+            {
                 sexpr_kwargs_to_json(&v)?
             }
             _ => sexpr_to_json(&v)?,
@@ -150,17 +155,20 @@ fn sexpr_kwargs_to_json(s: &Sexpr) -> Result<Value, ParseError> {
 
 fn sexpr_to_json(s: &Sexpr) -> Result<Value, ParseError> {
     Ok(match s {
-        Sexpr::Str(v)     => Value::String(v.clone()),
-        Sexpr::Int(v)     => Value::Number((*v).into()),
-        Sexpr::Atom(v)    => match v.as_str() {
-            "true"  => Value::Bool(true),
+        Sexpr::Str(v) => Value::String(v.clone()),
+        Sexpr::Int(v) => Value::Number((*v).into()),
+        Sexpr::Atom(v) => match v.as_str() {
+            "true" => Value::Bool(true),
             "false" => Value::Bool(false),
             "nil" | "null" => Value::Null,
             _ => Value::String(v.clone()),
         },
         Sexpr::Keyword(v) => Value::String(v.clone()),
-        Sexpr::List(_)    => return Err(ParseError(
-            "nested non-kwarg list not supported here; expected a scalar value".into())),
+        Sexpr::List(_) => {
+            return Err(ParseError(
+                "nested non-kwarg list not supported here; expected a scalar value".into(),
+            ));
+        }
     })
 }
 
@@ -180,8 +188,7 @@ fn collect_kwargs(items: &[Sexpr]) -> Result<BTreeMap<String, Sexpr>, ParseError
     let mut i = 0;
     while i < items.len() {
         let Sexpr::Keyword(k) = &items[i] else {
-            return Err(ParseError(format!(
-                "expected :keyword, got {:?}", items[i])));
+            return Err(ParseError(format!("expected :keyword, got {:?}", items[i])));
         };
         let key = k.replace('-', "_");
         let value = items
@@ -197,12 +204,15 @@ fn collect_kwargs(items: &[Sexpr]) -> Result<BTreeMap<String, Sexpr>, ParseError
 
 struct Parser<'a> {
     bytes: &'a [u8],
-    pos:   usize,
+    pos: usize,
 }
 
 impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
-        Self { bytes: src.as_bytes(), pos: 0 }
+        Self {
+            bytes: src.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn read_sexpr(&mut self) -> Result<Sexpr, ParseError> {
@@ -411,7 +421,7 @@ mod tests {
         s.push_str("  )\n  :edges (\n");
         for (fi, fo, ti, ti_in) in edges {
             let from = &workspaces[*fi].0;
-            let to   = &workspaces[*ti].0;
+            let to = &workspaces[*ti].0;
             s.push_str(&format!(
                 "    (:from \"{from}\" :from-output \"{fo}\"\n     :to   \"{to}\" :to-input \"{ti_in}\")\n"
             ));

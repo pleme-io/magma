@@ -41,9 +41,9 @@ pub struct Lockfile {
 /// One resolved gem instance — name + version + source pinning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedGem {
-    pub name:    String,
+    pub name: String,
     pub version: String,
-    pub source:  crate::source::Source,
+    pub source: crate::source::Source,
     /// Resolved dependencies of this gem (transitive surface).
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -69,10 +69,10 @@ pub fn parse(source: &str) -> Result<Lockfile> {
             current_remote = None;
             current_gem_name = None;
             section = match trimmed {
-                "GIT"          => Section::Git,
-                "PATH"         => Section::Path,
-                "GEM"          => Section::Gem,
-                "PLATFORMS"    => Section::Platforms,
+                "GIT" => Section::Git,
+                "PATH" => Section::Path,
+                "GEM" => Section::Gem,
+                "PLATFORMS" => Section::Platforms,
                 "DEPENDENCIES" => Section::Dependencies,
                 "RUBY VERSION" => Section::RubyVersion,
                 "BUNDLED WITH" => Section::BundledWith,
@@ -109,7 +109,7 @@ pub fn parse(source: &str) -> Result<Lockfile> {
                                     ),
                                 },
                                 Section::Git => crate::source::Source::Git {
-                                    url:       current_remote.clone().unwrap_or_default(),
+                                    url: current_remote.clone().unwrap_or_default(),
                                     reference: String::new(),
                                 },
                                 Section::Gem => crate::source::Source::RubyGemsOrg {
@@ -126,25 +126,21 @@ pub fn parse(source: &str) -> Result<Lockfile> {
                                 current_specs.push(ResolvedGem {
                                     name,
                                     version,
-                                    source:     current_source.clone().unwrap_or_else(
-                                        crate::source::Source::default_rubygems,
-                                    ),
+                                    source: current_source
+                                        .clone()
+                                        .unwrap_or_else(crate::source::Source::default_rubygems),
                                     depends_on: vec![],
                                 });
                             }
                         } else if let Some(dep_rest) = spec_rest.strip_prefix("  ") {
                             // 6-space indent: transitive dep of the
                             // last gem.
-                            let dep_name = dep_rest
-                                .split_whitespace()
-                                .next()
-                                .unwrap_or("")
-                                .to_string();
+                            let dep_name =
+                                dep_rest.split_whitespace().next().unwrap_or("").to_string();
                             if !dep_name.is_empty() {
                                 if let Some(parent) = current_gem_name.as_deref() {
-                                    if let Some(g) = current_specs
-                                        .iter_mut()
-                                        .find(|g| g.name == parent)
+                                    if let Some(g) =
+                                        current_specs.iter_mut().find(|g| g.name == parent)
                                     {
                                         g.depends_on.push(dep_name);
                                     }
@@ -176,7 +172,7 @@ pub fn parse(source: &str) -> Result<Lockfile> {
                     let parts: Vec<&str> = v.trim().split_whitespace().collect();
                     if parts.len() >= 2 {
                         lock.ruby = Some(crate::manifest::RubyVersion {
-                            version:     parts[1].to_string(),
+                            version: parts[1].to_string(),
                             interpreter: parts[0].to_string(),
                         });
                     }
@@ -217,10 +213,7 @@ fn parse_spec_line(line: &str) -> Option<(String, String)> {
     let version_chunk = &rest[..close];
     // Strip optional `= ` constraint prefix; the bare version is what
     // we want for the resolved spec.
-    let version = version_chunk
-        .trim_start_matches("= ")
-        .trim()
-        .to_string();
+    let version = version_chunk.trim_start_matches("= ").trim().to_string();
     Some((name, version))
 }
 
@@ -267,7 +260,11 @@ pub fn emit(lock: &Lockfile) -> Result<String> {
             }
             crate::source::Source::RubyGemsOrg { mirror_url } => {
                 gem_groups
-                    .entry(mirror_url.clone().unwrap_or_else(|| "https://rubygems.org/".into()))
+                    .entry(
+                        mirror_url
+                            .clone()
+                            .unwrap_or_else(|| "https://rubygems.org/".into()),
+                    )
                     .or_default()
                     .push(g);
             }
@@ -397,8 +394,14 @@ BUNDLED WITH
         let lock = parse(SAMPLE).unwrap();
         let pangea_core = lock.gems.iter().find(|g| g.name == "pangea-core").unwrap();
         assert_eq!(pangea_core.version, "0.3.0");
-        assert!(matches!(pangea_core.source, crate::source::Source::Path { .. }));
-        assert_eq!(pangea_core.depends_on, vec!["base64", "dry-struct", "dry-types"]);
+        assert!(matches!(
+            pangea_core.source,
+            crate::source::Source::Path { .. }
+        ));
+        assert_eq!(
+            pangea_core.depends_on,
+            vec!["base64", "dry-struct", "dry-types"]
+        );
     }
 
     #[test]
@@ -436,10 +439,10 @@ BUNDLED WITH
         // (sorted) so byte-identical doesn't apply; structural
         // equality does.
         let lock1 = parse(SAMPLE).unwrap();
-        let text  = emit(&lock1).unwrap();
+        let text = emit(&lock1).unwrap();
         let lock2 = parse(&text).unwrap();
         assert_eq!(lock1.bundler_version, lock2.bundler_version);
-        assert_eq!(lock1.platforms,       lock2.platforms);
+        assert_eq!(lock1.platforms, lock2.platforms);
         // Dependencies set (order may shift between parse + canonical emit).
         let mut deps1 = lock1.dependencies.clone();
         let mut deps2 = lock2.dependencies.clone();
@@ -448,7 +451,11 @@ BUNDLED WITH
         assert_eq!(deps1, deps2);
         // Gem set with name + version.
         let names_versions = |l: &Lockfile| {
-            let mut v: Vec<(String, String)> = l.gems.iter().map(|g| (g.name.clone(), g.version.clone())).collect();
+            let mut v: Vec<(String, String)> = l
+                .gems
+                .iter()
+                .map(|g| (g.name.clone(), g.version.clone()))
+                .collect();
             v.sort();
             v
         };

@@ -36,7 +36,9 @@ fn main() {
             // and the only writer to env vars; no other thread can read
             // PROTOC concurrently. tonic-build reads it on the next
             // line.
-            unsafe { std::env::set_var("PROTOC", path); }
+            unsafe {
+                std::env::set_var("PROTOC", path);
+            }
         }
     }
 

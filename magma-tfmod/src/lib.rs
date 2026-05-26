@@ -24,9 +24,9 @@
 #![deny(unsafe_code)]
 #![allow(dead_code)] // M9 stub.
 
-pub mod registry;
-pub mod parser;
 pub mod codegen;
+pub mod parser;
+pub mod registry;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -50,9 +50,19 @@ pub type Result<T> = std::result::Result<T, TfModError>;
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum ModuleSource {
     /// Public TF registry: `terraform-aws-modules/vpc/aws`.
-    Registry { namespace: String, name: String, provider: String, version: String },
+    Registry {
+        namespace: String,
+        name: String,
+        provider: String,
+        version: String,
+    },
     /// Terraform Cloud private registry.
-    TerraformCloud { org: String, name: String, provider: String, version: String },
+    TerraformCloud {
+        org: String,
+        name: String,
+        provider: String,
+        version: String,
+    },
     /// Git URL with ref pinning.
     Git { url: String, reference: String },
     /// Path on disk.
@@ -62,38 +72,38 @@ pub enum ModuleSource {
 /// Typed module schema after HCL2 parsing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleSchema {
-    pub source:    ModuleSource,
+    pub source: ModuleSource,
     pub variables: Vec<Variable>,
-    pub outputs:   Vec<Output>,
+    pub outputs: Vec<Output>,
     /// Required providers declared in `terraform.required_providers`.
     pub required_providers: Vec<RequiredProvider>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Variable {
-    pub name:        String,
-    pub type_expr:   Option<String>, // HCL2 type expr as string for now
-    pub default:     Option<serde_json::Value>,
+    pub name: String,
+    pub type_expr: Option<String>, // HCL2 type expr as string for now
+    pub default: Option<serde_json::Value>,
     pub description: Option<String>,
     #[serde(default)]
-    pub required:    bool,
+    pub required: bool,
     #[serde(default)]
-    pub sensitive:   bool,
+    pub sensitive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Output {
-    pub name:        String,
+    pub name: String,
     pub description: Option<String>,
     #[serde(default)]
-    pub sensitive:   bool,
+    pub sensitive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequiredProvider {
     pub local_name: String,
-    pub source:     String,
-    pub version:    Option<String>,
+    pub source: String,
+    pub version: Option<String>,
 }
 
 /// Public entry point: download + parse + emit Pangea Ruby code

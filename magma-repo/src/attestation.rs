@@ -6,15 +6,12 @@
 //! `repo_attestation` hashes. Use this hash as the durable
 //! identity of "the Pangea repo state magma observed."
 
-use crate::{config::RootConfig, DiscoveredWorkspace};
+use crate::{DiscoveredWorkspace, config::RootConfig};
 
 /// Canonical attestation of a discovered repo: sorted projection
 /// of root config + workspace name + workspace config. Output is
 /// 64-char hex BLAKE3.
-pub fn attest_discovered(
-    root_config: &RootConfig,
-    workspaces:  &[DiscoveredWorkspace],
-) -> String {
+pub fn attest_discovered(root_config: &RootConfig, workspaces: &[DiscoveredWorkspace]) -> String {
     let canonical = serde_json::json!({
         "root":       root_config,
         "workspaces": workspaces.iter().map(|w| serde_json::json!({

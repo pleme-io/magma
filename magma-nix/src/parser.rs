@@ -1,6 +1,6 @@
 //! Nix source → typed `ast::Expr` (M8.1 destination).
 
-use crate::{ast::Expr, NixError, Result};
+use crate::{NixError, Result, ast::Expr};
 
 /// Parse a Nix expression source string into a typed AST.
 ///

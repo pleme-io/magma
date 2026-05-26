@@ -12,31 +12,53 @@ use crate::lockfile::Lockfile;
 /// Output is 64-char hex BLAKE3.
 pub fn attest_lockfile(lock: &Lockfile) -> String {
     // Sort gems by (name, version) for order-independence.
-    let mut sorted_gems: Vec<_> = lock.gems.iter().map(|g| {
-        let mut deps = g.depends_on.clone();
-        deps.sort();
-        serde_json::json!({
-            "name":       g.name,
-            "version":    g.version,
-            "source":     g.source,
-            "depends_on": deps,
+    let mut sorted_gems: Vec<_> = lock
+        .gems
+        .iter()
+        .map(|g| {
+            let mut deps = g.depends_on.clone();
+            deps.sort();
+            serde_json::json!({
+                "name":       g.name,
+                "version":    g.version,
+                "source":     g.source,
+                "depends_on": deps,
+            })
         })
-    }).collect();
+        .collect();
     sorted_gems.sort_by(|a, b| {
-        let a_key = (a.get("name").and_then(|v| v.as_str()), a.get("version").and_then(|v| v.as_str()));
-        let b_key = (b.get("name").and_then(|v| v.as_str()), b.get("version").and_then(|v| v.as_str()));
+        let a_key = (
+            a.get("name").and_then(|v| v.as_str()),
+            a.get("version").and_then(|v| v.as_str()),
+        );
+        let b_key = (
+            b.get("name").and_then(|v| v.as_str()),
+            b.get("version").and_then(|v| v.as_str()),
+        );
         a_key.cmp(&b_key)
     });
 
     // Same for specs.
-    let mut sorted_specs: Vec<_> = lock.specs.iter().map(|s| serde_json::json!({
-        "name":         s.name,
-        "version":      s.version,
-        "gemspec_hash": s.gemspec_hash,
-    })).collect();
+    let mut sorted_specs: Vec<_> = lock
+        .specs
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "name":         s.name,
+                "version":      s.version,
+                "gemspec_hash": s.gemspec_hash,
+            })
+        })
+        .collect();
     sorted_specs.sort_by(|a, b| {
-        let a_key = (a.get("name").and_then(|v| v.as_str()), a.get("version").and_then(|v| v.as_str()));
-        let b_key = (b.get("name").and_then(|v| v.as_str()), b.get("version").and_then(|v| v.as_str()));
+        let a_key = (
+            a.get("name").and_then(|v| v.as_str()),
+            a.get("version").and_then(|v| v.as_str()),
+        );
+        let b_key = (
+            b.get("name").and_then(|v| v.as_str()),
+            b.get("version").and_then(|v| v.as_str()),
+        );
         a_key.cmp(&b_key)
     });
 
@@ -67,9 +89,9 @@ mod tests {
         let lock_a = Lockfile::default();
         let mut lock_b = lock_a.clone();
         lock_b.gems.push(crate::lockfile::ResolvedGem {
-            name:       "pangea-aws".into(),
-            version:    "0.1.0".into(),
-            source:     Source::default_rubygems(),
+            name: "pangea-aws".into(),
+            version: "0.1.0".into(),
+            source: Source::default_rubygems(),
             depends_on: vec![],
         });
         assert_ne!(attest_lockfile(&lock_a), attest_lockfile(&lock_b));
@@ -79,9 +101,9 @@ mod tests {
     fn attestation_is_deterministic() {
         let mut lock = Lockfile::default();
         lock.gems.push(crate::lockfile::ResolvedGem {
-            name:       "pangea-core".into(),
-            version:    "1.0.0".into(),
-            source:     Source::default_rubygems(),
+            name: "pangea-core".into(),
+            version: "1.0.0".into(),
+            source: Source::default_rubygems(),
             depends_on: vec![],
         });
         lock.dependencies.push("pangea-core".into());

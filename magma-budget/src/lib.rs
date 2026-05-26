@@ -31,7 +31,7 @@ use magma_converge::{ApplyMetrics, NoMetrics, Outcome, Plan, Reconciler, Reconci
 #[derive(Clone)]
 pub struct ConcurrencyLimit {
     semaphore: Arc<Semaphore>,
-    max:       usize,
+    max: usize,
 }
 
 impl ConcurrencyLimit {
@@ -60,7 +60,7 @@ pub enum Backoff {
     /// Wait the same duration between every retry.
     Constant { delay_ms: u64 },
     /// Each retry waits (n+1) * base_ms.
-    Linear   { base_ms:  u64 },
+    Linear { base_ms: u64 },
     /// Each retry waits base_ms * 2^n, capped at max_ms.
     Exponential { base_ms: u64, max_ms: u64 },
 }
@@ -68,8 +68,8 @@ pub enum Backoff {
 impl Backoff {
     pub fn duration_for_attempt(&self, attempt: u32) -> Duration {
         let ms: u64 = match self {
-            Backoff::Constant    { delay_ms } => *delay_ms,
-            Backoff::Linear      { base_ms  } => base_ms.saturating_mul(u64::from(attempt + 1)),
+            Backoff::Constant { delay_ms } => *delay_ms,
+            Backoff::Linear { base_ms } => base_ms.saturating_mul(u64::from(attempt + 1)),
             Backoff::Exponential { base_ms, max_ms } => {
                 let raw = base_ms.saturating_mul(1u64.checked_shl(attempt).unwrap_or(u64::MAX));
                 raw.min(*max_ms)
@@ -81,8 +81,8 @@ impl Backoff {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryPolicy {
-    pub max_retries:    u32,
-    pub backoff:        Backoff,
+    pub max_retries: u32,
+    pub backoff: Backoff,
     /// If true, `Validation` errors won't be retried (they're
     /// structural — retrying won't help).
     pub skip_validation_errors: bool,
@@ -94,7 +94,10 @@ impl RetryPolicy {
     pub fn conservative() -> Self {
         Self {
             max_retries: 3,
-            backoff: Backoff::Exponential { base_ms: 100, max_ms: 5_000 },
+            backoff: Backoff::Exponential {
+                base_ms: 100,
+                max_ms: 5_000,
+            },
             skip_validation_errors: true,
         }
     }
@@ -113,14 +116,14 @@ impl RetryPolicy {
         match err {
             ReconcilerError::Validation(_) if self.skip_validation_errors => false,
             ReconcilerError::Validation(_) => true,
-            ReconcilerError::Transient(_)  => true,
+            ReconcilerError::Transient(_) => true,
             // Apply / ComputePlan / ReadState may or may not be
             // transient — retry by default, the inner error string
             // tells the operator.
-            ReconcilerError::Apply(_)      => true,
-            ReconcilerError::ComputePlan(_) => false,  // deterministic; retry won't help
-            ReconcilerError::ReadState(_)  => true,
-            ReconcilerError::Other(_)      => true,
+            ReconcilerError::Apply(_) => true,
+            ReconcilerError::ComputePlan(_) => false, // deterministic; retry won't help
+            ReconcilerError::ReadState(_) => true,
+            ReconcilerError::Other(_) => true,
         }
     }
 }
@@ -132,10 +135,10 @@ impl RetryPolicy {
 /// `ApplyMetrics` impl, including `magma_metrics::Metrics`) auto-
 /// emits in_flight gauge ticks at apply boundaries.
 pub struct BudgetedReconciler<R: Reconciler> {
-    inner:       R,
+    inner: R,
     concurrency: ConcurrencyLimit,
-    retry:       RetryPolicy,
-    metrics:     Arc<dyn ApplyMetrics>,
+    retry: RetryPolicy,
+    metrics: Arc<dyn ApplyMetrics>,
 }
 
 impl<R: Reconciler> BudgetedReconciler<R> {
@@ -153,12 +156,17 @@ impl<R: Reconciler> BudgetedReconciler<R> {
     /// Build with a metrics handle. Every `read_state` / `apply`
     /// call auto-emits `apply_started` / `apply_finished` ticks.
     pub fn with_metrics(
-        inner:       R,
+        inner: R,
         concurrency: ConcurrencyLimit,
-        retry:       RetryPolicy,
-        metrics:     Arc<dyn ApplyMetrics>,
+        retry: RetryPolicy,
+        metrics: Arc<dyn ApplyMetrics>,
     ) -> Self {
-        Self { inner, concurrency, retry, metrics }
+        Self {
+            inner,
+            concurrency,
+            retry,
+            metrics,
+        }
     }
 
     /// Run an async closure with concurrency-limited semantics +
@@ -166,7 +174,7 @@ impl<R: Reconciler> BudgetedReconciler<R> {
     /// trait methods that mutate.
     async fn with_budget<F, Fut, T>(&self, kind: &str, mut op: F) -> Result<T, ReconcilerError>
     where
-        F:   FnMut() -> Fut,
+        F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<T, ReconcilerError>>,
     {
         let _permit = self
@@ -182,7 +190,7 @@ impl<R: Reconciler> BudgetedReconciler<R> {
         self.metrics.apply_started(kind);
         let _guard = InFlightGuard {
             metrics: Arc::clone(&self.metrics),
-            kind:    kind.to_string(),
+            kind: kind.to_string(),
         };
 
         let mut last_err: Option<ReconcilerError> = None;
@@ -211,7 +219,7 @@ impl<R: Reconciler> BudgetedReconciler<R> {
 /// returns from retry exhaustion).
 struct InFlightGuard {
     metrics: Arc<dyn ApplyMetrics>,
-    kind:    String,
+    kind: String,
 }
 
 impl Drop for InFlightGuard {
@@ -268,7 +276,10 @@ mod tests {
 
     #[test]
     fn backoff_exponential_capped() {
-        let b = Backoff::Exponential { base_ms: 100, max_ms: 1_000 };
+        let b = Backoff::Exponential {
+            base_ms: 100,
+            max_ms: 1_000,
+        };
         assert_eq!(b.duration_for_attempt(0), Duration::from_millis(100));
         assert_eq!(b.duration_for_attempt(1), Duration::from_millis(200));
         assert_eq!(b.duration_for_attempt(2), Duration::from_millis(400));
@@ -292,11 +303,8 @@ mod tests {
     #[tokio::test]
     async fn pass_through_when_budget_uncontested() {
         let inner = InMemoryKvReconciler::new();
-        let budgeted = BudgetedReconciler::new(
-            inner,
-            ConcurrencyLimit::new(4),
-            RetryPolicy::none(),
-        );
+        let budgeted =
+            BudgetedReconciler::new(inner, ConcurrencyLimit::new(4), RetryPolicy::none());
 
         let cfg = json!({ "a": 1 });
         let state = budgeted.read_state().await.unwrap();
@@ -309,16 +317,18 @@ mod tests {
     async fn concurrency_limit_throttles_concurrent_applies() {
         // Wrap a reconciler that records observed peak in-flight count.
         use async_trait::async_trait;
-        use magma_converge::{AppliedChange, Action};
+        use magma_converge::{Action, AppliedChange};
 
         struct CountingReconciler {
             in_flight: AtomicUsize,
-            peak:      AtomicUsize,
+            peak: AtomicUsize,
         }
 
         #[async_trait]
         impl Reconciler for CountingReconciler {
-            fn kind(&self) -> &'static str { "counting" }
+            fn kind(&self) -> &'static str {
+                "counting"
+            }
             async fn read_state(&self) -> Result<Value, ReconcilerError> {
                 Ok(json!({}))
             }
@@ -331,11 +341,14 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 self.in_flight.fetch_sub(1, Ordering::SeqCst);
                 Ok(Outcome {
-                    plan_id:     plan.id.clone(),
-                    kind:        "counting".into(),
-                    applied:     vec![AppliedChange { address: "x".into(), action: Action::NoOp }],
-                    failed:      vec![],
-                    started_at:  chrono::Utc::now(),
+                    plan_id: plan.id.clone(),
+                    kind: "counting".into(),
+                    applied: vec![AppliedChange {
+                        address: "x".into(),
+                        action: Action::NoOp,
+                    }],
+                    failed: vec![],
+                    started_at: chrono::Utc::now(),
                     finished_at: chrono::Utc::now(),
                 })
             }
@@ -343,7 +356,7 @@ mod tests {
 
         let inner = CountingReconciler {
             in_flight: AtomicUsize::new(0),
-            peak:      AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
         };
         let budgeted = Arc::new(BudgetedReconciler::new(
             inner,
@@ -357,30 +370,35 @@ mod tests {
         for _ in 0..10 {
             let b = Arc::clone(&budgeted);
             let p = plan.clone();
-            tasks.push(tokio::spawn(async move {
-                b.apply(&p).await.unwrap()
-            }));
+            tasks.push(tokio::spawn(async move { b.apply(&p).await.unwrap() }));
         }
-        for t in tasks { t.await.unwrap(); }
+        for t in tasks {
+            t.await.unwrap();
+        }
 
         // Peak in-flight must never exceed 2.
         let peak = budgeted.inner.peak.load(Ordering::SeqCst);
-        assert!(peak <= 2, "concurrency limit violated: peak in-flight = {peak}");
+        assert!(
+            peak <= 2,
+            "concurrency limit violated: peak in-flight = {peak}"
+        );
     }
 
     #[tokio::test]
     async fn retry_succeeds_after_transient_failures() {
         use async_trait::async_trait;
-        use magma_converge::{AppliedChange, Action};
+        use magma_converge::{Action, AppliedChange};
 
         struct FlakeyReconciler {
-            attempts:    AtomicUsize,
-            fail_until:  usize,
+            attempts: AtomicUsize,
+            fail_until: usize,
         }
 
         #[async_trait]
         impl Reconciler for FlakeyReconciler {
-            fn kind(&self) -> &'static str { "flakey" }
+            fn kind(&self) -> &'static str {
+                "flakey"
+            }
             async fn read_state(&self) -> Result<Value, ReconcilerError> {
                 Ok(json!({}))
             }
@@ -393,18 +411,21 @@ mod tests {
                     return Err(ReconcilerError::Transient(format!("transient #{n}")));
                 }
                 Ok(Outcome {
-                    plan_id:     plan.id.clone(),
-                    kind:        "flakey".into(),
-                    applied:     vec![AppliedChange { address: "x".into(), action: Action::NoOp }],
-                    failed:      vec![],
-                    started_at:  chrono::Utc::now(),
+                    plan_id: plan.id.clone(),
+                    kind: "flakey".into(),
+                    applied: vec![AppliedChange {
+                        address: "x".into(),
+                        action: Action::NoOp,
+                    }],
+                    failed: vec![],
+                    started_at: chrono::Utc::now(),
                     finished_at: chrono::Utc::now(),
                 })
             }
         }
 
         let inner = FlakeyReconciler {
-            attempts:   AtomicUsize::new(0),
+            attempts: AtomicUsize::new(0),
             fail_until: 2, // fail attempts 0+1, succeed on 2
         };
         let budgeted = BudgetedReconciler::new(
@@ -431,8 +452,12 @@ mod tests {
         struct AlwaysFailReconciler;
         #[async_trait]
         impl Reconciler for AlwaysFailReconciler {
-            fn kind(&self) -> &'static str { "always_fail" }
-            async fn read_state(&self) -> Result<Value, ReconcilerError> { Ok(json!({})) }
+            fn kind(&self) -> &'static str {
+                "always_fail"
+            }
+            async fn read_state(&self) -> Result<Value, ReconcilerError> {
+                Ok(json!({}))
+            }
             fn compute_plan(&self, _: &Value, _: &Value) -> Result<Plan, ReconcilerError> {
                 Ok(Plan::new("always_fail", vec![]))
             }
@@ -463,8 +488,12 @@ mod tests {
         }
         #[async_trait]
         impl Reconciler for ValidationFailReconciler {
-            fn kind(&self) -> &'static str { "val_fail" }
-            async fn read_state(&self) -> Result<Value, ReconcilerError> { Ok(json!({})) }
+            fn kind(&self) -> &'static str {
+                "val_fail"
+            }
+            async fn read_state(&self) -> Result<Value, ReconcilerError> {
+                Ok(json!({}))
+            }
             fn compute_plan(&self, _: &Value, _: &Value) -> Result<Plan, ReconcilerError> {
                 Ok(Plan::new("val_fail", vec![]))
             }
@@ -474,7 +503,9 @@ mod tests {
             }
         }
 
-        let inner = ValidationFailReconciler { attempts: AtomicUsize::new(0) };
+        let inner = ValidationFailReconciler {
+            attempts: AtomicUsize::new(0),
+        };
         let budgeted = BudgetedReconciler::new(
             inner,
             ConcurrencyLimit::new(1),

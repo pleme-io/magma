@@ -30,7 +30,9 @@ pub enum Source {
     },
 }
 
-fn default_main() -> String { "main".into() }
+fn default_main() -> String {
+    "main".into()
+}
 
 impl Source {
     /// Materialize the source to a local directory the operator
@@ -45,11 +47,9 @@ impl Source {
                 }
                 Ok(path.clone())
             }
-            Source::Git { .. } | Source::GitHub { .. } => {
-                Err(SourceError::NotImplemented(
-                    "Git/GitHub materialization lands in magma-repo M1".into(),
-                ))
-            }
+            Source::Git { .. } | Source::GitHub { .. } => Err(SourceError::NotImplemented(
+                "Git/GitHub materialization lands in magma-repo M1".into(),
+            )),
         }
     }
 }
@@ -71,14 +71,18 @@ mod tests {
     #[test]
     fn local_source_materialize_returns_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let src = Source::Local { path: tmp.path().to_path_buf() };
+        let src = Source::Local {
+            path: tmp.path().to_path_buf(),
+        };
         let materialized = src.materialize(std::path::Path::new("/tmp/work")).unwrap();
         assert_eq!(materialized, tmp.path());
     }
 
     #[test]
     fn missing_local_path_errors() {
-        let src = Source::Local { path: "/this/does/not/exist".into() };
+        let src = Source::Local {
+            path: "/this/does/not/exist".into(),
+        };
         assert!(src.materialize(std::path::Path::new("/tmp")).is_err());
     }
 

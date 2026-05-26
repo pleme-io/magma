@@ -16,7 +16,7 @@
 //! 6. plan_id + kind in the report match the input plan.
 
 use magma_converge::{Action, ChangeSeverity};
-use magma_drift::{classify, DriftDecision, DriftPolicy};
+use magma_drift::{DriftDecision, DriftPolicy, classify};
 use magma_test_laws::strategies::arb_plan;
 use proptest::prelude::*;
 

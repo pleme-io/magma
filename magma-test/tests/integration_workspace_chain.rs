@@ -46,9 +46,7 @@ fn vpc_ws(vpc_id: &'static str) -> Arc<dyn Workspace> {
             }))
             .map_err(WorkspaceError::Config)
         },
-        move |_cfg, _state| {
-            HashMap::from([("vpc_id".to_string(), json!(vpc_id))])
-        },
+        move |_cfg, _state| HashMap::from([("vpc_id".to_string(), json!(vpc_id))]),
     ))
 }
 
@@ -95,7 +93,10 @@ fn route_table_ws() -> Arc<dyn Workspace> {
         vec!["route_count".into()],
         |inputs| {
             let public = inputs.get("public_subnet_id").cloned().unwrap_or(json!(""));
-            let private = inputs.get("private_subnet_id").cloned().unwrap_or(json!(""));
+            let private = inputs
+                .get("private_subnet_id")
+                .cloned()
+                .unwrap_or(json!(""));
             Config::from_json(json!({
                 "resource": {
                     "aws_route_table_association": {
@@ -158,10 +159,7 @@ async fn chain_linear_two_workspaces_threads_data() {
         HashMap::from([("cidr_block".into(), json!("10.0.1.0/24"))]),
     );
 
-    let results = chain
-        .reconcile_all(external, HashMap::new())
-        .await
-        .unwrap();
+    let results = chain.reconcile_all(external, HashMap::new()).await.unwrap();
     assert_eq!(results.len(), 2);
 
     let subnet_result = results.get("subnet").unwrap();
@@ -272,12 +270,7 @@ async fn chain_subset_reconcile_isolates_downstream() {
     );
 
     let results = chain
-        .reconcile_subset(
-            &["subnet".to_string()],
-            external,
-            stubs,
-            HashMap::new(),
-        )
+        .reconcile_subset(&["subnet".to_string()], external, stubs, HashMap::new())
         .await
         .unwrap();
 
@@ -325,10 +318,7 @@ async fn chain_idempotent_re_reconcile() {
         .reconcile_all(external.clone(), initial.clone())
         .await
         .unwrap();
-    let r2 = chain
-        .reconcile_all(external, initial)
-        .await
-        .unwrap();
+    let r2 = chain.reconcile_all(external, initial).await.unwrap();
 
     // Same inputs + state → same plan IDs across the chain.
     for name in ["vpc", "subnet"] {
@@ -413,25 +403,34 @@ async fn chain_four_node_linear_threads_data_throughout() {
             },
         )));
     chain.link(ChainEdge {
-        from: "vpc".into(), from_output: "vpc_id".into(),
-        to: "subnet".into(), to_input: "vpc_id".into(),
+        from: "vpc".into(),
+        from_output: "vpc_id".into(),
+        to: "subnet".into(),
+        to_input: "vpc_id".into(),
     });
     chain.link(ChainEdge {
-        from: "subnet".into(), from_output: "subnet_id".into(),
-        to: "nat".into(), to_input: "subnet_id".into(),
+        from: "subnet".into(),
+        from_output: "subnet_id".into(),
+        to: "nat".into(),
+        to_input: "subnet_id".into(),
     });
     chain.link(ChainEdge {
-        from: "nat".into(), from_output: "nat_id".into(),
-        to: "egress_route".into(), to_input: "nat_id".into(),
+        from: "nat".into(),
+        from_output: "nat_id".into(),
+        to: "egress_route".into(),
+        to_input: "nat_id".into(),
     });
 
     let order = chain.topo_order().unwrap();
-    assert_eq!(order, vec![
-        "vpc".to_string(),
-        "subnet".to_string(),
-        "nat".to_string(),
-        "egress_route".to_string(),
-    ]);
+    assert_eq!(
+        order,
+        vec![
+            "vpc".to_string(),
+            "subnet".to_string(),
+            "nat".to_string(),
+            "egress_route".to_string(),
+        ]
+    );
 
     let mut external = HashMap::new();
     external.insert(
@@ -465,20 +464,28 @@ async fn chain_subset_isolates_fan_in_node() {
         .add(subnet_ws("private_subnet"))
         .add(route_table_ws());
     chain.link(ChainEdge {
-        from: "vpc".into(), from_output: "vpc_id".into(),
-        to: "public_subnet".into(), to_input: "vpc_id".into(),
+        from: "vpc".into(),
+        from_output: "vpc_id".into(),
+        to: "public_subnet".into(),
+        to_input: "vpc_id".into(),
     });
     chain.link(ChainEdge {
-        from: "vpc".into(), from_output: "vpc_id".into(),
-        to: "private_subnet".into(), to_input: "vpc_id".into(),
+        from: "vpc".into(),
+        from_output: "vpc_id".into(),
+        to: "private_subnet".into(),
+        to_input: "vpc_id".into(),
     });
     chain.link(ChainEdge {
-        from: "public_subnet".into(), from_output: "subnet_id".into(),
-        to: "route".into(), to_input: "public_subnet_id".into(),
+        from: "public_subnet".into(),
+        from_output: "subnet_id".into(),
+        to: "route".into(),
+        to_input: "public_subnet_id".into(),
     });
     chain.link(ChainEdge {
-        from: "private_subnet".into(), from_output: "subnet_id".into(),
-        to: "route".into(), to_input: "private_subnet_id".into(),
+        from: "private_subnet".into(),
+        from_output: "subnet_id".into(),
+        to: "route".into(),
+        to_input: "private_subnet_id".into(),
     });
 
     // Reconcile JUST the route table with both subnet outputs mocked.

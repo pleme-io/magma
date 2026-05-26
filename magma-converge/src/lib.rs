@@ -23,13 +23,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-pub mod inmemory;
-pub mod github;
 pub mod dns;
-pub mod helm;
-pub mod vault;
-pub mod terraform;
 pub mod engine;
+pub mod github;
+pub mod helm;
+pub mod inmemory;
+pub mod terraform;
+pub mod vault;
 
 pub use engine::ConvergeEngine;
 
@@ -99,28 +99,28 @@ pub enum ChangeSeverity {
 pub struct Change {
     /// Resource address — kind-specific (e.g. `aws_vpc.net`,
     /// `github_repo.foo`, `dns_record.bar`).
-    pub address:  String,
+    pub address: String,
     /// Action this change represents.
-    pub action:   Action,
+    pub action: Action,
     /// Severity for drift-policy routing.
     pub severity: ChangeSeverity,
     /// Pre-state JSON (None for Create).
-    pub before:   Option<Value>,
+    pub before: Option<Value>,
     /// Post-state JSON (None for Delete).
-    pub after:    Option<Value>,
+    pub after: Option<Value>,
 }
 
 /// A typed Plan — universal across reconciler kinds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
     /// BLAKE3-derived plan id; deterministic for `(config, state, kind)`.
-    pub id:         PlanId,
+    pub id: PlanId,
     /// The kind that produced this plan ("terraform", "github", …).
-    pub kind:       String,
+    pub kind: String,
     /// When the plan was computed. NOT included in plan_id derivation.
     pub created_at: DateTime<Utc>,
     /// The typed changes the plan would apply.
-    pub changes:    Vec<Change>,
+    pub changes: Vec<Change>,
 }
 
 impl Plan {
@@ -145,24 +145,38 @@ impl Plan {
             })
             .collect();
         let canonical = serde_json::json!({ "kind": kind, "changes": projection });
-        PlanId::of(serde_json::to_vec(&canonical).unwrap_or_default().as_slice())
+        PlanId::of(
+            serde_json::to_vec(&canonical)
+                .unwrap_or_default()
+                .as_slice(),
+        )
     }
 
     /// Build a Plan with `derive_id`-computed id + `Utc::now`.
     pub fn new(kind: impl Into<String>, changes: Vec<Change>) -> Self {
         let kind = kind.into();
         let id = Self::derive_id(&kind, &changes);
-        Self { id, kind, created_at: Utc::now(), changes }
+        Self {
+            id,
+            kind,
+            created_at: Utc::now(),
+            changes,
+        }
     }
 
     /// True iff the plan has no Create/Update/Delete/Replace changes.
     pub fn is_noop(&self) -> bool {
-        self.changes.iter().all(|c| matches!(c.action, Action::NoOp))
+        self.changes
+            .iter()
+            .all(|c| matches!(c.action, Action::NoOp))
     }
 
     /// Number of non-noop changes.
     pub fn change_count(&self) -> usize {
-        self.changes.iter().filter(|c| !matches!(c.action, Action::NoOp)).count()
+        self.changes
+            .iter()
+            .filter(|c| !matches!(c.action, Action::NoOp))
+            .count()
     }
 }
 
@@ -170,25 +184,25 @@ impl Plan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppliedChange {
     pub address: String,
-    pub action:  Action,
+    pub action: Action,
 }
 
 /// One `apply` step's failure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailedChange {
     pub address: String,
-    pub action:  Action,
-    pub error:   String,
+    pub action: Action,
+    pub error: String,
 }
 
 /// Universal apply Outcome.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Outcome {
-    pub plan_id:     PlanId,
-    pub kind:        String,
-    pub applied:     Vec<AppliedChange>,
-    pub failed:      Vec<FailedChange>,
-    pub started_at:  DateTime<Utc>,
+    pub plan_id: PlanId,
+    pub kind: String,
+    pub applied: Vec<AppliedChange>,
+    pub failed: Vec<FailedChange>,
+    pub started_at: DateTime<Utc>,
     pub finished_at: DateTime<Utc>,
 }
 
@@ -266,7 +280,7 @@ pub trait ApplyMetrics: Send + Sync {
 pub struct NoMetrics;
 
 impl ApplyMetrics for NoMetrics {
-    fn apply_started(&self,  _kind: &str) {}
+    fn apply_started(&self, _kind: &str) {}
     fn apply_finished(&self, _kind: &str) {}
 }
 
@@ -281,8 +295,8 @@ pub fn build_outcome(
     started_at: DateTime<Utc>,
 ) -> Outcome {
     Outcome {
-        plan_id:     plan.id.clone(),
-        kind:        plan.kind.clone(),
+        plan_id: plan.id.clone(),
+        kind: plan.kind.clone(),
         applied,
         failed,
         started_at,
@@ -294,29 +308,41 @@ pub fn build_outcome(
 /// the action. Reconcilers can override per-resource.
 pub fn change(
     address: impl Into<String>,
-    action:  Action,
-    before:  Option<Value>,
-    after:   Option<Value>,
+    action: Action,
+    before: Option<Value>,
+    after: Option<Value>,
 ) -> Change {
     let severity = match action {
-        Action::Create  => ChangeSeverity::Functional,
-        Action::Update  => ChangeSeverity::Functional,
-        Action::Delete  => ChangeSeverity::Critical,
+        Action::Create => ChangeSeverity::Functional,
+        Action::Update => ChangeSeverity::Functional,
+        Action::Delete => ChangeSeverity::Critical,
         Action::Replace => ChangeSeverity::Critical,
-        Action::NoOp    => ChangeSeverity::Cosmetic,
+        Action::NoOp => ChangeSeverity::Cosmetic,
     };
-    Change { address: address.into(), action, severity, before, after }
+    Change {
+        address: address.into(),
+        action,
+        severity,
+        before,
+        after,
+    }
 }
 
 /// Build a `Change` with explicit severity.
 pub fn change_with_severity(
-    address:  impl Into<String>,
-    action:   Action,
+    address: impl Into<String>,
+    action: Action,
     severity: ChangeSeverity,
-    before:   Option<Value>,
-    after:    Option<Value>,
+    before: Option<Value>,
+    after: Option<Value>,
 ) -> Change {
-    Change { address: address.into(), action, severity, before, after }
+    Change {
+        address: address.into(),
+        action,
+        severity,
+        before,
+        after,
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -330,7 +356,12 @@ mod core_tests {
     fn plan_id_is_deterministic() {
         let changes = vec![
             change("a", Action::Create, None, Some(json!({"k": 1}))),
-            change("b", Action::Update, Some(json!({"v": 1})), Some(json!({"v": 2}))),
+            change(
+                "b",
+                Action::Update,
+                Some(json!({"v": 1})),
+                Some(json!({"v": 2})),
+            ),
         ];
         let id1 = Plan::derive_id("test", &changes);
         let id2 = Plan::derive_id("test", &changes);
@@ -343,7 +374,7 @@ mod core_tests {
     fn plan_id_changes_with_kind() {
         let changes = vec![change("a", Action::Create, None, Some(json!({})))];
         let id_terraform = Plan::derive_id("terraform", &changes);
-        let id_github    = Plan::derive_id("github",    &changes);
+        let id_github = Plan::derive_id("github", &changes);
         assert_ne!(id_terraform, id_github);
     }
 
@@ -369,10 +400,13 @@ mod core_tests {
     fn is_noop_handles_mixed_changes() {
         let noop_plan = Plan::new("k", vec![change("a", Action::NoOp, None, None)]);
         assert!(noop_plan.is_noop());
-        let mixed = Plan::new("k", vec![
-            change("a", Action::NoOp, None, None),
-            change("b", Action::Create, None, Some(json!({}))),
-        ]);
+        let mixed = Plan::new(
+            "k",
+            vec![
+                change("a", Action::NoOp, None, None),
+                change("b", Action::Create, None, Some(json!({}))),
+            ],
+        );
         assert!(!mixed.is_noop());
         let empty = Plan::new("k", vec![]);
         assert!(empty.is_noop());
@@ -380,20 +414,38 @@ mod core_tests {
 
     #[test]
     fn change_count_excludes_noops() {
-        let plan = Plan::new("k", vec![
-            change("a", Action::Create, None, Some(json!({}))),
-            change("b", Action::NoOp, None, None),
-            change("c", Action::Update, Some(json!({})), Some(json!({}))),
-        ]);
+        let plan = Plan::new(
+            "k",
+            vec![
+                change("a", Action::Create, None, Some(json!({}))),
+                change("b", Action::NoOp, None, None),
+                change("c", Action::Update, Some(json!({})), Some(json!({}))),
+            ],
+        );
         assert_eq!(plan.change_count(), 2);
     }
 
     #[test]
     fn default_severity_inference() {
-        assert_eq!(change("x", Action::Create,  None, Some(json!({}))).severity, ChangeSeverity::Functional);
-        assert_eq!(change("x", Action::Update,  Some(json!({})), Some(json!({}))).severity, ChangeSeverity::Functional);
-        assert_eq!(change("x", Action::Delete,  Some(json!({})), None).severity, ChangeSeverity::Critical);
-        assert_eq!(change("x", Action::Replace, Some(json!({})), Some(json!({}))).severity, ChangeSeverity::Critical);
-        assert_eq!(change("x", Action::NoOp,    None, None).severity, ChangeSeverity::Cosmetic);
+        assert_eq!(
+            change("x", Action::Create, None, Some(json!({}))).severity,
+            ChangeSeverity::Functional
+        );
+        assert_eq!(
+            change("x", Action::Update, Some(json!({})), Some(json!({}))).severity,
+            ChangeSeverity::Functional
+        );
+        assert_eq!(
+            change("x", Action::Delete, Some(json!({})), None).severity,
+            ChangeSeverity::Critical
+        );
+        assert_eq!(
+            change("x", Action::Replace, Some(json!({})), Some(json!({}))).severity,
+            ChangeSeverity::Critical
+        );
+        assert_eq!(
+            change("x", Action::NoOp, None, None).severity,
+            ChangeSeverity::Cosmetic
+        );
     }
 }

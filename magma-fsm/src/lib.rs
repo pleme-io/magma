@@ -75,11 +75,11 @@ impl Phase {
     /// `LifecycleState::is_stuck`).
     pub fn soft_deadline(self) -> Duration {
         match self {
-            Phase::Planning  => Duration::seconds(120),
+            Phase::Planning => Duration::seconds(120),
             Phase::Approving => Duration::seconds(86_400), // 24h — humans are slow
-            Phase::Applying  => Duration::seconds(900),    // 15m default per apply
+            Phase::Applying => Duration::seconds(900),     // 15m default per apply
             Phase::Verifying => Duration::seconds(60),
-            Phase::Retrying  => Duration::seconds(300),
+            Phase::Retrying => Duration::seconds(300),
             // No deadline for terminal / idle phases.
             Phase::Idle | Phase::Stable | Phase::Failed | Phase::Refused => Duration::zero(),
         }
@@ -103,26 +103,26 @@ fn is_transition_allowed(from: Phase, to: Phase) -> bool {
         (Idle, Planning) => true,
         // Planning paths.
         (Planning, Approving) => true,
-        (Planning, Applying)  => true,  // when auto_approve = true
-        (Planning, Failed)    => true,
-        (Planning, Refused)   => true,  // policy denied
-        (Planning, Stable)    => true,  // empty plan = already stable
+        (Planning, Applying) => true, // when auto_approve = true
+        (Planning, Failed) => true,
+        (Planning, Refused) => true, // policy denied
+        (Planning, Stable) => true,  // empty plan = already stable
         // Approving paths.
         (Approving, Applying) => true,
-        (Approving, Refused)  => true,
-        (Approving, Failed)   => true,  // timeout / external rejection
+        (Approving, Refused) => true,
+        (Approving, Failed) => true, // timeout / external rejection
         // Applying paths.
         (Applying, Verifying) => true,
-        (Applying, Failed)    => true,
+        (Applying, Failed) => true,
         // Verifying paths.
         (Verifying, Stable) => true,
         (Verifying, Failed) => true,
         // Failed paths.
         (Failed, Retrying) => true,
-        (Failed, Idle)     => true,  // operator chose to abandon retry
+        (Failed, Idle) => true, // operator chose to abandon retry
         // Retrying paths.
         (Retrying, Planning) => true, // re-plan after the cause is gone
-        (Retrying, Failed)   => true, // retry budget exhausted
+        (Retrying, Failed) => true,   // retry budget exhausted
         // Stable can re-enter Planning (next reconcile cycle).
         (Stable, Planning) => true,
         // Refused is terminal — only operator override (back to Idle).
@@ -137,12 +137,12 @@ fn is_transition_allowed(from: Phase, to: Phase) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transition {
-    pub from:       Phase,
-    pub to:         Phase,
-    pub at:         DateTime<Utc>,
+    pub from: Phase,
+    pub to: Phase,
+    pub at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_id:    Option<PlanId>,
-    pub reason:     String,
+    pub plan_id: Option<PlanId>,
+    pub reason: String,
 }
 
 // ── LifecycleState ────────────────────────────────────────────────
@@ -153,11 +153,11 @@ pub struct Transition {
 /// `current`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LifecycleState {
-    pub current:    Phase,
+    pub current: Phase,
     /// Timestamp of the last transition into `current`.
     pub entered_at: DateTime<Utc>,
     /// Full transition history, newest last.
-    pub history:    Vec<Transition>,
+    pub history: Vec<Transition>,
 }
 
 impl Default for LifecycleState {
@@ -169,9 +169,9 @@ impl Default for LifecycleState {
 impl LifecycleState {
     pub fn new() -> Self {
         Self {
-            current:    Phase::Idle,
+            current: Phase::Idle,
             entered_at: Utc::now(),
-            history:    vec![],
+            history: vec![],
         }
     }
 
@@ -189,22 +189,25 @@ impl LifecycleState {
     /// current updated) or Err with the disallowed pair.
     pub fn transition(
         &mut self,
-        to:      Phase,
+        to: Phase,
         plan_id: Option<PlanId>,
-        reason:  impl Into<String>,
+        reason: impl Into<String>,
     ) -> Result<(), TransitionError> {
         if !is_transition_allowed(self.current, to) {
-            return Err(TransitionError::Disallowed { from: self.current, to });
+            return Err(TransitionError::Disallowed {
+                from: self.current,
+                to,
+            });
         }
         let now = Utc::now();
         self.history.push(Transition {
-            from:    self.current,
+            from: self.current,
             to,
-            at:      now,
+            at: now,
             plan_id,
-            reason:  reason.into(),
+            reason: reason.into(),
         });
-        self.current    = to;
+        self.current = to;
         self.entered_at = now;
         Ok(())
     }
@@ -264,7 +267,8 @@ mod tests {
     fn approval_path_routes_through_approving() {
         let mut s = LifecycleState::new();
         s.transition(Phase::Planning, None, "trigger").unwrap();
-        s.transition(Phase::Approving, None, "policy: critical").unwrap();
+        s.transition(Phase::Approving, None, "policy: critical")
+            .unwrap();
         s.transition(Phase::Applying, None, "approved").unwrap();
         s.transition(Phase::Verifying, None, "applied").unwrap();
         s.transition(Phase::Stable, None, "verified").unwrap();
@@ -276,9 +280,10 @@ mod tests {
         let mut s = LifecycleState::new();
         s.transition(Phase::Planning, None, "x").unwrap();
         s.transition(Phase::Applying, None, "x").unwrap();
-        s.transition(Phase::Failed,   None, "API 503").unwrap();
+        s.transition(Phase::Failed, None, "API 503").unwrap();
         s.transition(Phase::Retrying, None, "backoff").unwrap();
-        s.transition(Phase::Planning, None, "retry: replan").unwrap();
+        s.transition(Phase::Planning, None, "retry: replan")
+            .unwrap();
         assert_eq!(s.current, Phase::Planning);
         assert_eq!(s.len(), 5);
     }
@@ -288,10 +293,13 @@ mod tests {
         let mut s = LifecycleState::new();
         // Idle → Verifying is not allowed.
         let err = s.transition(Phase::Verifying, None, "bogus").unwrap_err();
-        assert_eq!(err, TransitionError::Disallowed {
-            from: Phase::Idle,
-            to:   Phase::Verifying,
-        });
+        assert_eq!(
+            err,
+            TransitionError::Disallowed {
+                from: Phase::Idle,
+                to: Phase::Verifying,
+            }
+        );
         // State unchanged after failed transition.
         assert_eq!(s.current, Phase::Idle);
     }
@@ -300,11 +308,13 @@ mod tests {
     fn refused_terminal_only_reset_through_idle() {
         let mut s = LifecycleState::new();
         s.transition(Phase::Planning, None, "x").unwrap();
-        s.transition(Phase::Refused, None, "policy: refuse").unwrap();
+        s.transition(Phase::Refused, None, "policy: refuse")
+            .unwrap();
         // Refused → Planning is disallowed (only Idle resets it).
         assert!(s.transition(Phase::Planning, None, "x").is_err());
         // Refused → Idle resets cleanly.
-        s.transition(Phase::Idle, None, "operator override").unwrap();
+        s.transition(Phase::Idle, None, "operator override")
+            .unwrap();
         assert_eq!(s.current, Phase::Idle);
     }
 
@@ -320,9 +330,9 @@ mod tests {
     #[test]
     fn is_stuck_false_for_terminal_phases() {
         let s = LifecycleState {
-            current:    Phase::Stable,
+            current: Phase::Stable,
             entered_at: Utc::now() - Duration::days(7),
-            history:    vec![],
+            history: vec![],
         };
         // Stable has zero deadline → never stuck.
         assert!(!s.is_stuck());
@@ -331,10 +341,10 @@ mod tests {
     #[test]
     fn is_stuck_true_when_active_phase_exceeds_deadline() {
         let s = LifecycleState {
-            current:    Phase::Applying,
+            current: Phase::Applying,
             // Stuck for 1h — Applying soft deadline is 15m.
             entered_at: Utc::now() - Duration::hours(1),
-            history:    vec![],
+            history: vec![],
         };
         assert!(s.is_stuck());
     }
@@ -342,9 +352,9 @@ mod tests {
     #[test]
     fn is_stuck_false_within_deadline() {
         let s = LifecycleState {
-            current:    Phase::Applying,
+            current: Phase::Applying,
             entered_at: Utc::now() - Duration::seconds(30),
-            history:    vec![],
+            history: vec![],
         };
         assert!(!s.is_stuck());
     }
@@ -352,16 +362,15 @@ mod tests {
     #[test]
     fn round_trip_through_json_preserves_full_state() {
         let mut s = LifecycleState::new();
-        s.transition(Phase::Planning, Some(PlanId("abc".into())), "trigger").unwrap();
-        s.transition(Phase::Applying, Some(PlanId("def".into())), "auto").unwrap();
+        s.transition(Phase::Planning, Some(PlanId("abc".into())), "trigger")
+            .unwrap();
+        s.transition(Phase::Applying, Some(PlanId("def".into())), "auto")
+            .unwrap();
         let json = s.to_json();
         let restored = LifecycleState::from_json(json).unwrap();
         assert_eq!(restored.current, s.current);
         assert_eq!(restored.len(), s.len());
-        assert_eq!(
-            restored.history[0].plan_id.as_ref().unwrap().0,
-            "abc",
-        );
+        assert_eq!(restored.history[0].plan_id.as_ref().unwrap().0, "abc",);
     }
 
     #[test]
@@ -381,12 +390,19 @@ mod tests {
 
     #[test]
     fn idle_reset_always_allowed_from_non_refused() {
-        for from in [Phase::Planning, Phase::Approving, Phase::Applying,
-                     Phase::Verifying, Phase::Failed, Phase::Retrying, Phase::Stable] {
+        for from in [
+            Phase::Planning,
+            Phase::Approving,
+            Phase::Applying,
+            Phase::Verifying,
+            Phase::Failed,
+            Phase::Retrying,
+            Phase::Stable,
+        ] {
             let mut s = LifecycleState {
-                current:    from,
+                current: from,
                 entered_at: Utc::now(),
-                history:    vec![],
+                history: vec![],
             };
             s.transition(Phase::Idle, None, "reset").unwrap();
             assert_eq!(s.current, Phase::Idle);
@@ -396,9 +412,10 @@ mod tests {
     #[test]
     fn approving_to_failed_handles_external_rejection_timeout() {
         let mut s = LifecycleState::new();
-        s.transition(Phase::Planning,  None, "x").unwrap();
+        s.transition(Phase::Planning, None, "x").unwrap();
         s.transition(Phase::Approving, None, "policy").unwrap();
-        s.transition(Phase::Failed,    None, "approval timed out").unwrap();
+        s.transition(Phase::Failed, None, "approval timed out")
+            .unwrap();
         assert_eq!(s.current, Phase::Failed);
     }
 }

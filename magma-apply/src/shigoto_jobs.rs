@@ -23,8 +23,8 @@ use crate::{ApplyError, ApplyOutcome};
 /// `Plan` operation: produces a typed `Plan` from `Config × State`.
 pub struct PlanJob {
     pub workspace_name: String,
-    pub config:         Arc<Config>,
-    pub state:          Arc<State>,
+    pub config: Arc<Config>,
+    pub state: Arc<State>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -34,12 +34,12 @@ pub struct PlanJobError(pub String);
 #[async_trait::async_trait]
 impl Job for PlanJob {
     type Output = Plan;
-    type Error  = PlanJobError;
+    type Error = PlanJobError;
 
     fn id(&self) -> JobId {
         JobId {
-            scope:   JobScope::Workspace(self.workspace_name.clone()),
-            kind:    self.kind(),
+            scope: JobScope::Workspace(self.workspace_name.clone()),
+            kind: self.kind(),
             subject: JobSubject::None,
         }
     }
@@ -58,7 +58,7 @@ impl Job for PlanJob {
 /// per the resource dependency graph (per `magma_graph::ResourceGraph`).
 pub struct ApplyChangeJob {
     pub workspace_name: String,
-    pub change:         ResourceChange,
+    pub change: ResourceChange,
     // M0 holds a snapshot of state at job creation; the apply mutates
     // a clone in execute(). Full multi-tenant state-mutation under
     // shigoto's Scheduler requires the typed StateRef + back-channel
@@ -75,12 +75,12 @@ pub enum ApplyChangeJobError {
 #[async_trait::async_trait]
 impl Job for ApplyChangeJob {
     type Output = ApplyOutcome;
-    type Error  = ApplyChangeJobError;
+    type Error = ApplyChangeJobError;
 
     fn id(&self) -> JobId {
         JobId {
-            scope:   JobScope::Workspace(self.workspace_name.clone()),
-            kind:    self.kind(),
+            scope: JobScope::Workspace(self.workspace_name.clone()),
+            kind: self.kind(),
             subject: JobSubject::Pinned(format!(
                 "{}.{}",
                 self.change.address.type_id.0, self.change.address.name,
@@ -96,12 +96,12 @@ impl Job for ApplyChangeJob {
         // Apply just this one change against a fresh state clone.
         let mut state = (*self.state_snapshot).clone();
         let single_plan = Plan {
-            id:               magma_types::PlanId([0u8; 32]),
-            created_at:       chrono::Utc::now(),
-            config_root:      std::path::PathBuf::new(),
-            variables:        Default::default(),
+            id: magma_types::PlanId([0u8; 32]),
+            created_at: chrono::Utc::now(),
+            config_root: std::path::PathBuf::new(),
+            variables: Default::default(),
             resource_changes: vec![self.change.clone()],
-            output_changes:   vec![],
+            output_changes: vec![],
         };
         let outcome = crate::run_plan(&single_plan, &mut state)?;
         Ok(outcome)
@@ -113,19 +113,19 @@ impl Job for ApplyChangeJob {
 /// scheduler-tracked unit (rather than decomposing into per-change Jobs).
 pub struct ApplyPlanJob {
     pub workspace_name: String,
-    pub plan:           Arc<Plan>,
+    pub plan: Arc<Plan>,
     pub state_snapshot: Arc<State>,
 }
 
 #[async_trait::async_trait]
 impl Job for ApplyPlanJob {
     type Output = ApplyOutcome;
-    type Error  = ApplyChangeJobError;
+    type Error = ApplyChangeJobError;
 
     fn id(&self) -> JobId {
         JobId {
-            scope:   JobScope::Workspace(self.workspace_name.clone()),
-            kind:    self.kind(),
+            scope: JobScope::Workspace(self.workspace_name.clone()),
+            kind: self.kind(),
             subject: JobSubject::Pinned(format!("plan-{}", hex::encode(self.plan.id.0))),
         }
     }
@@ -145,17 +145,19 @@ impl Job for ApplyPlanJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magma_types::{Action, ChangeReason, ModulePath, ResourceAddress, ResourceKind, ResourceTypeId};
+    use magma_types::{
+        Action, ChangeReason, ModulePath, ResourceAddress, ResourceKind, ResourceTypeId,
+    };
     use serde_json::json;
 
     fn empty_state() -> State {
         State {
-            version:           4,
+            version: 4,
             terraform_version: "1.7.0".into(),
-            serial:            0,
-            lineage:           uuid::Uuid::new_v4(),
-            outputs:           Default::default(),
-            resources:         vec![],
+            serial: 0,
+            lineage: uuid::Uuid::new_v4(),
+            outputs: Default::default(),
+            resources: vec![],
         }
     }
 
@@ -165,15 +167,15 @@ mod tests {
             workspace_name: "test-ws".into(),
             change: ResourceChange {
                 address: ResourceAddress {
-                    module:  ModulePath::root(),
-                    kind:    ResourceKind::Managed,
+                    module: ModulePath::root(),
+                    kind: ResourceKind::Managed,
                     type_id: ResourceTypeId("aws_vpc".into()),
-                    name:    "main".into(),
-                    key:     None,
+                    name: "main".into(),
+                    key: None,
                 },
-                action:  Action::Create,
-                before:  None,
-                after:   Some(json!({ "cidr_block": "10.0.0.0/16" })),
+                action: Action::Create,
+                before: None,
+                after: Some(json!({ "cidr_block": "10.0.0.0/16" })),
                 reasons: vec![ChangeReason::NewResource],
             },
             state_snapshot: Arc::new(empty_state()),
@@ -187,8 +189,8 @@ mod tests {
     fn plan_job_kind_id() {
         let job = PlanJob {
             workspace_name: "test-ws".into(),
-            config:         Arc::new(Config::default()),
-            state:          Arc::new(empty_state()),
+            config: Arc::new(Config::default()),
+            state: Arc::new(empty_state()),
         };
         assert_eq!(job.kind().0, "magma.plan");
         assert!(matches!(job.id().scope, JobScope::Workspace(_)));

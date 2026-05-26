@@ -71,30 +71,38 @@ impl ConvergeEngine {
 
     /// Read state for one kind.
     pub async fn read_state(&self, kind: &str) -> Result<Value, EngineError> {
-        let r = self.get(kind).ok_or_else(|| EngineError::UnknownKind(kind.into()))?;
+        let r = self
+            .get(kind)
+            .ok_or_else(|| EngineError::UnknownKind(kind.into()))?;
         r.read_state().await.map_err(Into::into)
     }
 
     /// Compute a plan for one kind.
     pub fn compute_plan(
         &self,
-        kind:   &str,
+        kind: &str,
         config: &Value,
-        state:  &Value,
+        state: &Value,
     ) -> Result<Plan, EngineError> {
-        let r = self.get(kind).ok_or_else(|| EngineError::UnknownKind(kind.into()))?;
+        let r = self
+            .get(kind)
+            .ok_or_else(|| EngineError::UnknownKind(kind.into()))?;
         r.compute_plan(config, state).map_err(Into::into)
     }
 
     /// Detect drift for one kind.
     pub async fn detect_drift(&self, kind: &str, config: &Value) -> Result<Plan, EngineError> {
-        let r = self.get(kind).ok_or_else(|| EngineError::UnknownKind(kind.into()))?;
+        let r = self
+            .get(kind)
+            .ok_or_else(|| EngineError::UnknownKind(kind.into()))?;
         r.detect_drift(config).await.map_err(Into::into)
     }
 
     /// Apply a plan for one kind.
     pub async fn apply(&self, kind: &str, plan: &Plan) -> Result<Outcome, EngineError> {
-        let r = self.get(kind).ok_or_else(|| EngineError::UnknownKind(kind.into()))?;
+        let r = self
+            .get(kind)
+            .ok_or_else(|| EngineError::UnknownKind(kind.into()))?;
         r.apply(plan).await.map_err(Into::into)
     }
 
@@ -153,7 +161,7 @@ mod tests {
 
         let mut configs = HashMap::new();
         configs.insert("inmemory_kv".to_string(), json!({ "a": 1 }));
-        configs.insert("ghost_kind".to_string(),  json!({}));
+        configs.insert("ghost_kind".to_string(), json!({}));
 
         let results = engine.drift_sweep(&configs).await;
         assert_eq!(results.len(), 2);

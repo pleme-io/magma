@@ -21,8 +21,8 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::{
-    build_outcome, change, AppliedChange, Action, FailedChange, Outcome, Plan, Reconciler,
-    ReconcilerError,
+    Action, AppliedChange, FailedChange, Outcome, Plan, Reconciler, ReconcilerError, build_outcome,
+    change,
 };
 
 /// Wrap any `magma_backend::Backend` into a typed Reconciler.
@@ -36,16 +36,16 @@ pub struct TerraformReconciler<B: magma_backend::Backend + 'static> {
 /// to their closest universal equivalent.
 fn magma_action_to_universal(a: magma_types::Action) -> Action {
     match a {
-        magma_types::Action::Create           => Action::Create,
-        magma_types::Action::Update           => Action::Update,
-        magma_types::Action::Delete           => Action::Delete,
-        magma_types::Action::Replace          => Action::Replace,
-        magma_types::Action::NoOp             => Action::NoOp,
+        magma_types::Action::Create => Action::Create,
+        magma_types::Action::Update => Action::Update,
+        magma_types::Action::Delete => Action::Delete,
+        magma_types::Action::Replace => Action::Replace,
+        magma_types::Action::NoOp => Action::NoOp,
         // Read is observe-only — surface as NoOp at the universal layer.
-        magma_types::Action::Read             => Action::NoOp,
+        magma_types::Action::Read => Action::NoOp,
         // Forget removes from state without touching cloud — model
         // as Delete from the universal POV.
-        magma_types::Action::Forget           => Action::Delete,
+        magma_types::Action::Forget => Action::Delete,
         // The two-step replacement variants map to Replace.
         magma_types::Action::CreateThenDelete => Action::Replace,
         magma_types::Action::DeleteThenCreate => Action::Replace,
@@ -117,36 +117,36 @@ impl<B: magma_backend::Backend + 'static> Reconciler for TerraformReconciler<B> 
             .iter()
             .filter_map(|c| {
                 let action = match c.action {
-                    Action::Create  => magma_types::Action::Create,
-                    Action::Update  => magma_types::Action::Update,
-                    Action::Delete  => magma_types::Action::Delete,
+                    Action::Create => magma_types::Action::Create,
+                    Action::Update => magma_types::Action::Update,
+                    Action::Delete => magma_types::Action::Delete,
                     Action::Replace => magma_types::Action::Replace,
-                    Action::NoOp    => return None,
+                    Action::NoOp => return None,
                 };
                 // Address is "<type>.<name>"; split.
                 let (type_id, name) = c.address.split_once('.')?;
                 Some(magma_types::ResourceChange {
                     address: magma_types::ResourceAddress {
-                        module:  magma_types::ModulePath::root(),
-                        kind:    magma_types::ResourceKind::Managed,
+                        module: magma_types::ModulePath::root(),
+                        kind: magma_types::ResourceKind::Managed,
                         type_id: magma_types::ResourceTypeId(type_id.into()),
-                        name:    name.into(),
-                        key:     None,
+                        name: name.into(),
+                        key: None,
                     },
                     action,
-                    before:  c.before.clone(),
-                    after:   c.after.clone(),
+                    before: c.before.clone(),
+                    after: c.after.clone(),
                     reasons: vec![],
                 })
             })
             .collect();
         let magma_plan = magma_types::Plan {
-            id:               magma_types::PlanId([0u8; 32]),
-            created_at:       chrono::Utc::now(),
-            config_root:      std::path::PathBuf::new(),
-            variables:        Default::default(),
+            id: magma_types::PlanId([0u8; 32]),
+            created_at: chrono::Utc::now(),
+            config_root: std::path::PathBuf::new(),
+            variables: Default::default(),
             resource_changes: magma_changes,
-            output_changes:   vec![],
+            output_changes: vec![],
         };
 
         let outcome = magma_apply::run_plan(&magma_plan, &mut state)
@@ -161,7 +161,7 @@ impl<B: magma_backend::Backend + 'static> Reconciler for TerraformReconciler<B> 
             .iter()
             .map(|a| AppliedChange {
                 address: format!("{}.{}", a.address.type_id.0, a.address.name),
-                action:  magma_action_to_universal(a.action),
+                action: magma_action_to_universal(a.action),
             })
             .collect();
         let failed: Vec<FailedChange> = outcome
@@ -169,8 +169,8 @@ impl<B: magma_backend::Backend + 'static> Reconciler for TerraformReconciler<B> 
             .iter()
             .map(|f| FailedChange {
                 address: format!("{}.{}", f.address.type_id.0, f.address.name),
-                action:  magma_action_to_universal(f.action),
-                error:   f.reason.clone(),
+                action: magma_action_to_universal(f.action),
+                error: f.reason.clone(),
             })
             .collect();
 
@@ -203,7 +203,11 @@ mod tests {
         let state = r.read_state().await.unwrap();
         let plan = r.compute_plan(&config, &state).unwrap();
         assert!(plan.change_count() >= 1);
-        assert!(plan.changes.iter().any(|c| c.address == "aws_iam_role.node"));
+        assert!(
+            plan.changes
+                .iter()
+                .any(|c| c.address == "aws_iam_role.node")
+        );
         assert_eq!(plan.changes[0].action, Action::Create);
     }
 

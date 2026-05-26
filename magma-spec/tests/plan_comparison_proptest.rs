@@ -13,10 +13,10 @@
 
 use std::collections::HashSet;
 
-use magma_spec::{compare_plans, StateMutation};
+use magma_spec::{StateMutation, compare_plans};
 use magma_test_laws::strategies::arb_plan;
 use proptest::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── Property 1: comparing a plan with itself is identical ─────────
 

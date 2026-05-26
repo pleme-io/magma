@@ -10,14 +10,14 @@
 use std::collections::HashMap;
 
 use magma_converge::{
-    inmemory::InMemoryKvReconciler,
-    github::{GithubRepoReconciler, MockGithubClient, RepoSettings},
-    dns::{DnsRecordReconciler, MockDnsClient, Record, RecordKey, RecordValue},
-    helm::{HelmReleaseReconciler, MockHelmClient, ReleaseSpec},
     Action, Reconciler,
+    dns::{DnsRecordReconciler, MockDnsClient, Record, RecordKey, RecordValue},
+    github::{GithubRepoReconciler, MockGithubClient, RepoSettings},
+    helm::{HelmReleaseReconciler, MockHelmClient, ReleaseSpec},
+    inmemory::InMemoryKvReconciler,
 };
 use proptest::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -130,9 +130,7 @@ proptest! {
 
 #[tokio::test]
 async fn law_read_state_idempotent_inmemory() {
-    let r = InMemoryKvReconciler::with_state(
-        [("k".to_string(), json!("v"))].into_iter().collect(),
-    );
+    let r = InMemoryKvReconciler::with_state([("k".to_string(), json!("v"))].into_iter().collect());
     let s1 = r.read_state().await.unwrap();
     let s2 = r.read_state().await.unwrap();
     assert_eq!(s1, s2);
@@ -141,12 +139,15 @@ async fn law_read_state_idempotent_inmemory() {
 #[tokio::test]
 async fn law_read_state_idempotent_github() {
     let mut initial = HashMap::new();
-    initial.insert("rio".to_string(), RepoSettings {
-        description: Some("x".into()),
-        private: false,
-        default_branch: "main".into(),
-        topics: vec!["a".into(), "b".into()],
-    });
+    initial.insert(
+        "rio".to_string(),
+        RepoSettings {
+            description: Some("x".into()),
+            private: false,
+            default_branch: "main".into(),
+            topics: vec!["a".into(), "b".into()],
+        },
+    );
     let r = GithubRepoReconciler::new(MockGithubClient::with_repos(initial));
     let s1 = r.read_state().await.unwrap();
     let s2 = r.read_state().await.unwrap();
@@ -156,8 +157,16 @@ async fn law_read_state_idempotent_github() {
 #[tokio::test]
 async fn law_read_state_idempotent_dns() {
     let initial = vec![Record {
-        key: RecordKey { zone: "ex.com".into(), name: "api".into(), r#type: "A".into() },
-        value: RecordValue { value: "1.2.3.4".into(), ttl: 300, proxied: false },
+        key: RecordKey {
+            zone: "ex.com".into(),
+            name: "api".into(),
+            r#type: "A".into(),
+        },
+        value: RecordValue {
+            value: "1.2.3.4".into(),
+            ttl: 300,
+            proxied: false,
+        },
     }];
     let r = DnsRecordReconciler::new(MockDnsClient::with_records(initial));
     let s1 = r.read_state().await.unwrap();
@@ -168,12 +177,15 @@ async fn law_read_state_idempotent_dns() {
 #[tokio::test]
 async fn law_read_state_idempotent_helm() {
     let mut initial = HashMap::new();
-    initial.insert("nginx".to_string(), ReleaseSpec {
-        chart: "ingress-nginx".into(),
-        version: "4.7.0".into(),
-        namespace: "default".into(),
-        values: json!({ "replicas": 2 }),
-    });
+    initial.insert(
+        "nginx".to_string(),
+        ReleaseSpec {
+            chart: "ingress-nginx".into(),
+            version: "4.7.0".into(),
+            namespace: "default".into(),
+            values: json!({ "replicas": 2 }),
+        },
+    );
     let r = HelmReleaseReconciler::new(MockHelmClient::with_releases(initial));
     let s1 = r.read_state().await.unwrap();
     let s2 = r.read_state().await.unwrap();
@@ -184,12 +196,15 @@ async fn law_read_state_idempotent_helm() {
 async fn law_apply_converges_helm() {
     let r = HelmReleaseReconciler::new(MockHelmClient::new());
     let mut desired = HashMap::new();
-    desired.insert("nginx".to_string(), ReleaseSpec {
-        chart: "ingress-nginx".into(),
-        version: "4.7.0".into(),
-        namespace: "default".into(),
-        values: json!({}),
-    });
+    desired.insert(
+        "nginx".to_string(),
+        ReleaseSpec {
+            chart: "ingress-nginx".into(),
+            version: "4.7.0".into(),
+            namespace: "default".into(),
+            values: json!({}),
+        },
+    );
     let config = serde_json::to_value(desired).unwrap();
     let state = r.read_state().await.unwrap();
     let plan = r.compute_plan(&config, &state).unwrap();
@@ -233,7 +248,11 @@ fn law_kinds_are_unique() {
         HelmReleaseReconciler::new(MockHelmClient::new()).kind(),
     ];
     let unique: std::collections::HashSet<_> = kinds.iter().collect();
-    assert_eq!(unique.len(), kinds.len(), "reconciler kinds collide: {kinds:?}");
+    assert_eq!(
+        unique.len(),
+        kinds.len(),
+        "reconciler kinds collide: {kinds:?}"
+    );
 }
 
 // ── Cross-reconciler: action surface stays universal ────────────

@@ -43,11 +43,11 @@ pub struct ProviderViolation {
     pub resource: String,
     /// Field within that resource (or "*" for resource-level
     /// violations).
-    pub field:    String,
+    pub field: String,
     /// Stable rule identifier (e.g. "required-field-present").
-    pub rule:     String,
+    pub rule: String,
     /// Human-readable explanation.
-    pub message:  String,
+    pub message: String,
 }
 
 pub type ProviderResult = Result<(), ProviderViolation>;
@@ -59,16 +59,16 @@ pub type ProviderResult = Result<(), ProviderViolation>;
 pub fn resource_attrs<'a>(
     cfg: &'a Config,
     type_id: &str,
-    name:    &str,
+    name: &str,
 ) -> Result<&'a serde_json::Value, ProviderViolation> {
     cfg.resources
         .get(type_id)
         .and_then(|by_name| by_name.get(name))
         .ok_or_else(|| ProviderViolation {
             resource: format!("{type_id}.{name}"),
-            field:    "*".into(),
-            rule:     "resource-exists".into(),
-            message:  format!("resource {type_id}.{name} not declared"),
+            field: "*".into(),
+            rule: "resource-exists".into(),
+            message: format!("resource {type_id}.{name} not declared"),
         })
 }
 
@@ -77,19 +77,19 @@ pub fn resource_attrs<'a>(
 /// Assert a resource has a non-null field. Required for inputs the
 /// downstream provider RPC must receive.
 pub fn assert_resource_has_field(
-    cfg:     &Config,
+    cfg: &Config,
     type_id: &str,
-    name:    &str,
-    field:   &str,
+    name: &str,
+    field: &str,
 ) -> ProviderResult {
     let attrs = resource_attrs(cfg, type_id, name)?;
     let value = attrs.get(field);
     match value {
         Some(serde_json::Value::Null) | None => Err(ProviderViolation {
             resource: format!("{type_id}.{name}"),
-            field:    field.into(),
-            rule:     "required-field-present".into(),
-            message:  format!("field `{field}` missing or null"),
+            field: field.into(),
+            rule: "required-field-present".into(),
+            message: format!("field `{field}` missing or null"),
         }),
         _ => Ok(()),
     }
@@ -101,24 +101,27 @@ pub fn assert_resource_has_field(
 /// only — `1.2.3.4/N` or `::1/N`). Doesn't validate the
 /// network is reachable; just that the syntax is well-formed.
 pub fn assert_field_is_cidr(
-    cfg:     &Config,
+    cfg: &Config,
     type_id: &str,
-    name:    &str,
-    field:   &str,
+    name: &str,
+    field: &str,
 ) -> ProviderResult {
     let attrs = resource_attrs(cfg, type_id, name)?;
-    let v = attrs.get(field).and_then(|v| v.as_str()).ok_or_else(|| ProviderViolation {
-        resource: format!("{type_id}.{name}"),
-        field:    field.into(),
-        rule:     "cidr-format".into(),
-        message:  format!("field `{field}` is missing or not a string"),
-    })?;
+    let v = attrs
+        .get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ProviderViolation {
+            resource: format!("{type_id}.{name}"),
+            field: field.into(),
+            rule: "cidr-format".into(),
+            message: format!("field `{field}` is missing or not a string"),
+        })?;
     if !looks_like_cidr(v) {
         return Err(ProviderViolation {
             resource: format!("{type_id}.{name}"),
-            field:    field.into(),
-            rule:     "cidr-format".into(),
-            message:  format!("field `{field}` value `{v}` is not a valid CIDR block"),
+            field: field.into(),
+            rule: "cidr-format".into(),
+            message: format!("field `{field}` value `{v}` is not a valid CIDR block"),
         });
     }
     Ok(())
@@ -127,25 +130,23 @@ pub fn assert_field_is_cidr(
 /// Assert a string field matches an AWS ARN shape (`arn:partition:service:region:account:resource`).
 /// 6+ colon-separated segments; segments may be empty in some
 /// service-specific ARNs.
-pub fn assert_field_is_arn(
-    cfg:     &Config,
-    type_id: &str,
-    name:    &str,
-    field:   &str,
-) -> ProviderResult {
+pub fn assert_field_is_arn(cfg: &Config, type_id: &str, name: &str, field: &str) -> ProviderResult {
     let attrs = resource_attrs(cfg, type_id, name)?;
-    let v = attrs.get(field).and_then(|v| v.as_str()).ok_or_else(|| ProviderViolation {
-        resource: format!("{type_id}.{name}"),
-        field:    field.into(),
-        rule:     "arn-format".into(),
-        message:  format!("field `{field}` is missing or not a string"),
-    })?;
+    let v = attrs
+        .get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ProviderViolation {
+            resource: format!("{type_id}.{name}"),
+            field: field.into(),
+            rule: "arn-format".into(),
+            message: format!("field `{field}` is missing or not a string"),
+        })?;
     if !v.starts_with("arn:") || v.splitn(7, ':').count() < 6 {
         return Err(ProviderViolation {
             resource: format!("{type_id}.{name}"),
-            field:    field.into(),
-            rule:     "arn-format".into(),
-            message:  format!("field `{field}` value `{v}` is not a valid ARN"),
+            field: field.into(),
+            rule: "arn-format".into(),
+            message: format!("field `{field}` value `{v}` is not a valid ARN"),
         });
     }
     Ok(())
@@ -153,25 +154,23 @@ pub fn assert_field_is_arn(
 
 /// Assert a string field looks like a URL (`scheme://host[:port]/path`).
 /// Heuristic check — accepts http/https/grpc/tcp/wss/etc.
-pub fn assert_field_is_url(
-    cfg:     &Config,
-    type_id: &str,
-    name:    &str,
-    field:   &str,
-) -> ProviderResult {
+pub fn assert_field_is_url(cfg: &Config, type_id: &str, name: &str, field: &str) -> ProviderResult {
     let attrs = resource_attrs(cfg, type_id, name)?;
-    let v = attrs.get(field).and_then(|v| v.as_str()).ok_or_else(|| ProviderViolation {
-        resource: format!("{type_id}.{name}"),
-        field:    field.into(),
-        rule:     "url-format".into(),
-        message:  format!("field `{field}` is missing or not a string"),
-    })?;
+    let v = attrs
+        .get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ProviderViolation {
+            resource: format!("{type_id}.{name}"),
+            field: field.into(),
+            rule: "url-format".into(),
+            message: format!("field `{field}` is missing or not a string"),
+        })?;
     if !looks_like_url(v) {
         return Err(ProviderViolation {
             resource: format!("{type_id}.{name}"),
-            field:    field.into(),
-            rule:     "url-format".into(),
-            message:  format!("field `{field}` value `{v}` is not a valid URL"),
+            field: field.into(),
+            rule: "url-format".into(),
+            message: format!("field `{field}` value `{v}` is not a valid URL"),
         });
     }
     Ok(())
@@ -180,26 +179,29 @@ pub fn assert_field_is_url(
 /// Assert an integer field is in the inclusive range [min, max].
 /// Useful for ports (1-65535), replicas (1-N), TTLs.
 pub fn assert_field_is_int_in_range(
-    cfg:     &Config,
+    cfg: &Config,
     type_id: &str,
-    name:    &str,
-    field:   &str,
-    min:     i64,
-    max:     i64,
+    name: &str,
+    field: &str,
+    min: i64,
+    max: i64,
 ) -> ProviderResult {
     let attrs = resource_attrs(cfg, type_id, name)?;
-    let v = attrs.get(field).and_then(|v| v.as_i64()).ok_or_else(|| ProviderViolation {
-        resource: format!("{type_id}.{name}"),
-        field:    field.into(),
-        rule:     "int-in-range".into(),
-        message:  format!("field `{field}` is missing or not an integer"),
-    })?;
+    let v = attrs
+        .get(field)
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| ProviderViolation {
+            resource: format!("{type_id}.{name}"),
+            field: field.into(),
+            rule: "int-in-range".into(),
+            message: format!("field `{field}` is missing or not an integer"),
+        })?;
     if v < min || v > max {
         return Err(ProviderViolation {
             resource: format!("{type_id}.{name}"),
-            field:    field.into(),
-            rule:     "int-in-range".into(),
-            message:  format!("field `{field}` value {v} not in range [{min}, {max}]"),
+            field: field.into(),
+            rule: "int-in-range".into(),
+            message: format!("field `{field}` value {v} not in range [{min}, {max}]"),
         });
     }
     Ok(())
@@ -209,25 +211,28 @@ pub fn assert_field_is_int_in_range(
 /// `required_keys`. Pangea workspaces commonly require typed tag
 /// presence (Environment, ManagedBy, etc.).
 pub fn assert_resource_has_tags(
-    cfg:           &Config,
-    type_id:       &str,
-    name:          &str,
+    cfg: &Config,
+    type_id: &str,
+    name: &str,
     required_keys: &[&str],
 ) -> ProviderResult {
     let attrs = resource_attrs(cfg, type_id, name)?;
-    let tags = attrs.get("tags").and_then(|v| v.as_object()).ok_or_else(|| ProviderViolation {
-        resource: format!("{type_id}.{name}"),
-        field:    "tags".into(),
-        rule:     "tags-present".into(),
-        message:  "tags block missing or not an object".into(),
-    })?;
+    let tags = attrs
+        .get("tags")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| ProviderViolation {
+            resource: format!("{type_id}.{name}"),
+            field: "tags".into(),
+            rule: "tags-present".into(),
+            message: "tags block missing or not an object".into(),
+        })?;
     for k in required_keys {
         if !tags.contains_key(*k) {
             return Err(ProviderViolation {
                 resource: format!("{type_id}.{name}"),
-                field:    format!("tags.{k}"),
-                rule:     "tags-required-key".into(),
-                message:  format!("required tag key `{k}` missing"),
+                field: format!("tags.{k}"),
+                rule: "tags-required-key".into(),
+                message: format!("required tag key `{k}` missing"),
             });
         }
     }
@@ -238,24 +243,27 @@ pub fn assert_resource_has_tags(
 /// the common "structurally string but semantically empty" failure
 /// where a Pangea template path is broken.
 pub fn assert_field_non_empty(
-    cfg:     &Config,
+    cfg: &Config,
     type_id: &str,
-    name:    &str,
-    field:   &str,
+    name: &str,
+    field: &str,
 ) -> ProviderResult {
     let attrs = resource_attrs(cfg, type_id, name)?;
-    let v = attrs.get(field).and_then(|v| v.as_str()).ok_or_else(|| ProviderViolation {
-        resource: format!("{type_id}.{name}"),
-        field:    field.into(),
-        rule:     "non-empty".into(),
-        message:  format!("field `{field}` is missing or not a string"),
-    })?;
+    let v = attrs
+        .get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ProviderViolation {
+            resource: format!("{type_id}.{name}"),
+            field: field.into(),
+            rule: "non-empty".into(),
+            message: format!("field `{field}` is missing or not a string"),
+        })?;
     if v.trim().is_empty() {
         return Err(ProviderViolation {
             resource: format!("{type_id}.{name}"),
-            field:    field.into(),
-            rule:     "non-empty".into(),
-            message:  format!("field `{field}` is empty or whitespace-only"),
+            field: field.into(),
+            rule: "non-empty".into(),
+            message: format!("field `{field}` is empty or whitespace-only"),
         });
     }
     Ok(())
@@ -263,25 +271,28 @@ pub fn assert_field_non_empty(
 
 /// Assert a string field is one of a fixed allow-list.
 pub fn assert_field_is_one_of<S: AsRef<str>>(
-    cfg:        &Config,
-    type_id:    &str,
-    name:       &str,
-    field:      &str,
+    cfg: &Config,
+    type_id: &str,
+    name: &str,
+    field: &str,
     allow_list: &[S],
 ) -> ProviderResult {
     let attrs = resource_attrs(cfg, type_id, name)?;
-    let v = attrs.get(field).and_then(|v| v.as_str()).ok_or_else(|| ProviderViolation {
-        resource: format!("{type_id}.{name}"),
-        field:    field.into(),
-        rule:     "one-of".into(),
-        message:  format!("field `{field}` is missing or not a string"),
-    })?;
+    let v = attrs
+        .get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ProviderViolation {
+            resource: format!("{type_id}.{name}"),
+            field: field.into(),
+            rule: "one-of".into(),
+            message: format!("field `{field}` is missing or not a string"),
+        })?;
     if !allow_list.iter().any(|a| a.as_ref() == v) {
         return Err(ProviderViolation {
             resource: format!("{type_id}.{name}"),
-            field:    field.into(),
-            rule:     "one-of".into(),
-            message:  format!(
+            field: field.into(),
+            rule: "one-of".into(),
+            message: format!(
                 "field `{field}` value `{v}` not in allow-list {:?}",
                 allow_list.iter().map(|a| a.as_ref()).collect::<Vec<_>>(),
             ),
@@ -310,13 +321,15 @@ pub fn assert_no_iam_wildcards(cfg: &Config) -> Result<(), Vec<ProviderViolation
             // Policy can be a JSON string or a nested object.
             let policy_value = match attrs.get("policy") {
                 Some(v) => v,
-                None    => continue,
+                None => continue,
             };
             let policy_obj = match policy_value {
-                serde_json::Value::String(s) => match serde_json::from_str::<serde_json::Value>(s) {
-                    Ok(v) => v,
-                    Err(_) => continue, // not parseable JSON — skip
-                },
+                serde_json::Value::String(s) => {
+                    match serde_json::from_str::<serde_json::Value>(s) {
+                        Ok(v) => v,
+                        Err(_) => continue, // not parseable JSON — skip
+                    }
+                }
                 other => other.clone(),
             };
             // Walk statements + check Action / Resource fields.
@@ -326,7 +339,7 @@ pub fn assert_no_iam_wildcards(cfg: &Config) -> Result<(), Vec<ProviderViolation
                         if let Some(v) = stmt.get(*key) {
                             let actions: Vec<String> = match v {
                                 serde_json::Value::String(s) => vec![s.clone()],
-                                serde_json::Value::Array(a)  => a
+                                serde_json::Value::Array(a) => a
                                     .iter()
                                     .filter_map(|x| x.as_str().map(String::from))
                                     .collect(),
@@ -336,9 +349,9 @@ pub fn assert_no_iam_wildcards(cfg: &Config) -> Result<(), Vec<ProviderViolation
                                 if action == "*" {
                                     violations.push(ProviderViolation {
                                         resource: format!("{type_id}.{name}"),
-                                        field:    format!("policy.Statement[{i}].{key}"),
-                                        rule:     "no-iam-wildcards".into(),
-                                        message:  format!(
+                                        field: format!("policy.Statement[{i}].{key}"),
+                                        rule: "no-iam-wildcards".into(),
+                                        message: format!(
                                             "IAM policy contains unqualified `*` for {key}"
                                         ),
                                     });
@@ -370,7 +383,10 @@ fn looks_like_url(s: &str) -> bool {
         return false;
     }
     let scheme = &s[..scheme_end];
-    if !scheme.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.') {
+    if !scheme
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+    {
         return false;
     }
     let rest = &s[scheme_end + 3..];
@@ -516,7 +532,8 @@ mod tests {
             "resource": { "aws_instance": { "x": { "instance_type": "m6.xlarge" } } }
         }));
         let allow: &[&str] = &["t3.small", "t3.medium"];
-        let err = assert_field_is_one_of(&c, "aws_instance", "x", "instance_type", allow).unwrap_err();
+        let err =
+            assert_field_is_one_of(&c, "aws_instance", "x", "instance_type", allow).unwrap_err();
         assert_eq!(err.rule, "one-of");
     }
 
@@ -532,7 +549,11 @@ mod tests {
             }
         }));
         let violations = assert_no_iam_wildcards(&c).unwrap_err();
-        assert_eq!(violations.len(), 2, "expected wildcard in both Action and Resource");
+        assert_eq!(
+            violations.len(),
+            2,
+            "expected wildcard in both Action and Resource"
+        );
     }
 
     #[test]
@@ -581,7 +602,8 @@ mod tests {
         let c = cfg_from(json!({
             "resource": { "aws_db_instance": { "x": { "port": 70000 } } }
         }));
-        let err = assert_field_is_int_in_range(&c, "aws_db_instance", "x", "port", 1, 65535).unwrap_err();
+        let err =
+            assert_field_is_int_in_range(&c, "aws_db_instance", "x", "port", 1, 65535).unwrap_err();
         assert_eq!(err.rule, "int-in-range");
     }
 
@@ -600,7 +622,8 @@ mod tests {
         let c = cfg_from(json!({
             "resource": { "aws_vpc": { "main": { "tags": { "ManagedBy": "pangea" } } } }
         }));
-        let err = assert_resource_has_tags(&c, "aws_vpc", "main", &["ManagedBy", "Environment"]).unwrap_err();
+        let err = assert_resource_has_tags(&c, "aws_vpc", "main", &["ManagedBy", "Environment"])
+            .unwrap_err();
         assert_eq!(err.rule, "tags-required-key");
         assert!(err.field.contains("Environment"));
     }

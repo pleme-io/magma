@@ -10,10 +10,10 @@
 use std::collections::HashSet;
 
 use magma_discover::{
-    classify_discovered, emit_adoption_config, find_undeclared, DiscoveredResource,
+    DiscoveredResource, classify_discovered, emit_adoption_config, find_undeclared,
 };
 use proptest::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn arb_resource() -> impl Strategy<Value = DiscoveredResource> {
     (
@@ -25,7 +25,11 @@ fn arb_resource() -> impl Strategy<Value = DiscoveredResource> {
             Just(json!(null)),
         ],
     )
-        .prop_map(|(kind, address, current)| DiscoveredResource { kind, address, current })
+        .prop_map(|(kind, address, current)| DiscoveredResource {
+            kind,
+            address,
+            current,
+        })
 }
 
 fn arb_resources(min: usize, max: usize) -> impl Strategy<Value = Vec<DiscoveredResource>> {
@@ -43,7 +47,10 @@ fn arb_declared_subset(addrs: &[String]) -> impl Strategy<Value = HashSet<String
     let n = addrs.len();
     let owned: Vec<String> = addrs.to_vec();
     proptest::collection::vec(0..n.max(1), 0..=n).prop_map(move |indices| {
-        indices.into_iter().filter_map(|i| owned.get(i).cloned()).collect()
+        indices
+            .into_iter()
+            .filter_map(|i| owned.get(i).cloned())
+            .collect()
     })
 }
 

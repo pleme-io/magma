@@ -20,7 +20,9 @@ pub enum Expr {
     /// `InterpolatedString`).
     String(String),
     /// String with embedded `${...}` interpolation.
-    InterpolatedString { parts: Vec<StringPart> },
+    InterpolatedString {
+        parts: Vec<StringPart>,
+    },
     /// Boolean literal.
     Bool(bool),
     /// `null`.
@@ -30,25 +32,55 @@ pub enum Expr {
     /// Identifier (`pkgs`, `lib`, `stdenv`).
     Ident(String),
     /// Function lambda: `arg: body` or `{a, b ? default}: body`.
-    Lambda { params: Vec<LambdaParam>, body: Box<Expr> },
+    Lambda {
+        params: Vec<LambdaParam>,
+        body: Box<Expr>,
+    },
     /// Function application: `f x`.
-    Apply { func: Box<Expr>, arg: Box<Expr> },
+    Apply {
+        func: Box<Expr>,
+        arg: Box<Expr>,
+    },
     /// `let bindings; in body`.
-    Let { bindings: Vec<Binding>, body: Box<Expr> },
+    Let {
+        bindings: Vec<Binding>,
+        body: Box<Expr>,
+    },
     /// `with set; body`.
-    With { scope: Box<Expr>, body: Box<Expr> },
+    With {
+        scope: Box<Expr>,
+        body: Box<Expr>,
+    },
     /// `if c then a else b`.
-    If { condition: Box<Expr>, then_branch: Box<Expr>, else_branch: Box<Expr> },
+    If {
+        condition: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Box<Expr>,
+    },
     /// Attribute set `{ a = ...; b = ...; }`.
-    AttrSet { recursive: bool, bindings: Vec<Binding> },
+    AttrSet {
+        recursive: bool,
+        bindings: Vec<Binding>,
+    },
     /// List `[ a b c ]`.
     List(Vec<Expr>),
     /// Selection `set.attr`.
-    Select { set: Box<Expr>, path: Vec<String>, or_default: Option<Box<Expr>> },
+    Select {
+        set: Box<Expr>,
+        path: Vec<String>,
+        or_default: Option<Box<Expr>>,
+    },
     /// Binary op `a + b`.
-    BinOp { op: BinaryOp, lhs: Box<Expr>, rhs: Box<Expr> },
+    BinOp {
+        op: BinaryOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     /// `inherit a b c;` inside an attribute set.
-    Inherit { from: Option<Box<Expr>>, names: Vec<String> },
+    Inherit {
+        from: Option<Box<Expr>>,
+        names: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +92,7 @@ pub enum StringPart {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LambdaParam {
-    pub name:    String,
+    pub name: String,
     pub default: Option<Expr>,
     /// True for the `...` ellipsis in `{a, b, ...}: body`.
     #[serde(default)]
@@ -69,16 +101,27 @@ pub struct LambdaParam {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Binding {
-    pub name:  String,
+    pub name: String,
     pub value: Expr,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BinaryOp {
-    Add, Sub, Mul, Div,
-    Eq, Ne, Lt, Le, Gt, Ge,
-    And, Or, Impl,
-    Concat, Update,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+    Impl,
+    Concat,
+    Update,
     HasAttr,
 }

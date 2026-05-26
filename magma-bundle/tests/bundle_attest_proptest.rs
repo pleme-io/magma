@@ -8,13 +8,13 @@
 //!
 //! Per `theory/CONVERGENCE-SUBSTRATE.md` §VI (attested bundles).
 
+use chrono::Utc;
 use magma_bundle::{Bundle, BundleError};
 use magma_converge::{Action, AppliedChange, Outcome, Plan};
-use magma_drift::{classify, DriftPolicy};
+use magma_drift::{DriftPolicy, classify};
 use magma_fsm::Phase;
 use magma_stream::EventPayload;
 use magma_test_laws::strategies::{arb_event_chain, arb_lifecycle_happy_walk, arb_plan};
-use chrono::Utc;
 use proptest::prelude::*;
 
 // ── Local generator for an Outcome derived from a Plan ─────────────
@@ -28,27 +28,27 @@ fn arb_outcome(plan: &Plan) -> Outcome {
         .filter(|c| !matches!(c.action, Action::NoOp))
         .map(|c| AppliedChange {
             address: c.address.clone(),
-            action:  c.action,
+            action: c.action,
         })
         .collect();
     Outcome {
-        plan_id:     plan.id.clone(),
-        kind:        plan.kind.clone(),
+        plan_id: plan.id.clone(),
+        kind: plan.kind.clone(),
         applied,
-        failed:      vec![],
-        started_at:  Utc::now(),
+        failed: vec![],
+        started_at: Utc::now(),
         finished_at: Utc::now(),
     }
 }
 
 fn arb_bundle() -> impl Strategy<Value = Bundle> {
     (
-        "[a-z]{2,12}",       // kind
+        "[a-z]{2,12}",          // kind
         "[a-z][a-z0-9-]{2,15}", // workspace
         arb_plan(),
         arb_lifecycle_happy_walk(),
         arb_event_chain(5),
-        any::<bool>(),       // include outcome?
+        any::<bool>(), // include outcome?
     )
         .prop_map(|(kind, workspace, plan, lifecycle, audit, has_outcome)| {
             let outcome = if has_outcome {

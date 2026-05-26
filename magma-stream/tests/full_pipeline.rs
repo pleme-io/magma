@@ -19,15 +19,10 @@
 
 use std::sync::Arc;
 
-use magma_converge::{
-    inmemory::InMemoryKvReconciler,
-    Reconciler,
-};
-use magma_drift::{classify, DriftDecision, DriftPolicy};
+use magma_converge::{Reconciler, inmemory::InMemoryKvReconciler};
+use magma_drift::{DriftDecision, DriftPolicy, classify};
 use magma_fsm::{LifecycleState, Phase};
-use magma_stream::{
-    verify_chain, InMemorySink, JsonLinesSink, PlanStream, TracingSink,
-};
+use magma_stream::{InMemorySink, JsonLinesSink, PlanStream, TracingSink, verify_chain};
 use serde_json::json;
 
 #[tokio::test]
@@ -55,7 +50,8 @@ async fn full_pipeline_reconciler_drift_fsm_stream_audit_chain() {
     assert_eq!(fsm.current, Phase::Idle);
 
     // Trigger: Idle → Planning
-    fsm.transition(Phase::Planning, None, "external trigger").unwrap();
+    fsm.transition(Phase::Planning, None, "external trigger")
+        .unwrap();
     assert_eq!(fsm.current, Phase::Planning);
 
     // ── 4. compute_plan ─────────────────────────────────────────
@@ -82,7 +78,12 @@ async fn full_pipeline_reconciler_drift_fsm_stream_audit_chain() {
     // ── 6. FSM transition based on classification ───────────────
     // Functional-only drift → no approval needed (auto-correct
     // with alert routes straight to Applying).
-    fsm.transition(Phase::Applying, Some(plan_id.clone()), "policy: auto-correct").unwrap();
+    fsm.transition(
+        Phase::Applying,
+        Some(plan_id.clone()),
+        "policy: auto-correct",
+    )
+    .unwrap();
     assert_eq!(fsm.current, Phase::Applying);
 
     // ── 7. Apply ───────────────────────────────────────────────
@@ -92,10 +93,12 @@ async fn full_pipeline_reconciler_drift_fsm_stream_audit_chain() {
     stream.emit_outcome(&outcome).await;
 
     // ── 8. FSM transitions to Verifying then Stable ─────────────
-    fsm.transition(Phase::Verifying, Some(plan_id.clone()), "applied").unwrap();
+    fsm.transition(Phase::Verifying, Some(plan_id.clone()), "applied")
+        .unwrap();
     let post_drift = reconciler.detect_drift(&config).await.unwrap();
     assert!(post_drift.is_noop(), "post-apply drift should be empty");
-    fsm.transition(Phase::Stable, Some(plan_id.clone()), "verified no drift").unwrap();
+    fsm.transition(Phase::Stable, Some(plan_id.clone()), "verified no drift")
+        .unwrap();
     assert!(fsm.current.is_terminal());
 
     // ── 9. Audit log + chain verification ───────────────────────
@@ -118,13 +121,11 @@ async fn full_pipeline_reconciler_drift_fsm_stream_audit_chain() {
 #[tokio::test]
 async fn critical_drift_routes_through_approving_phase() {
     let reconciler = InMemoryKvReconciler::with_state(
-        [
-            ("critical_key".to_string(), json!("old_value")),
-        ]
-        .into_iter()
-        .collect(),
+        [("critical_key".to_string(), json!("old_value"))]
+            .into_iter()
+            .collect(),
     );
-    let config = json!({});  // Empty config = delete the key
+    let config = json!({}); // Empty config = delete the key
 
     // The InMemoryKvReconciler emits Delete actions with default
     // Critical severity. Conservative policy routes Critical →
@@ -143,18 +144,25 @@ async fn critical_drift_routes_through_approving_phase() {
     let policy = DriftPolicy::conservative_default();
     let drift_report = classify(&plan, &policy);
     assert_eq!(drift_report.summary.awaiting_approval, 1);
-    assert_eq!(drift_report.events[0].decision, DriftDecision::RequireApproval);
+    assert_eq!(
+        drift_report.events[0].decision,
+        DriftDecision::RequireApproval
+    );
     stream.emit_drift(&drift_report).await;
 
     // Policy says RequireApproval → FSM enters Approving
-    fsm.transition(Phase::Approving, Some(plan.id.clone()), "policy: critical").unwrap();
+    fsm.transition(Phase::Approving, Some(plan.id.clone()), "policy: critical")
+        .unwrap();
     assert_eq!(fsm.current, Phase::Approving);
 
     // Approver eventually approves → Applying
-    fsm.transition(Phase::Applying, Some(plan.id.clone()), "approved").unwrap();
+    fsm.transition(Phase::Applying, Some(plan.id.clone()), "approved")
+        .unwrap();
     reconciler.apply(&plan).await.unwrap();
-    fsm.transition(Phase::Verifying, Some(plan.id.clone()), "applied").unwrap();
-    fsm.transition(Phase::Stable, Some(plan.id.clone()), "verified").unwrap();
+    fsm.transition(Phase::Verifying, Some(plan.id.clone()), "applied")
+        .unwrap();
+    fsm.transition(Phase::Stable, Some(plan.id.clone()), "verified")
+        .unwrap();
 
     // Audit chain still intact even with the Approving step.
     let events = in_mem.events();
@@ -173,17 +181,22 @@ async fn failure_during_apply_transitions_to_failed_with_chain_intact() {
 
     fsm.transition(Phase::Planning, None, "trigger").unwrap();
     fsm.transition(Phase::Applying, None, "auto").unwrap();
-    stream.emit(magma_stream::EventPayload::Custom {
-        category: "apply_attempt".into(),
-        message:  "starting".into(),
-    }).await;
+    stream
+        .emit(magma_stream::EventPayload::Custom {
+            category: "apply_attempt".into(),
+            message: "starting".into(),
+        })
+        .await;
 
     // Simulated failure.
-    fsm.transition(Phase::Failed, None, "transient API 503").unwrap();
-    stream.emit(magma_stream::EventPayload::Custom {
-        category: "apply_failed".into(),
-        message:  "transient API 503".into(),
-    }).await;
+    fsm.transition(Phase::Failed, None, "transient API 503")
+        .unwrap();
+    stream
+        .emit(magma_stream::EventPayload::Custom {
+            category: "apply_failed".into(),
+            message: "transient API 503".into(),
+        })
+        .await;
 
     // Retry path.
     fsm.transition(Phase::Retrying, None, "backoff").unwrap();
@@ -206,15 +219,20 @@ async fn audit_chain_tampering_is_detected() {
     stream.register(in_mem.clone());
 
     for i in 0..5 {
-        stream.emit(magma_stream::EventPayload::Custom {
-            category: "test".into(),
-            message:  format!("event-{i}"),
-        }).await;
+        stream
+            .emit(magma_stream::EventPayload::Custom {
+                category: "test".into(),
+                message: format!("event-{i}"),
+            })
+            .await;
     }
 
     let mut events = in_mem.events();
     // Tamper with the middle event.
-    if let magma_stream::EventPayload::Custom { ref mut message, .. } = events[2].payload {
+    if let magma_stream::EventPayload::Custom {
+        ref mut message, ..
+    } = events[2].payload
+    {
         *message = "tampered after emission".to_string();
     }
     let result = verify_chain(&events);

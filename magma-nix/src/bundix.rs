@@ -6,7 +6,7 @@
 //! emitted gemset.nix is byte-identical to bundix's output for
 //! every Pangea Gemfile.lock — acceptance gate for M7.
 
-use crate::{ast::Expr, NixError, Result};
+use crate::{NixError, Result, ast::Expr};
 
 /// Emit gemset.nix as a typed Nix AST from a magma-rubygems
 /// `Lockfile`. The Lockfile is passed as serde_json::Value to

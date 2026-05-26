@@ -60,10 +60,14 @@ impl ResourceGraph {
 
     /// Number of nodes (resources).
     #[must_use]
-    pub fn len(&self) -> usize { self.inner.node_count() }
+    pub fn len(&self) -> usize {
+        self.inner.node_count()
+    }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool { self.inner.node_count() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.inner.node_count() == 0
+    }
 
     /// Detect cycles. Returns the first cycle's nodes if one is present.
     pub fn detect_cycle(&self) -> Option<Vec<ResourceAddress>> {
@@ -87,14 +91,7 @@ impl ResourceGraph {
         let mut indegree: HashMap<NodeIndex, usize> = self
             .inner
             .node_indices()
-            .map(|n| {
-                (
-                    n,
-                    self.inner
-                        .edges_directed(n, Direction::Incoming)
-                        .count(),
-                )
-            })
+            .map(|n| (n, self.inner.edges_directed(n, Direction::Incoming).count()))
             .collect();
 
         let mut waves: Vec<Vec<ResourceAddress>> = Vec::new();
@@ -108,10 +105,8 @@ impl ResourceGraph {
                 .collect();
             if current.is_empty() {
                 // No zero-indegree nodes but remaining > 0 → cycle.
-                let stuck: Vec<ResourceAddress> = indegree
-                    .keys()
-                    .map(|n| self.inner[*n].clone())
-                    .collect();
+                let stuck: Vec<ResourceAddress> =
+                    indegree.keys().map(|n| self.inner[*n].clone()).collect();
                 return Err(GraphError::CycleDetected(stuck));
             }
             // Sort for deterministic output.
@@ -120,10 +115,8 @@ impl ResourceGraph {
                 (a.type_id.0.clone(), a.name.clone())
             });
 
-            let wave: Vec<ResourceAddress> = current
-                .iter()
-                .map(|n| self.inner[*n].clone())
-                .collect();
+            let wave: Vec<ResourceAddress> =
+                current.iter().map(|n| self.inner[*n].clone()).collect();
             waves.push(wave);
 
             for n in &current {
@@ -155,11 +148,11 @@ mod tests {
 
     fn addr(name: &str) -> ResourceAddress {
         ResourceAddress {
-            module:  ModulePath::root(),
-            kind:    ResourceKind::Managed,
+            module: ModulePath::root(),
+            kind: ResourceKind::Managed,
             type_id: ResourceTypeId("aws_vpc".into()),
-            name:    name.into(),
-            key:     None,
+            name: name.into(),
+            key: None,
         }
     }
 

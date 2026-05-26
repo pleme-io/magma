@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use magma_replay::{parse_jsonl_path, replay_from_jsonl_path};
-use magma_stream::{verify_chain, EventPayload, InMemorySink, JsonLinesSink, PlanStream};
+use magma_stream::{EventPayload, InMemorySink, JsonLinesSink, PlanStream, verify_chain};
 use magma_test_laws::strategies::arb_event_payload;
 use proptest::prelude::*;
 

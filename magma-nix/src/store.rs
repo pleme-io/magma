@@ -11,7 +11,7 @@ use crate::{NixError, Result};
 
 /// One store entry — opaque byte payload keyed by BLAKE3 hash.
 pub struct StoreEntry {
-    pub hash:  String,
+    pub hash: String,
     pub bytes: Vec<u8>,
 }
 

@@ -31,9 +31,7 @@ use magma_types::State;
 pub async fn assert_write_read_round_trip<B: Backend>(b: &B) {
     let mut s = empty_state();
     s.serial = 42;
-    b.write_state(&s)
-        .await
-        .expect("write_state failed");
+    b.write_state(&s).await.expect("write_state failed");
     let read = b.read_state().await.expect("read_state failed");
     assert_eq!(
         read.serial, s.serial,

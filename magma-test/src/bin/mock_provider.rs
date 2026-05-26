@@ -23,7 +23,9 @@ use std::net::SocketAddr;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose};
+use rcgen::{
+    BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
+};
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 // Identity + ServerTlsConfig stay imported for the M0.x re-enable of
@@ -116,18 +118,22 @@ impl Provider for MockProvider {
         &self,
         _req: Request<tfplugin6::validate_provider_config::Request>,
     ) -> Result<Response<tfplugin6::validate_provider_config::Response>, Status> {
-        Ok(Response::new(tfplugin6::validate_provider_config::Response {
-            diagnostics: vec![],
-        }))
+        Ok(Response::new(
+            tfplugin6::validate_provider_config::Response {
+                diagnostics: vec![],
+            },
+        ))
     }
 
     async fn validate_resource_config(
         &self,
         _req: Request<tfplugin6::validate_resource_config::Request>,
     ) -> Result<Response<tfplugin6::validate_resource_config::Response>, Status> {
-        Ok(Response::new(tfplugin6::validate_resource_config::Response {
-            diagnostics: vec![],
-        }))
+        Ok(Response::new(
+            tfplugin6::validate_resource_config::Response {
+                diagnostics: vec![],
+            },
+        ))
     }
 
     async fn configure_provider(
@@ -259,7 +265,9 @@ impl Provider for MockProvider {
         &self,
         _req: Request<tfplugin6::validate_ephemeral_resource_config::Request>,
     ) -> Result<Response<tfplugin6::validate_ephemeral_resource_config::Response>, Status> {
-        Err(Status::unimplemented("mock: validate_ephemeral_resource_config"))
+        Err(Status::unimplemented(
+            "mock: validate_ephemeral_resource_config",
+        ))
     }
 
     async fn open_ephemeral_resource(
@@ -290,7 +298,8 @@ impl Provider for MockProvider {
         Err(Status::unimplemented("mock: generate_resource_config"))
     }
 
-    type ListResourceStream = tokio_stream::wrappers::ReceiverStream<Result<tfplugin6::list_resource::Event, Status>>;
+    type ListResourceStream =
+        tokio_stream::wrappers::ReceiverStream<Result<tfplugin6::list_resource::Event, Status>>;
     async fn list_resource(
         &self,
         _req: Request<tfplugin6::list_resource::Request>,
@@ -319,7 +328,9 @@ impl Provider for MockProvider {
         Err(Status::unimplemented("mock: configure_state_store"))
     }
 
-    type ReadStateBytesStream = tokio_stream::wrappers::ReceiverStream<Result<tfplugin6::read_state_bytes::Response, Status>>;
+    type ReadStateBytesStream = tokio_stream::wrappers::ReceiverStream<
+        Result<tfplugin6::read_state_bytes::Response, Status>,
+    >;
     async fn read_state_bytes(
         &self,
         _req: Request<tfplugin6::read_state_bytes::Request>,
@@ -369,7 +380,8 @@ impl Provider for MockProvider {
         Err(Status::unimplemented("mock: plan_action"))
     }
 
-    type InvokeActionStream = tokio_stream::wrappers::ReceiverStream<Result<tfplugin6::invoke_action::Event, Status>>;
+    type InvokeActionStream =
+        tokio_stream::wrappers::ReceiverStream<Result<tfplugin6::invoke_action::Event, Status>>;
     async fn invoke_action(
         &self,
         _req: Request<tfplugin6::invoke_action::Request>,
@@ -433,7 +445,9 @@ async fn main() {
         ExtendedKeyUsagePurpose::ClientAuth,
         ExtendedKeyUsagePurpose::ServerAuth,
     ];
-    let cert = params.self_signed(&key_pair).expect("mock_provider: self-sign");
+    let cert = params
+        .self_signed(&key_pair)
+        .expect("mock_provider: self-sign");
     let provider_cert_pem = cert.pem();
     let provider_cert_der = cert.der().to_vec();
     let provider_key_pem = key_pair.serialize_pem();
@@ -443,15 +457,22 @@ async fn main() {
     let _ = provider_cert_der; // kept for potential DER-output flows
 
     // 4. Bind a TCP listener in the requested port range.
-    let min_port: u16 = env::var("PLUGIN_MIN_PORT").ok()
-        .and_then(|s| s.parse().ok()).unwrap_or(10_000);
-    let max_port: u16 = env::var("PLUGIN_MAX_PORT").ok()
-        .and_then(|s| s.parse().ok()).unwrap_or(25_000);
+    let min_port: u16 = env::var("PLUGIN_MIN_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10_000);
+    let max_port: u16 = env::var("PLUGIN_MAX_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(25_000);
 
     let listener = bind_in_range(min_port, max_port).await.unwrap_or_else(|| {
         // Fall back to OS-assigned port if the range is unusable.
         std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|l| { l.set_nonblocking(true)?; TcpListener::from_std(l) })
+            .and_then(|l| {
+                l.set_nonblocking(true)?;
+                TcpListener::from_std(l)
+            })
             .expect("mock_provider: bind any port")
     });
     let local_addr: SocketAddr = listener.local_addr().expect("mock_provider: local_addr");
@@ -469,9 +490,7 @@ async fn main() {
     };
 
     // 6. Emit handshake line.
-    let handshake = format!(
-        "1|{app_protocol}|tcp|{local_addr}|grpc|{provider_cert_b64}",
-    );
+    let handshake = format!("1|{app_protocol}|tcp|{local_addr}|grpc|{provider_cert_b64}",);
     {
         let stdout = std::io::stdout();
         let mut out = stdout.lock();

@@ -45,32 +45,30 @@ pub fn plan_against_synthetic<R: Reconciler>(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanComparison {
     /// Plan A's id (the "before" baseline).
-    pub before:           magma_converge::PlanId,
+    pub before: magma_converge::PlanId,
     /// Plan B's id (the "after").
-    pub after:            magma_converge::PlanId,
+    pub after: magma_converge::PlanId,
     /// Changes only in A (i.e. would have happened but didn't).
-    pub only_in_before:   Vec<Change>,
+    pub only_in_before: Vec<Change>,
     /// Changes only in B (newly introduced).
-    pub only_in_after:    Vec<Change>,
+    pub only_in_after: Vec<Change>,
     /// Changes present in both with the same shape (consistent).
-    pub in_both:          Vec<Change>,
+    pub in_both: Vec<Change>,
     /// Changes whose action or before/after differs between A and B.
-    pub diverged:         Vec<PlanDivergence>,
+    pub diverged: Vec<PlanDivergence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanDivergence {
     pub address: String,
-    pub before:  Change,
-    pub after:   Change,
+    pub before: Change,
+    pub after: Change,
 }
 
 impl PlanComparison {
     /// True iff the two plans are identical in shape (same changes).
     pub fn is_identical(&self) -> bool {
-        self.only_in_before.is_empty()
-            && self.only_in_after.is_empty()
-            && self.diverged.is_empty()
+        self.only_in_before.is_empty() && self.only_in_after.is_empty() && self.diverged.is_empty()
     }
 
     /// Counts (only_in_before, only_in_after, diverged, in_both).
@@ -90,9 +88,9 @@ pub fn compare_plans(a: &Plan, b: &Plan) -> PlanComparison {
     let b_by: HashMap<&str, &Change> = b.changes.iter().map(|c| (c.address.as_str(), c)).collect();
 
     let mut only_in_before = vec![];
-    let mut only_in_after  = vec![];
-    let mut in_both        = vec![];
-    let mut diverged       = vec![];
+    let mut only_in_after = vec![];
+    let mut in_both = vec![];
+    let mut diverged = vec![];
 
     let mut all_keys: Vec<&str> = a_by.keys().chain(b_by.keys()).copied().collect();
     all_keys.sort();
@@ -100,8 +98,8 @@ pub fn compare_plans(a: &Plan, b: &Plan) -> PlanComparison {
 
     for key in all_keys {
         match (a_by.get(key), b_by.get(key)) {
-            (Some(ca), None)     => only_in_before.push((*ca).clone()),
-            (None, Some(cb))     => only_in_after.push((*cb).clone()),
+            (Some(ca), None) => only_in_before.push((*ca).clone()),
+            (None, Some(cb)) => only_in_after.push((*cb).clone()),
             (Some(ca), Some(cb)) => {
                 if changes_equal(ca, cb) {
                     in_both.push((*ca).clone());
@@ -109,7 +107,7 @@ pub fn compare_plans(a: &Plan, b: &Plan) -> PlanComparison {
                     diverged.push(PlanDivergence {
                         address: key.to_string(),
                         before: (*ca).clone(),
-                        after:  (*cb).clone(),
+                        after: (*cb).clone(),
                     });
                 }
             }
@@ -118,8 +116,8 @@ pub fn compare_plans(a: &Plan, b: &Plan) -> PlanComparison {
     }
 
     PlanComparison {
-        before:           a.id.clone(),
-        after:            b.id.clone(),
+        before: a.id.clone(),
+        after: b.id.clone(),
         only_in_before,
         only_in_after,
         in_both,
@@ -128,10 +126,7 @@ pub fn compare_plans(a: &Plan, b: &Plan) -> PlanComparison {
 }
 
 fn changes_equal(a: &Change, b: &Change) -> bool {
-    a.action == b.action
-        && a.severity == b.severity
-        && a.before == b.before
-        && a.after  == b.after
+    a.action == b.action && a.severity == b.severity && a.before == b.before && a.after == b.after
 }
 
 // ── What-if mutation ──────────────────────────────────────────────
@@ -167,10 +162,10 @@ impl StateMutation {
 
 /// Plan as if `mutation` had been applied to `current_state` first.
 pub fn what_if<R: Reconciler>(
-    reconciler:    &R,
-    config:        &Value,
+    reconciler: &R,
+    config: &Value,
     current_state: &Value,
-    mutation:      &StateMutation,
+    mutation: &StateMutation,
 ) -> Result<Plan, ReconcilerError> {
     let hypothetical = mutation.apply(current_state);
     reconciler.compute_plan(config, &hypothetical)
@@ -187,13 +182,9 @@ mod tests {
 
     #[tokio::test]
     async fn plan_against_synthetic_does_not_touch_real_state() {
-        let r = InMemoryKvReconciler::new();  // real state is empty
+        let r = InMemoryKvReconciler::new(); // real state is empty
         let fake = json!({ "preloaded": "yes" });
-        let plan = plan_against_synthetic(
-            &r,
-            &json!({ "preloaded": "yes" }),
-            &fake,
-        ).unwrap();
+        let plan = plan_against_synthetic(&r, &json!({ "preloaded": "yes" }), &fake).unwrap();
         // Same in fake → plan is empty.
         assert!(plan.is_noop());
         // Real state remains untouched.
@@ -229,14 +220,30 @@ mod tests {
     async fn compare_plans_only_in_before_or_after() {
         let r = InMemoryKvReconciler::new();
         // Plan A: creates a + b
-        let p_a = r.compute_plan(&json!({"a": 1, "b": 2}), &json!({})).unwrap();
+        let p_a = r
+            .compute_plan(&json!({"a": 1, "b": 2}), &json!({}))
+            .unwrap();
         // Plan B: creates a + c (b dropped, c added)
-        let p_b = r.compute_plan(&json!({"a": 1, "c": 3}), &json!({})).unwrap();
+        let p_b = r
+            .compute_plan(&json!({"a": 1, "c": 3}), &json!({}))
+            .unwrap();
         let cmp = compare_plans(&p_a, &p_b);
         // a in both; b only in A; c only in B
         assert_eq!(cmp.in_both.len(), 1);
-        assert_eq!(cmp.only_in_before.iter().filter(|c| c.address == "kv.b").count(), 1);
-        assert_eq!(cmp.only_in_after.iter().filter(|c| c.address == "kv.c").count(), 1);
+        assert_eq!(
+            cmp.only_in_before
+                .iter()
+                .filter(|c| c.address == "kv.b")
+                .count(),
+            1
+        );
+        assert_eq!(
+            cmp.only_in_after
+                .iter()
+                .filter(|c| c.address == "kv.c")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -270,7 +277,13 @@ mod tests {
     async fn what_if_with_replace_full_state() {
         let r = InMemoryKvReconciler::new();
         let cfg = json!({ "a": 1 });
-        let plan = what_if(&r, &cfg, &json!({}), &StateMutation::Replace(json!({ "a": 1 }))).unwrap();
+        let plan = what_if(
+            &r,
+            &cfg,
+            &json!({}),
+            &StateMutation::Replace(json!({ "a": 1 })),
+        )
+        .unwrap();
         // Hypothetical state already has a=1 → noop.
         assert!(plan.is_noop());
     }

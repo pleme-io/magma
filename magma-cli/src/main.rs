@@ -20,8 +20,8 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use magma::pangea::WorkspaceLoader as _;
 use magma::backend::Backend as _;
+use magma::pangea::WorkspaceLoader as _;
 
 // ── Drop-in compat: argv[0] sensing ────────────────────────────────
 
@@ -109,15 +109,15 @@ fn capture_tf_env() -> TfEnv {
     };
     for (k, v) in env::vars() {
         match k.as_str() {
-            "TF_DATA_DIR"         => e.data_dir = Some(PathBuf::from(v)),
-            "TF_LOG"              => e.log_level = Some(v),
-            "TF_LOG_PATH"         => e.log_path = Some(PathBuf::from(v)),
-            "TF_INPUT"            => {
+            "TF_DATA_DIR" => e.data_dir = Some(PathBuf::from(v)),
+            "TF_LOG" => e.log_level = Some(v),
+            "TF_LOG_PATH" => e.log_path = Some(PathBuf::from(v)),
+            "TF_INPUT" => {
                 let lower = v.to_lowercase();
                 e.input_enabled = !(lower == "false" || lower == "0" || lower == "no");
             }
-            "TF_IN_AUTOMATION"    => e.in_automation = !v.is_empty(),
-            "TF_WORKSPACE"        => e.workspace = Some(v),
+            "TF_IN_AUTOMATION" => e.in_automation = !v.is_empty(),
+            "TF_WORKSPACE" => e.workspace = Some(v),
             "TF_PLUGIN_CACHE_DIR" => e.plugin_cache_dir = Some(PathBuf::from(v)),
             _ => {
                 if let Some(name) = k.strip_prefix("TF_VAR_") {
@@ -164,7 +164,7 @@ fn detect_output_mode(invoke: InvokeMode) -> OutputMode {
     version,
     about = "Rust-native Pangea-Ruby-first OpenTofu-compatible IaC executor",
     long_about = "Pangea declares the supercontinent's shape; magma is the molten executive force that realizes it on cloud substrate. See theory/MAGMA.md for the destination spec.",
-    disable_help_subcommand = true,
+    disable_help_subcommand = true
 )]
 struct Cli {
     /// Subcommand. Omit for version + welcome banner.
@@ -451,11 +451,21 @@ struct DestroyArgs {
 #[derive(Subcommand, Debug)]
 enum StateCommand {
     List,
-    Show { address: String },
-    Mv   { from: String, to: String },
-    Rm   { address: String },
+    Show {
+        address: String,
+    },
+    Mv {
+        from: String,
+        to: String,
+    },
+    Rm {
+        address: String,
+    },
     /// Replace a provider in state (e.g. fork migration).
-    ReplaceProvider { from: String, to: String },
+    ReplaceProvider {
+        from: String,
+        to: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -482,8 +492,13 @@ enum AttestCommand {
 
 #[derive(Subcommand, Debug)]
 enum ConfigCommand {
-    Get { key: String },
-    Set { key: String, value: String },
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        value: String,
+    },
     /// Open the config file in $EDITOR.
     Edit,
 }
@@ -533,12 +548,7 @@ fn main() -> ExitCode {
     }
 }
 
-async fn run(
-    cli: Cli,
-    invoke: InvokeMode,
-    output: OutputMode,
-    tf_env: TfEnv,
-) -> Result<u8> {
+async fn run(cli: Cli, invoke: InvokeMode, output: OutputMode, tf_env: TfEnv) -> Result<u8> {
     let _ = (output, &tf_env);
 
     let Some(cmd) = cli.cmd else {
@@ -547,33 +557,33 @@ async fn run(
     };
 
     match cmd {
-        Command::Init(args)    => cmd_init(args),
-        Command::Plan(args)    => cmd_plan(args, cli.detailed_exitcode).await,
-        Command::Apply(args)   => cmd_apply(args).await,
+        Command::Init(args) => cmd_init(args),
+        Command::Plan(args) => cmd_plan(args, cli.detailed_exitcode).await,
+        Command::Apply(args) => cmd_apply(args).await,
         Command::Destroy(args) => cmd_destroy(args).await,
-        Command::State(s)      => cmd_state(s).await,
-        Command::Import        => stub("import"),
-        Command::Workspace(w)  => cmd_workspace(w),
-        Command::Output        => stub("output"),
-        Command::Show          => stub("show"),
-        Command::Refresh       => stub("refresh"),
-        Command::Taint         => stub("taint"),
-        Command::ForceUnlock   => stub("force-unlock"),
-        Command::Get           => stub("get"),
-        Command::Fmt           => cmd_fmt(),
-        Command::Validate      => stub("validate"),
-        Command::Console       => stub("console"),
-        Command::Mcp(args)     => cmd_mcp(args),
-        Command::Daemon        => stub("daemon"),
-        Command::Watch         => stub("watch"),
-        Command::Attest(a)     => cmd_attest(a),
-        Command::Config(c)     => cmd_config(c),
-        Command::Flow(args)    => cmd_flow(args).await,
-        Command::Capabilities  => cmd_capabilities(),
-        Command::Fixture(cmd)  => cmd_fixture(cmd).await,
+        Command::State(s) => cmd_state(s).await,
+        Command::Import => stub("import"),
+        Command::Workspace(w) => cmd_workspace(w),
+        Command::Output => stub("output"),
+        Command::Show => stub("show"),
+        Command::Refresh => stub("refresh"),
+        Command::Taint => stub("taint"),
+        Command::ForceUnlock => stub("force-unlock"),
+        Command::Get => stub("get"),
+        Command::Fmt => cmd_fmt(),
+        Command::Validate => stub("validate"),
+        Command::Console => stub("console"),
+        Command::Mcp(args) => cmd_mcp(args),
+        Command::Daemon => stub("daemon"),
+        Command::Watch => stub("watch"),
+        Command::Attest(a) => cmd_attest(a),
+        Command::Config(c) => cmd_config(c),
+        Command::Flow(args) => cmd_flow(args).await,
+        Command::Capabilities => cmd_capabilities(),
+        Command::Fixture(cmd) => cmd_fixture(cmd).await,
         Command::Migrate(args) => cmd_migrate(args).await,
-        Command::Split(args)   => cmd_split(args).await,
-        Command::Merge(args)   => cmd_merge(args).await,
+        Command::Split(args) => cmd_split(args).await,
+        Command::Merge(args) => cmd_merge(args).await,
         Command::Rubygems(cmd) => cmd_rubygems(cmd).await,
     }
 }
@@ -666,7 +676,8 @@ async fn cmd_fixture(cmd: FixtureCommand) -> Result<u8> {
                 }
             }
         }
-        FixtureCommand::VerifyDir(args) => match magma_arch_test::verify_directory(&args.dir).await {
+        FixtureCommand::VerifyDir(args) => match magma_arch_test::verify_directory(&args.dir).await
+        {
             Ok(agg) => {
                 println!("{}", serde_json::to_string_pretty(&agg)?);
                 Ok(if agg.failed == 0 { 0 } else { 1 })
@@ -788,7 +799,10 @@ fn cmd_capabilities() -> Result<u8> {
 fn print_banner(invoke: InvokeMode) {
     match invoke {
         InvokeMode::TerraformCompat => {
-            println!("Terraform v1.5-compat (magma {})", env!("CARGO_PKG_VERSION"));
+            println!(
+                "Terraform v1.5-compat (magma {})",
+                env!("CARGO_PKG_VERSION")
+            );
             println!("Run `terraform --help` for usage.");
         }
         InvokeMode::OpenTofuCompat => {
@@ -813,17 +827,26 @@ fn stub(name: &str) -> Result<u8> {
 }
 
 fn cmd_init(args: InitArgs) -> Result<u8> {
-    eprintln!("magma init: workspace {:?} (no-download={})", args.dir, args.no_download);
+    eprintln!(
+        "magma init: workspace {:?} (no-download={})",
+        args.dir, args.no_download
+    );
     // M0: verify workspace shape; provider download lands in M0.x via magma-providers registry client.
     use magma::pangea::WorkspaceShape;
     let shape = WorkspaceShape::discover(&args.dir)
         .map_err(|e| anyhow::anyhow!("workspace discovery: {e}"))?;
     match shape {
         WorkspaceShape::PangeaRuby { ruby_files, .. } => {
-            println!("magma init: PangeaRuby workspace ({} .rb files)", ruby_files.len());
+            println!(
+                "magma init: PangeaRuby workspace ({} .rb files)",
+                ruby_files.len()
+            );
         }
         WorkspaceShape::TerraformJson { json_files, .. } => {
-            println!("magma init: TerraformJson workspace ({} .tf.json files)", json_files.len());
+            println!(
+                "magma init: TerraformJson workspace ({} .tf.json files)",
+                json_files.len()
+            );
         }
     }
     Ok(0)
@@ -841,7 +864,11 @@ async fn synthesize_via_tlisp(
     bindings: &[String],
     gate: Option<&str>,
     state_dir: &std::path::Path,
-) -> Result<(magma::config::Config, magma::backend::LocalBackend, magma::types::State)> {
+) -> Result<(
+    magma::config::Config,
+    magma::backend::LocalBackend,
+    magma::types::State,
+)> {
     let mut typed_bindings: indexmap::IndexMap<String, magma_lava::Binding> =
         indexmap::IndexMap::new();
     for kv in bindings {
@@ -867,7 +894,11 @@ async fn synthesize_via_tlisp(
 
 async fn load_workspace_and_state(
     dir: &std::path::Path,
-) -> Result<(magma::config::Config, magma::backend::LocalBackend, magma::types::State)> {
+) -> Result<(
+    magma::config::Config,
+    magma::backend::LocalBackend,
+    magma::types::State,
+)> {
     let shape = magma::pangea::WorkspaceShape::discover(dir)
         .map_err(|e| anyhow::anyhow!("discover: {e}"))?;
     let loaded = magma::pangea::TerraformJsonLoader
@@ -886,12 +917,17 @@ async fn load_workspace_and_state(
 
 async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
     let (cfg, _backend, state) = if let Some(tlisp_path) = &args.tlisp {
-        synthesize_via_tlisp(tlisp_path, &args.tlisp_bindings, args.tlisp_gate.as_deref(), &args.dir).await?
+        synthesize_via_tlisp(
+            tlisp_path,
+            &args.tlisp_bindings,
+            args.tlisp_gate.as_deref(),
+            &args.dir,
+        )
+        .await?
     } else {
         load_workspace_and_state(&args.dir).await?
     };
-    let plan = magma::plan::plan(&cfg, &state)
-        .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
+    let plan = magma::plan::plan(&cfg, &state).map_err(|e| anyhow::anyhow!("plan: {e}"))?;
     let summary = serde_json::json!({
         "plan_id":          hex::encode(plan.id.0),
         "created_at":       plan.created_at,
@@ -913,12 +949,17 @@ async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
 
 async fn cmd_apply(args: ApplyArgs) -> Result<u8> {
     let (cfg, backend, mut state) = if let Some(tlisp_path) = &args.tlisp {
-        synthesize_via_tlisp(tlisp_path, &args.tlisp_bindings, args.tlisp_gate.as_deref(), &args.dir).await?
+        synthesize_via_tlisp(
+            tlisp_path,
+            &args.tlisp_bindings,
+            args.tlisp_gate.as_deref(),
+            &args.dir,
+        )
+        .await?
     } else {
         load_workspace_and_state(&args.dir).await?
     };
-    let plan = magma::plan::plan(&cfg, &state)
-        .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
+    let plan = magma::plan::plan(&cfg, &state).map_err(|e| anyhow::anyhow!("plan: {e}"))?;
 
     if !args.auto_approve {
         eprintln!(
@@ -928,8 +969,8 @@ async fn cmd_apply(args: ApplyArgs) -> Result<u8> {
         return Ok(0);
     }
 
-    let outcome = magma::apply::run_plan(&plan, &mut state)
-        .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
+    let outcome =
+        magma::apply::run_plan(&plan, &mut state).map_err(|e| anyhow::anyhow!("apply: {e}"))?;
     backend
         .write_state(&state)
         .await
@@ -960,19 +1001,19 @@ async fn cmd_destroy(args: DestroyArgs) -> Result<u8> {
         .iter()
         .map(|r| ResourceChange {
             address: r.address.clone(),
-            action:  Action::Delete,
-            before:  r.instances.first().map(|i| i.attributes.clone()),
-            after:   None,
+            action: Action::Delete,
+            before: r.instances.first().map(|i| i.attributes.clone()),
+            after: None,
             reasons: vec![ChangeReason::DeletedResource],
         })
         .collect();
     let plan = TPlan {
-        id:               PlanId([0u8; 32]),
-        created_at:       chrono::Utc::now(),
-        config_root:      args.dir.clone(),
-        variables:        Default::default(),
+        id: PlanId([0u8; 32]),
+        created_at: chrono::Utc::now(),
+        config_root: args.dir.clone(),
+        variables: Default::default(),
         resource_changes,
-        output_changes:   vec![],
+        output_changes: vec![],
     };
 
     if !args.auto_approve {
@@ -982,8 +1023,8 @@ async fn cmd_destroy(args: DestroyArgs) -> Result<u8> {
         );
         return Ok(0);
     }
-    let outcome = magma::apply::run_plan(&plan, &mut state)
-        .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
+    let outcome =
+        magma::apply::run_plan(&plan, &mut state).map_err(|e| anyhow::anyhow!("apply: {e}"))?;
     backend
         .write_state(&state)
         .await
@@ -1014,9 +1055,10 @@ async fn cmd_state(cmd: StateCommand) -> Result<u8> {
             Ok(0)
         }
         StateCommand::Show { address } => {
-            let found = state.resources.iter().find(|r| {
-                format!("{}.{}", r.address.type_id.0, r.address.name) == address
-            });
+            let found = state
+                .resources
+                .iter()
+                .find(|r| format!("{}.{}", r.address.type_id.0, r.address.name) == address);
             match found {
                 Some(r) => {
                     println!("{}", serde_json::to_string_pretty(r)?);
@@ -1028,19 +1070,25 @@ async fn cmd_state(cmd: StateCommand) -> Result<u8> {
                 }
             }
         }
-        StateCommand::Mv { .. }              => stub("state mv"),
-        StateCommand::Rm { .. }              => stub("state rm"),
+        StateCommand::Mv { .. } => stub("state mv"),
+        StateCommand::Rm { .. } => stub("state rm"),
         StateCommand::ReplaceProvider { .. } => stub("state replace-provider"),
     }
 }
 
 fn cmd_workspace(cmd: WorkspaceCommand) -> Result<u8> {
     match cmd {
-        WorkspaceCommand::Show           => { println!("default"); Ok(0) }
-        WorkspaceCommand::List           => { println!("* default"); Ok(0) }
-        WorkspaceCommand::New { .. }     => stub("workspace new"),
-        WorkspaceCommand::Select { .. }  => stub("workspace select"),
-        WorkspaceCommand::Delete { .. }  => stub("workspace delete"),
+        WorkspaceCommand::Show => {
+            println!("default");
+            Ok(0)
+        }
+        WorkspaceCommand::List => {
+            println!("* default");
+            Ok(0)
+        }
+        WorkspaceCommand::New { .. } => stub("workspace new"),
+        WorkspaceCommand::Select { .. } => stub("workspace select"),
+        WorkspaceCommand::Delete { .. } => stub("workspace delete"),
     }
 }
 
@@ -1057,7 +1105,10 @@ fn cmd_mcp(args: McpArgs) -> Result<u8> {
     eprintln!("magma mcp: starting MCP server (port={:?})", args.port);
     eprintln!("[stub] M0.x: wire JSON-RPC 2.0 dispatch via magma-mcp::dispatch");
     let _specs = magma::mcp::tool_specs();
-    eprintln!("(magma-mcp registered {} typed tools)", magma::mcp::tool_specs().len());
+    eprintln!(
+        "(magma-mcp registered {} typed tools)",
+        magma::mcp::tool_specs().len()
+    );
     Ok(0)
 }
 
@@ -1072,9 +1123,15 @@ fn cmd_attest(cmd: AttestCommand) -> Result<u8> {
 
 fn cmd_config(cmd: ConfigCommand) -> Result<u8> {
     match cmd {
-        ConfigCommand::Get  { key }            => { eprintln!("magma config get: {key}");  stub("config get") }
-        ConfigCommand::Set  { key, value }     => { eprintln!("magma config set: {key}={value}"); stub("config set") }
-        ConfigCommand::Edit                    => stub("config edit"),
+        ConfigCommand::Get { key } => {
+            eprintln!("magma config get: {key}");
+            stub("config get")
+        }
+        ConfigCommand::Set { key, value } => {
+            eprintln!("magma config set: {key}={value}");
+            stub("config set")
+        }
+        ConfigCommand::Edit => stub("config edit"),
     }
 }
 
@@ -1097,15 +1154,17 @@ async fn cmd_flow(args: FlowArgs) -> Result<u8> {
     // parses + delegates.
 
     let bytes = tokio::fs::read(&args.flow).await?;
-    let is_lisp = args.flow.extension()
+    let is_lisp = args
+        .flow
+        .extension()
         .and_then(|s| s.to_str())
         .map(|s| s == "lisp" || s == "tatara" || s == "scm")
         .unwrap_or(false);
     let flow: magma_flow::FlowFile = if is_lisp {
         let source = std::str::from_utf8(&bytes)
             .map_err(|e| anyhow::anyhow!("invalid UTF-8 in lisp source: {e}"))?;
-        let value = magma_tatara::parse_deforch(source)
-            .map_err(|e| anyhow::anyhow!("lisp parse: {e}"))?;
+        let value =
+            magma_tatara::parse_deforch(source).map_err(|e| anyhow::anyhow!("lisp parse: {e}"))?;
         serde_json::from_value(value)?
     } else {
         serde_json::from_slice(&bytes)?
@@ -1152,8 +1211,14 @@ fn migration_plan(
     dry_run: bool,
 ) -> magma_migrate::MigrationPlan {
     magma_migrate::MigrationPlan {
-        from:     magma_migrate::WorkspaceRef { name: from_name, state_path: from_state },
-        to:       magma_migrate::WorkspaceRef { name: to_name,   state_path: to_state   },
+        from: magma_migrate::WorkspaceRef {
+            name: from_name,
+            state_path: from_state,
+        },
+        to: magma_migrate::WorkspaceRef {
+            name: to_name,
+            state_path: to_state,
+        },
         moves,
         preserve: magma_migrate::PreserveFlags::default(),
         dry_run,
@@ -1172,8 +1237,14 @@ async fn cmd_split(args: SplitArgs) -> Result<u8> {
             target_address: addr.clone(),
         })
         .collect();
-    let plan = migration_plan(args.from, args.from_state, args.to, args.to_state,
-                              moves, args.dry_run);
+    let plan = migration_plan(
+        args.from,
+        args.from_state,
+        args.to,
+        args.to_state,
+        moves,
+        args.dry_run,
+    );
     let receipt = magma_migrate::run(plan)
         .await
         .map_err(|e| anyhow::anyhow!("split: {e}"))?;
@@ -1185,7 +1256,8 @@ async fn cmd_merge(args: MergeArgs) -> Result<u8> {
     // Load the source state to enumerate every resource address; the
     // plan-builder is `magma merge` itself — operators don't need to
     // hand-author the address list.
-    let bytes = tokio::fs::read(&args.from_state).await
+    let bytes = tokio::fs::read(&args.from_state)
+        .await
         .map_err(|e| anyhow::anyhow!("read {:?}: {e}", args.from_state))?;
     let from_state_json: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|e| anyhow::anyhow!("parse source state JSON: {e}"))?;
@@ -1195,9 +1267,13 @@ async fn cmd_merge(args: MergeArgs) -> Result<u8> {
         .ok_or_else(|| anyhow::anyhow!("source state has no resources array"))?;
     let mut moves: Vec<magma_migrate::ResourceMove> = Vec::new();
     for r in resources {
-        let kind = r.get("type").and_then(|v| v.as_str())
+        let kind = r
+            .get("type")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("resource missing `type`"))?;
-        let name = r.get("name").and_then(|v| v.as_str())
+        let name = r
+            .get("name")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("resource missing `name`"))?;
         let addr = format!("{kind}.{name}");
         moves.push(magma_migrate::ResourceMove {
@@ -1205,8 +1281,14 @@ async fn cmd_merge(args: MergeArgs) -> Result<u8> {
             target_address: addr,
         });
     }
-    let plan = migration_plan(args.from, args.from_state, args.to, args.to_state,
-                              moves, args.dry_run);
+    let plan = migration_plan(
+        args.from,
+        args.from_state,
+        args.to,
+        args.to_state,
+        moves,
+        args.dry_run,
+    );
     let receipt = magma_migrate::run(plan)
         .await
         .map_err(|e| anyhow::anyhow!("merge: {e}"))?;

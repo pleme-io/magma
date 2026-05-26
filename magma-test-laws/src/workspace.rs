@@ -50,7 +50,8 @@ pub fn assert_apply_converges(cfg: &Config) {
     assert!(
         outcome.failed.is_empty(),
         "Workspace law violated: apply produced {} failures — {:?}",
-        outcome.failed.len(), outcome.failed,
+        outcome.failed.len(),
+        outcome.failed,
     );
     // Re-plan against post-apply state.
     let p2 = plan(cfg, &state).expect("post-apply plan failed");
@@ -62,7 +63,8 @@ pub fn assert_apply_converges(cfg: &Config) {
     assert!(
         non_noop.is_empty(),
         "Workspace law violated: apply didn't converge — re-plan has {} non-NoOp changes: {:?}",
-        non_noop.len(), non_noop,
+        non_noop.len(),
+        non_noop,
     );
 }
 
@@ -112,9 +114,11 @@ pub fn assert_apply_enumerates_all_changes(cfg: &Config) {
     let outcome = run_plan(&p, &mut state).expect("apply failed");
     let visible = outcome.applied.len() + outcome.failed.len();
     assert_eq!(
-        visible, expected,
+        visible,
+        expected,
         "Workspace law violated: apply enumeration drift — plan had {expected} changes, outcome has {visible} ({} applied + {} failed)",
-        outcome.applied.len(), outcome.failed.len(),
+        outcome.applied.len(),
+        outcome.failed.len(),
     );
 }
 
@@ -133,7 +137,8 @@ pub fn assert_apply_bumps_serial(cfg: &Config) {
     assert!(
         state.serial > before,
         "Workspace law violated: apply with {} changes didn't bump serial (was {before}, still {})",
-        p.resource_changes.len(), state.serial,
+        p.resource_changes.len(),
+        state.serial,
     );
 }
 
@@ -151,10 +156,7 @@ pub fn assert_apply_bumps_serial(cfg: &Config) {
 /// shape they want (e.g. a single aws_iam_role with id "node").
 /// The function then asserts the planner sees no Create for the
 /// resources the seed inserted.
-pub fn assert_import_absorbs(
-    cfg: &Config,
-    seed_state_with: impl FnOnce(&mut magma_types::State),
-) {
+pub fn assert_import_absorbs(cfg: &Config, seed_state_with: impl FnOnce(&mut magma_types::State)) {
     let mut state = empty_state();
     seed_state_with(&mut state);
     let seeded_addresses: std::collections::HashSet<String> = state
@@ -210,45 +212,53 @@ pub fn assert_all_laws(cfg: &Config) {
 #[cfg(feature = "strategies")]
 pub fn arb_workspace_config() -> impl proptest::prelude::Strategy<Value = Config> {
     use proptest::prelude::*;
-    use serde_json::{json, Map, Value};
+    use serde_json::{Map, Value, json};
 
     // Canonical providers + the resource types Pangea emits for each.
     // Kept small to keep the proptest fast; the structure matters
     // more than coverage.
     let providers: &[(&str, &str, &[&str])] = &[
-        ("aws",        "hashicorp/aws",         &["aws_vpc", "aws_subnet", "aws_iam_role"]),
-        ("cloudflare", "cloudflare/cloudflare", &["cloudflare_zone", "cloudflare_record"]),
-        ("kubernetes", "hashicorp/kubernetes",  &["kubernetes_namespace", "kubernetes_service_account"]),
-        ("datadog",    "datadog/datadog",       &["datadog_monitor"]),
-        ("tailscale",  "tailscale/tailscale",   &["tailscale_acl"]),
+        (
+            "aws",
+            "hashicorp/aws",
+            &["aws_vpc", "aws_subnet", "aws_iam_role"],
+        ),
+        (
+            "cloudflare",
+            "cloudflare/cloudflare",
+            &["cloudflare_zone", "cloudflare_record"],
+        ),
+        (
+            "kubernetes",
+            "hashicorp/kubernetes",
+            &["kubernetes_namespace", "kubernetes_service_account"],
+        ),
+        ("datadog", "datadog/datadog", &["datadog_monitor"]),
+        ("tailscale", "tailscale/tailscale", &["tailscale_acl"]),
     ];
 
     // Pick 1-3 providers, then for each provider pick 1-N resource types.
-    let provider_indices = proptest::collection::vec(0..providers.len(), 1..=3)
-        .prop_map(|mut v| {
+    let provider_indices =
+        proptest::collection::vec(0..providers.len(), 1..=3).prop_map(|mut v| {
             v.sort();
             v.dedup();
             v
         });
 
-    (provider_indices,
-     proptest::collection::vec("[a-z][a-z0-9_]{0,7}", 1..=6))
+    (
+        provider_indices,
+        proptest::collection::vec("[a-z][a-z0-9_]{0,7}", 1..=6),
+    )
         .prop_map(move |(provider_ids, names)| {
             let mut required_providers = Map::new();
-            let mut provider_block     = Map::new();
-            let mut resource_block     = Map::new();
-            let mut all_addresses      = vec![];
+            let mut provider_block = Map::new();
+            let mut resource_block = Map::new();
+            let mut all_addresses = vec![];
 
             for &pid in &provider_ids {
                 let (pname, psource, ptypes) = providers[pid];
-                required_providers.insert(
-                    pname.into(),
-                    json!({ "source": psource }),
-                );
-                provider_block.insert(
-                    pname.into(),
-                    json!({}),
-                );
+                required_providers.insert(pname.into(), json!({ "source": psource }));
+                provider_block.insert(pname.into(), json!({}));
 
                 // For each name, deterministically pick a type
                 // based on the name's first char.
@@ -259,18 +269,18 @@ pub fn arb_workspace_config() -> impl proptest::prelude::Strategy<Value = Config
                         .or_insert_with(|| Value::Object(Map::new()))
                         .as_object_mut()
                         .unwrap();
-                    type_bucket.insert(
-                        format!("{name}_{pid}"),
-                        json!({}),
-                    );
+                    type_bucket.insert(format!("{name}_{pid}"), json!({}));
                     all_addresses.push((type_id.to_string(), format!("{name}_{pid}")));
                 }
             }
 
             let mut top = Map::new();
-            top.insert("terraform".into(), json!({
-                "required_providers": required_providers,
-            }));
+            top.insert(
+                "terraform".into(),
+                json!({
+                    "required_providers": required_providers,
+                }),
+            );
             top.insert("provider".into(), Value::Object(provider_block));
             top.insert("resource".into(), Value::Object(resource_block));
 

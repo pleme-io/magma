@@ -44,7 +44,9 @@ impl LockId {
 }
 
 impl Default for LockId {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── Backend trait ──────────────────────────────────────────────────
@@ -64,7 +66,7 @@ pub trait Backend: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct LocalBackend {
     state_path: PathBuf,
-    lock_path:  PathBuf,
+    lock_path: PathBuf,
 }
 
 impl LocalBackend {
@@ -72,12 +74,16 @@ impl LocalBackend {
         let dir: PathBuf = dir.into();
         Self {
             state_path: dir.join("terraform.tfstate"),
-            lock_path:  dir.join("terraform.tfstate.lock"),
+            lock_path: dir.join("terraform.tfstate.lock"),
         }
     }
 
-    pub fn state_path(&self) -> &PathBuf { &self.state_path }
-    pub fn lock_path(&self)  -> &PathBuf { &self.lock_path }
+    pub fn state_path(&self) -> &PathBuf {
+        &self.state_path
+    }
+    pub fn lock_path(&self) -> &PathBuf {
+        &self.lock_path
+    }
 }
 
 #[async_trait]
@@ -115,8 +121,10 @@ impl Backend for LocalBackend {
             let existing = tokio::fs::read_to_string(&self.lock_path)
                 .await
                 .unwrap_or_default();
-            let info: LockInfo = serde_json::from_str(&existing)
-                .unwrap_or_else(|_| LockInfo { id: "unknown".into(), holder: "unknown".into() });
+            let info: LockInfo = serde_json::from_str(&existing).unwrap_or_else(|_| LockInfo {
+                id: "unknown".into(),
+                holder: "unknown".into(),
+            });
             return Err(BackendError::AlreadyLocked {
                 id: info.id,
                 holder: info.holder,
@@ -124,7 +132,7 @@ impl Backend for LocalBackend {
         }
         let id = LockId::new();
         let info = LockInfo {
-            id:     id.0.clone(),
+            id: id.0.clone(),
             holder: std::env::var("USER").unwrap_or_else(|_| "magma".into()),
         };
         if let Some(parent) = self.lock_path.parent() {
@@ -142,7 +150,7 @@ impl Backend for LocalBackend {
         let info: LockInfo = serde_json::from_slice(&bytes)?;
         if info.id != lock_id.0 {
             return Err(BackendError::LockIdMismatch {
-                have:     lock_id.0.clone(),
+                have: lock_id.0.clone(),
                 expected: info.id,
             });
         }
@@ -153,18 +161,18 @@ impl Backend for LocalBackend {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct LockInfo {
-    id:     String,
+    id: String,
     holder: String,
 }
 
 fn empty_state_inline() -> State {
     State {
-        version:           4,
+        version: 4,
         terraform_version: "1.7.0".into(),
-        serial:            0,
-        lineage:           Uuid::new_v4(),
-        outputs:           Default::default(),
-        resources:         Vec::new(),
+        serial: 0,
+        lineage: Uuid::new_v4(),
+        outputs: Default::default(),
+        resources: Vec::new(),
     }
 }
 
@@ -184,17 +192,23 @@ pub struct InMemoryBackend {
 
 impl Default for InMemoryBackend {
     fn default() -> Self {
-        Self { state: std::sync::Mutex::new(empty_state_inline()) }
+        Self {
+            state: std::sync::Mutex::new(empty_state_inline()),
+        }
     }
 }
 
 impl InMemoryBackend {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Seed the backend with an explicit initial State (useful for
     /// drift tests that need pre-existing resources).
     pub fn with_state(state: State) -> Self {
-        Self { state: std::sync::Mutex::new(state) }
+        Self {
+            state: std::sync::Mutex::new(state),
+        }
     }
 }
 

@@ -15,10 +15,7 @@
 //! blocks, eval). Pangea gemspecs don't embed these — refusing
 //! keeps the parser deterministic.
 
-use crate::{
-    manifest::Dependency,
-    Result, RubygemsError,
-};
+use crate::{Result, RubygemsError, manifest::Dependency};
 use serde::{Deserialize, Serialize};
 
 /// Typed Pangea-shape gemspec surface. Matches the bundler-input
@@ -26,12 +23,12 @@ use serde::{Deserialize, Serialize};
 /// (description, summary, email) that don't affect resolution.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GemSpec {
-    pub name:                 String,
-    pub version:              Option<String>,
-    pub license:              Option<String>,
+    pub name: String,
+    pub version: Option<String>,
+    pub license: Option<String>,
     pub required_ruby_version: Option<String>,
     /// Runtime deps via `spec.add_dependency`.
-    pub dependencies:         Vec<Dependency>,
+    pub dependencies: Vec<Dependency>,
     /// Test-only deps via `spec.add_development_dependency`.
     pub development_dependencies: Vec<Dependency>,
 }
@@ -77,8 +74,9 @@ pub fn parse(source: &str) -> Result<GemSpec> {
 
         // spec.name = '...' or %(...) or "..."
         if let Some(rest) = line.strip_prefix("spec.name") {
-            spec.name = parse_assignment_value(rest)
-                .ok_or_else(|| RubygemsError::GemspecParse(format!("malformed spec.name: {line:?}")))?;
+            spec.name = parse_assignment_value(rest).ok_or_else(|| {
+                RubygemsError::GemspecParse(format!("malformed spec.name: {line:?}"))
+            })?;
             continue;
         }
 
@@ -190,8 +188,8 @@ fn strip_inline_comment(line: &str) -> &str {
     for (i, c) in line.char_indices() {
         match c {
             '\'' if !in_double => in_single = !in_single,
-            '"'  if !in_single => in_double = !in_double,
-            '#'  if !in_single && !in_double => return &line[..i],
+            '"' if !in_single => in_double = !in_double,
+            '#' if !in_single && !in_double => return &line[..i],
             _ => {}
         }
     }
@@ -251,12 +249,24 @@ end
     #[test]
     fn captures_runtime_deps_with_constraints() {
         let spec = parse(PANGEA_CORE_GEMSPEC).unwrap();
-        let ts = spec.dependencies.iter().find(|d| d.name == "terraform-synthesizer").unwrap();
+        let ts = spec
+            .dependencies
+            .iter()
+            .find(|d| d.name == "terraform-synthesizer")
+            .unwrap();
         assert_eq!(ts.requirement.as_deref(), Some(">= 0.0.28"));
-        let dry_types = spec.dependencies.iter().find(|d| d.name == "dry-types").unwrap();
+        let dry_types = spec
+            .dependencies
+            .iter()
+            .find(|d| d.name == "dry-types")
+            .unwrap();
         assert_eq!(dry_types.requirement.as_deref(), Some("~> 1.7"));
         // base64 has no version constraint.
-        let base64 = spec.dependencies.iter().find(|d| d.name == "base64").unwrap();
+        let base64 = spec
+            .dependencies
+            .iter()
+            .find(|d| d.name == "base64")
+            .unwrap();
         assert!(base64.requirement.is_none());
     }
 

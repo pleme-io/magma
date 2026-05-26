@@ -50,7 +50,7 @@ use magma_backend::{Backend, BackendError, LockId};
 use magma_types::State;
 use thiserror::Error;
 
-pub use tofu_state::{magma_to_tofu, tofu_to_magma, TofuStateError};
+pub use tofu_state::{TofuStateError, magma_to_tofu, tofu_to_magma};
 
 // ── Errors ────────────────────────────────────────────────────────
 
@@ -135,7 +135,10 @@ pub enum BackendShape {
 impl<S: AsyncStateStore + ?Sized> OperatorBackend<S> {
     /// Build a backend with the default magma-shape encoding.
     pub fn new(inner: Arc<S>) -> Self {
-        Self { inner, shape: BackendShape::Magma }
+        Self {
+            inner,
+            shape: BackendShape::Magma,
+        }
     }
 
     /// Build a backend with a chosen on-disk encoding shape.
@@ -156,7 +159,7 @@ impl<S: AsyncStateStore + ?Sized> Backend for OperatorBackend<S> {
             None => Ok(magma_state::empty_state()),
             Some(b) => match self.shape {
                 BackendShape::Magma => decode_magma_shape(&b),
-                BackendShape::Tofu  => decode_tofu_shape(&b),
+                BackendShape::Tofu => decode_tofu_shape(&b),
             },
         }
     }
@@ -165,8 +168,9 @@ impl<S: AsyncStateStore + ?Sized> Backend for OperatorBackend<S> {
         let bytes = match self.shape {
             BackendShape::Magma => serde_json::to_vec_pretty(state)
                 .map_err(|e| backend_other(format!("encode magma: {e}")))?,
-            BackendShape::Tofu  => magma_to_tofu(state)
-                .map_err(|e| backend_other(format!("encode tofu: {e}")))?,
+            BackendShape::Tofu => {
+                magma_to_tofu(state).map_err(|e| backend_other(format!("encode tofu: {e}")))?
+            }
         };
         self.inner
             .save_state_bytes(&bytes)
@@ -185,8 +189,7 @@ impl<S: AsyncStateStore + ?Sized> Backend for OperatorBackend<S> {
 }
 
 fn decode_magma_shape(bytes: &[u8]) -> Result<State, BackendError> {
-    serde_json::from_slice(bytes)
-        .map_err(|e| backend_other(format!("decode magma state: {e}")))
+    serde_json::from_slice(bytes).map_err(|e| backend_other(format!("decode magma state: {e}")))
 }
 
 fn decode_tofu_shape(bytes: &[u8]) -> Result<State, BackendError> {
@@ -242,7 +245,7 @@ pub mod tofu_state {
         InstanceStatus, ModulePath, ProviderReference, ResourceAddress, ResourceKind,
         ResourceTypeId, State, StateInstance, StateResource,
     };
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use thiserror::Error;
     use uuid::Uuid;
 
@@ -274,10 +277,8 @@ pub mod tofu_state {
             .transpose()?
             .map(|slice| slice.to_vec())
             .unwrap_or_default();
-        let resources: Vec<StateResource> = resources_raw
-            .iter()
-            .filter_map(parse_resource)
-            .collect();
+        let resources: Vec<StateResource> =
+            resources_raw.iter().filter_map(parse_resource).collect();
         Ok(State {
             version,
             terraform_version,
@@ -304,9 +305,9 @@ pub mod tofu_state {
 
     fn parse_resource(v: &Value) -> Option<StateResource> {
         let type_id = v.get("type")?.as_str()?.to_string();
-        let name    = v.get("name")?.as_str()?.to_string();
-        let mode    = v.get("mode").and_then(Value::as_str).unwrap_or("managed");
-        let kind    = match mode {
+        let name = v.get("name")?.as_str()?.to_string();
+        let mode = v.get("mode").and_then(Value::as_str).unwrap_or("managed");
+        let kind = match mode {
             "data" => ResourceKind::Data,
             _ => ResourceKind::Managed,
         };
@@ -321,11 +322,11 @@ pub mod tofu_state {
 
         Some(StateResource {
             address: ResourceAddress {
-                module:  ModulePath::root(),
+                module: ModulePath::root(),
                 kind,
                 type_id: ResourceTypeId(type_id),
                 name,
-                key:     None,
+                key: None,
             },
             provider,
             instances,
@@ -334,14 +335,11 @@ pub mod tofu_state {
 
     fn parse_instance(v: &Value) -> Option<StateInstance> {
         Some(StateInstance {
-            schema_version: v
-                .get("schema_version")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-            attributes:     v.get("attributes").cloned().unwrap_or(Value::Null),
-            private:        vec![],
-            dependencies:   vec![],
-            status:         InstanceStatus::Ready,
+            schema_version: v.get("schema_version").and_then(Value::as_u64).unwrap_or(0),
+            attributes: v.get("attributes").cloned().unwrap_or(Value::Null),
+            private: vec![],
+            dependencies: vec![],
+            status: InstanceStatus::Ready,
         })
     }
 
@@ -360,7 +358,7 @@ pub mod tofu_state {
         ProviderReference {
             source: stripped.to_string(),
             name,
-            alias:  None,
+            alias: None,
         }
     }
 
@@ -378,7 +376,7 @@ pub mod tofu_state {
         // if a non-emittable kind sneaks through).
         let mode = match r.address.kind {
             ResourceKind::Managed => "managed",
-            ResourceKind::Data    => "data",
+            ResourceKind::Data => "data",
             _ => "managed",
         };
         let instances: Vec<Value> = r
@@ -429,7 +427,11 @@ mod tests {
         magma_fixtures::StateBuilder::new()
             .lineage(uuid::Uuid::nil())
             .serial(7)
-            .resource("aws_iam_role", "alpha", serde_json::json!({"name": "alpha"}))
+            .resource(
+                "aws_iam_role",
+                "alpha",
+                serde_json::json!({"name": "alpha"}),
+            )
             .build()
     }
 
@@ -557,8 +559,10 @@ mod tests {
         let s = String::from_utf8(bytes).unwrap();
         // The provider field is JSON-encoded so embedded quotes are
         // backslash-escaped. Look for the unescaped infix instead.
-        assert!(s.contains("registry.terraform.io/hashicorp/aws"),
-                "missing canonical provider source in:\n{s}");
+        assert!(
+            s.contains("registry.terraform.io/hashicorp/aws"),
+            "missing canonical provider source in:\n{s}"
+        );
         assert!(s.contains("\"mode\": \"managed\""));
         assert!(s.contains("\"type\": \"aws_iam_role\""));
         // Round-trip via parsed JSON: the typed provider string ends

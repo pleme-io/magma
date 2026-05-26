@@ -9,15 +9,18 @@ use magma_flow::{FlowEdge, FlowFile, FlowWorkspace, OptimizationHints};
 use magma_test_laws::chain::*;
 
 fn ws(name: &str) -> FlowWorkspace {
-    FlowWorkspace { name: name.into(), dir: PathBuf::from(format!("workspaces/{name}")) }
+    FlowWorkspace {
+        name: name.into(),
+        dir: PathBuf::from(format!("workspaces/{name}")),
+    }
 }
 
 fn edge(from: &str, from_out: &str, to: &str, to_in: &str) -> FlowEdge {
     FlowEdge {
-        from:        from.into(),
+        from: from.into(),
         from_output: from_out.into(),
-        to:          to.into(),
-        to_input:    to_in.into(),
+        to: to.into(),
+        to_input: to_in.into(),
     }
 }
 
@@ -28,8 +31,8 @@ fn three_workspace_chain_passes_all_laws() {
     let f = FlowFile {
         workspaces: vec![ws("vpc"), ws("cluster"), ws("apps")],
         edges: vec![
-            edge("vpc",     "vpc_id",   "cluster", "vpc_id"),
-            edge("cluster", "endpoint", "apps",    "k8s_endpoint"),
+            edge("vpc", "vpc_id", "cluster", "vpc_id"),
+            edge("cluster", "endpoint", "apps", "k8s_endpoint"),
         ],
         optimization: None,
     };
@@ -130,10 +133,10 @@ fn diamond_chain_passes() {
     let f = FlowFile {
         workspaces: vec![ws("root"), ws("a"), ws("b"), ws("leaf")],
         edges: vec![
-            edge("root", "out", "a",    "in"),
-            edge("root", "out", "b",    "in"),
-            edge("a",    "out", "leaf", "in_a"),
-            edge("b",    "out", "leaf", "in_b"),
+            edge("root", "out", "a", "in"),
+            edge("root", "out", "b", "in"),
+            edge("a", "out", "leaf", "in_a"),
+            edge("b", "out", "leaf", "in_b"),
         ],
         optimization: None,
     };
@@ -141,5 +144,5 @@ fn diamond_chain_passes() {
     let order = apply_order(&f);
     // root must be first, leaf last.
     assert_eq!(order.first().unwrap(), "root");
-    assert_eq!(order.last().unwrap(),  "leaf");
+    assert_eq!(order.last().unwrap(), "leaf");
 }

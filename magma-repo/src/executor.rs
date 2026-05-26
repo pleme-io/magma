@@ -24,17 +24,17 @@ pub struct WorkspaceExecutionResult {
     /// didn't emit a bundle (e.g. dry-run / skipped).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle_id: Option<String>,
-    pub applied:   usize,
-    pub failed:    usize,
+    pub applied: usize,
+    pub failed: usize,
     /// Final lifecycle phase per magma_fsm::Phase as Debug string
     /// (Stable / Refused / Approving / Failed). Operator-side
     /// consumers route on this for CR status surfaces.
-    pub phase:     String,
+    pub phase: String,
     /// Optional error string. When present, the executor refused
     /// or failed; the operator-side reconciler should respect
     /// the ReconcilePolicy.on_failure setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error:     Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,10 +71,10 @@ impl WorkspaceExecutor for DryRunExecutor {
     ) -> Result<WorkspaceExecutionResult, WorkspaceExecutorError> {
         Ok(WorkspaceExecutionResult {
             bundle_id: None,
-            applied:   0,
-            failed:    0,
-            phase:     "Idle".into(),
-            error:     None,
+            applied: 0,
+            failed: 0,
+            phase: "Idle".into(),
+            error: None,
         })
     }
 }

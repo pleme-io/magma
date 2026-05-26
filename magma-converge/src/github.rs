@@ -15,18 +15,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    build_outcome, change, AppliedChange, Outcome, Plan, Reconciler, ReconcilerError, Action,
+    Action, AppliedChange, Outcome, Plan, Reconciler, ReconcilerError, build_outcome, change,
 };
 
 // ── Typed repo shape ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoSettings {
-    pub description:    Option<String>,
-    pub private:        bool,
+    pub description: Option<String>,
+    pub private: bool,
     pub default_branch: String,
     /// Sorted, deduped.
-    pub topics:         Vec<String>,
+    pub topics: Vec<String>,
 }
 
 impl RepoSettings {
@@ -144,10 +144,8 @@ impl<C: GithubClient> Reconciler for GithubRepoReconciler<C> {
             .list_repos()
             .await
             .map_err(ReconcilerError::ReadState)?;
-        let canonical: HashMap<String, RepoSettings> = repos
-            .into_iter()
-            .map(|(k, v)| (k, v.canonical()))
-            .collect();
+        let canonical: HashMap<String, RepoSettings> =
+            repos.into_iter().map(|(k, v)| (k, v.canonical())).collect();
         serde_json::to_value(canonical).map_err(|e| ReconcilerError::ReadState(e.to_string()))
     }
 
@@ -168,8 +166,7 @@ impl<C: GithubClient> Reconciler for GithubRepoReconciler<C> {
             .collect();
 
         let mut changes = vec![];
-        let mut all_names: Vec<&String> =
-            desired.keys().chain(current.keys()).collect();
+        let mut all_names: Vec<&String> = desired.keys().chain(current.keys()).collect();
         all_names.sort();
         all_names.dedup();
 
@@ -177,16 +174,21 @@ impl<C: GithubClient> Reconciler for GithubRepoReconciler<C> {
             let address = format!("github_repo.{name}");
             match (current.get(name), desired.get(name)) {
                 (None, Some(want)) => changes.push(change(
-                    address, Action::Create, None,
+                    address,
+                    Action::Create,
+                    None,
                     Some(serde_json::to_value(want).unwrap()),
                 )),
                 (Some(have), None) => changes.push(change(
-                    address, Action::Delete,
-                    Some(serde_json::to_value(have).unwrap()), None,
+                    address,
+                    Action::Delete,
+                    Some(serde_json::to_value(have).unwrap()),
+                    None,
                 )),
                 (Some(have), Some(want)) if have != want => {
                     changes.push(change(
-                        address, Action::Update,
+                        address,
+                        Action::Update,
                         Some(serde_json::to_value(have).unwrap()),
                         Some(serde_json::to_value(want).unwrap()),
                     ));
@@ -201,7 +203,7 @@ impl<C: GithubClient> Reconciler for GithubRepoReconciler<C> {
     async fn apply(&self, plan: &Plan) -> Result<Outcome, ReconcilerError> {
         let started_at = Utc::now();
         let mut applied = vec![];
-        let mut failed  = vec![];
+        let mut failed = vec![];
 
         for c in &plan.changes {
             let name = c.address.strip_prefix("github_repo.").unwrap_or(&c.address);
@@ -235,14 +237,17 @@ impl<C: GithubClient> Reconciler for GithubRepoReconciler<C> {
                     }
                 }
                 Action::Delete => self.client.delete_repo(name).await,
-                Action::NoOp   => continue,
+                Action::NoOp => continue,
             };
             match res {
-                Ok(()) => applied.push(AppliedChange { address: c.address.clone(), action: c.action }),
+                Ok(()) => applied.push(AppliedChange {
+                    address: c.address.clone(),
+                    action: c.action,
+                }),
                 Err(e) => failed.push(crate::FailedChange {
                     address: c.address.clone(),
-                    action:  c.action,
-                    error:   e,
+                    action: c.action,
+                    error: e,
                 }),
             }
         }
@@ -258,10 +263,10 @@ mod tests {
 
     fn repo(desc: &str) -> RepoSettings {
         RepoSettings {
-            description:    Some(desc.into()),
-            private:        false,
+            description: Some(desc.into()),
+            private: false,
             default_branch: "main".into(),
-            topics:         vec![],
+            topics: vec![],
         }
     }
 
@@ -291,11 +296,14 @@ mod tests {
         let mut desired = HashMap::new();
         desired.insert("rio".to_string(), repo("Rio"));
         let config = serde_json::to_value(desired).unwrap();
-        let state  = r.read_state().await.unwrap();
-        let plan   = r.compute_plan(&config, &state).unwrap();
+        let state = r.read_state().await.unwrap();
+        let plan = r.compute_plan(&config, &state).unwrap();
         let outcome = r.apply(&plan).await.unwrap();
         assert!(outcome.fully_succeeded());
-        assert_eq!(r.client().snapshot().get("rio").unwrap().description, Some("Rio".into()));
+        assert_eq!(
+            r.client().snapshot().get("rio").unwrap().description,
+            Some("Rio".into())
+        );
     }
 
     #[tokio::test]
@@ -328,7 +336,10 @@ mod tests {
         let config = serde_json::to_value(desired).unwrap();
         let state = r.read_state().await.unwrap();
         let plan = r.compute_plan(&config, &state).unwrap();
-        assert!(plan.is_noop(), "topic order shouldn't drift, plan: {plan:?}");
+        assert!(
+            plan.is_noop(),
+            "topic order shouldn't drift, plan: {plan:?}"
+        );
     }
 
     #[tokio::test]

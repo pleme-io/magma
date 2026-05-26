@@ -30,10 +30,10 @@ use magma_types::State;
 /// workspace's output slot to a downstream workspace's input slot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChainEdge {
-    pub from:        String,
+    pub from: String,
     pub from_output: String,
-    pub to:          String,
-    pub to_input:    String,
+    pub to: String,
+    pub to_input: String,
 }
 
 // ── WorkspaceChain ─────────────────────────────────────────────────
@@ -64,9 +64,13 @@ impl WorkspaceChain {
     }
 
     #[must_use]
-    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
     #[must_use]
-    pub fn edge_count(&self) -> usize { self.edges.len() }
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
 
     /// Topological-order reconciliation. Outputs from upstream nodes
     /// flow into downstream inputs as typed Rust values. Returns one
@@ -128,10 +132,7 @@ impl WorkspaceChain {
                 ))
             })?;
 
-            let mut inputs = external_inputs
-                .get(ws_name)
-                .cloned()
-                .unwrap_or_default();
+            let mut inputs = external_inputs.get(ws_name).cloned().unwrap_or_default();
             for edge in self.edges.iter().filter(|e| e.to == *ws_name) {
                 if let Some(upstream_outputs) = outputs_so_far.get(&edge.from) {
                     if let Some(value) = upstream_outputs.get(&edge.from_output) {
@@ -226,7 +227,9 @@ mod tests {
                 .map_err(WorkspaceError::Config)
             },
             |cfg, _state| {
-                let vpc_id = cfg.resources.get("aws_subnet")
+                let vpc_id = cfg
+                    .resources
+                    .get("aws_subnet")
                     .and_then(|m| m.get("public"))
                     .and_then(|s| s.get("vpc_id"))
                     .cloned()
@@ -244,12 +247,16 @@ mod tests {
         let mut chain = WorkspaceChain::new();
         chain.add(vpc_ws()).add(subnet_ws());
         chain.link(ChainEdge {
-            from: "vpc".into(), from_output: "vpc_id".into(),
-            to: "subnet".into(), to_input: "vpc_id".into(),
+            from: "vpc".into(),
+            from_output: "vpc_id".into(),
+            to: "subnet".into(),
+            to_input: "vpc_id".into(),
         });
         chain.link(ChainEdge {
-            from: "subnet".into(), from_output: "subnet_id".into(),
-            to: "vpc".into(), to_input: "back_edge".into(),
+            from: "subnet".into(),
+            from_output: "subnet_id".into(),
+            to: "vpc".into(),
+            to_input: "back_edge".into(),
         });
         let err = chain.topo_order().unwrap_err();
         assert!(matches!(err, WorkspaceError::InvalidChain(_)));
@@ -260,8 +267,10 @@ mod tests {
         let mut chain = WorkspaceChain::new();
         chain.add(vpc_ws());
         chain.link(ChainEdge {
-            from: "vpc".into(), from_output: "vpc_id".into(),
-            to: "nope".into(), to_input: "vpc_id".into(),
+            from: "vpc".into(),
+            from_output: "vpc_id".into(),
+            to: "nope".into(),
+            to_input: "vpc_id".into(),
         });
         let err = chain.topo_order().unwrap_err();
         assert!(matches!(err, WorkspaceError::InvalidChain(_)));
@@ -272,8 +281,10 @@ mod tests {
         let mut chain = WorkspaceChain::new();
         chain.add(vpc_ws()).add(subnet_ws());
         chain.link(ChainEdge {
-            from: "vpc".into(), from_output: "vpc_id".into(),
-            to: "subnet".into(), to_input: "vpc_id".into(),
+            from: "vpc".into(),
+            from_output: "vpc_id".into(),
+            to: "subnet".into(),
+            to_input: "vpc_id".into(),
         });
         let order = chain.topo_order().unwrap();
         assert_eq!(order, vec!["vpc".to_string(), "subnet".to_string()]);

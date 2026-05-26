@@ -47,7 +47,9 @@ impl BlobCache {
         self.inner.lock().map(|m| m.len()).unwrap_or(0)
     }
 
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[cfg(test)]

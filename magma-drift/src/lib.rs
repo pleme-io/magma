@@ -36,16 +36,16 @@ pub enum DriftDecision {
 /// Typed event the operator emits per Change after policy decision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriftEvent {
-    pub kind:           String,
-    pub address:        String,
-    pub action:         magma_converge::Action,
-    pub severity:       ChangeSeverity,
-    pub decision:       DriftDecision,
+    pub kind: String,
+    pub address: String,
+    pub action: magma_converge::Action,
+    pub severity: ChangeSeverity,
+    pub decision: DriftDecision,
     pub matched_policy: Option<String>,
-    pub observed_at:    DateTime<Utc>,
+    pub observed_at: DateTime<Utc>,
     /// BLAKE3 fingerprint of (kind, address, action, before, after) — used to
     /// dedupe consecutive observations of the same drift.
-    pub fingerprint:    String,
+    pub fingerprint: String,
 }
 
 impl DriftEvent {
@@ -69,18 +69,18 @@ impl DriftEvent {
 /// `DriftPolicy::fallback`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyRule {
-    pub name:             String,
+    pub name: String,
     /// Only apply this rule when severity matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub severity:         Option<ChangeSeverity>,
+    pub severity: Option<ChangeSeverity>,
     /// Only apply when action matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action:           Option<magma_converge::Action>,
+    pub action: Option<magma_converge::Action>,
     /// Only apply when address prefix matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub address_prefix:   Option<String>,
+    pub address_prefix: Option<String>,
     /// What to do on match.
-    pub decision:         DriftDecision,
+    pub decision: DriftDecision,
 }
 
 impl PolicyRule {
@@ -106,7 +106,7 @@ impl PolicyRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriftPolicy {
-    pub rules:    Vec<PolicyRule>,
+    pub rules: Vec<PolicyRule>,
     /// Decision applied when no rule matches.
     pub fallback: DriftDecision,
 }
@@ -119,25 +119,25 @@ impl DriftPolicy {
         Self {
             rules: vec![
                 PolicyRule {
-                    name:           "auto-fix-cosmetic".into(),
-                    severity:       Some(ChangeSeverity::Cosmetic),
-                    action:         None,
+                    name: "auto-fix-cosmetic".into(),
+                    severity: Some(ChangeSeverity::Cosmetic),
+                    action: None,
                     address_prefix: None,
-                    decision:       DriftDecision::AutoCorrect,
+                    decision: DriftDecision::AutoCorrect,
                 },
                 PolicyRule {
-                    name:           "alert-on-functional".into(),
-                    severity:       Some(ChangeSeverity::Functional),
-                    action:         None,
+                    name: "alert-on-functional".into(),
+                    severity: Some(ChangeSeverity::Functional),
+                    action: None,
                     address_prefix: None,
-                    decision:       DriftDecision::AutoCorrectWithAlert,
+                    decision: DriftDecision::AutoCorrectWithAlert,
                 },
                 PolicyRule {
-                    name:           "approval-required-for-critical".into(),
-                    severity:       Some(ChangeSeverity::Critical),
-                    action:         None,
+                    name: "approval-required-for-critical".into(),
+                    severity: Some(ChangeSeverity::Critical),
+                    action: None,
                     address_prefix: None,
-                    decision:       DriftDecision::RequireApproval,
+                    decision: DriftDecision::RequireApproval,
                 },
             ],
             fallback: DriftDecision::RequireApproval,
@@ -161,29 +161,29 @@ impl DriftPolicy {
 /// Classification report for one Plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriftReport {
-    pub kind:       String,
-    pub plan_id:    magma_converge::PlanId,
-    pub events:     Vec<DriftEvent>,
-    pub summary:    DriftSummary,
+    pub kind: String,
+    pub plan_id: magma_converge::PlanId,
+    pub events: Vec<DriftEvent>,
+    pub summary: DriftSummary,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DriftSummary {
-    pub total_changes:           usize,
-    pub auto_corrected:          usize,
+    pub total_changes: usize,
+    pub auto_corrected: usize,
     pub auto_corrected_with_alert: usize,
-    pub awaiting_approval:       usize,
-    pub refused:                 usize,
+    pub awaiting_approval: usize,
+    pub refused: usize,
 }
 
 impl DriftSummary {
     fn tally(&mut self, decision: DriftDecision) {
         self.total_changes += 1;
         match decision {
-            DriftDecision::AutoCorrect          => self.auto_corrected += 1,
+            DriftDecision::AutoCorrect => self.auto_corrected += 1,
             DriftDecision::AutoCorrectWithAlert => self.auto_corrected_with_alert += 1,
-            DriftDecision::RequireApproval      => self.awaiting_approval += 1,
-            DriftDecision::Refuse               => self.refused += 1,
+            DriftDecision::RequireApproval => self.awaiting_approval += 1,
+            DriftDecision::Refuse => self.refused += 1,
         }
     }
 }
@@ -201,17 +201,22 @@ pub fn classify(plan: &Plan, policy: &DriftPolicy) -> DriftReport {
         let (decision, matched) = policy.evaluate(change);
         summary.tally(decision);
         events.push(DriftEvent {
-            kind:           plan.kind.clone(),
-            address:        change.address.clone(),
-            action:         change.action,
-            severity:       change.severity,
+            kind: plan.kind.clone(),
+            address: change.address.clone(),
+            action: change.action,
+            severity: change.severity,
             decision,
             matched_policy: matched.map(String::from),
             observed_at,
-            fingerprint:    DriftEvent::fingerprint_for(&plan.kind, change),
+            fingerprint: DriftEvent::fingerprint_for(&plan.kind, change),
         });
     }
-    DriftReport { kind: plan.kind.clone(), plan_id: plan.id.clone(), events, summary }
+    DriftReport {
+        kind: plan.kind.clone(),
+        plan_id: plan.id.clone(),
+        events,
+        summary,
+    }
 }
 
 // ── Policy-aware reconcile (the operator's typical call shape) ────
@@ -224,37 +229,35 @@ pub enum ReconcileResult {
     /// Plan was empty — no changes needed. Carries the (empty) Plan
     /// for downstream consumers that need a typed artifact even for
     /// no-op reconciles (e.g. magma-bundle).
-    NoChange {
-        plan:    Plan,
-    },
+    NoChange { plan: Plan },
     /// Policy permitted every change; applied successfully.
     Applied {
-        plan:    Plan,
+        plan: Plan,
         outcome: Outcome,
-        report:  DriftReport,
+        report: DriftReport,
     },
     /// Apply ran but some resource changes failed. The Outcome
     /// carries the per-resource breakdown; the operator can
     /// inspect `outcome.failed`. Distinguished from `Applied` so
     /// callers + the FSM can route to a Failed phase.
     AppliedWithFailures {
-        plan:    Plan,
+        plan: Plan,
         outcome: Outcome,
-        report:  DriftReport,
+        report: DriftReport,
     },
     /// Policy held the reconcile for approval. Operator must
     /// resume via a separate `apply_held` call after acknowledging.
     HeldForApproval {
-        plan:    Plan,
-        report:  DriftReport,
+        plan: Plan,
+        report: DriftReport,
         /// Number of changes awaiting approval (subset of report).
-        held:    usize,
+        held: usize,
     },
     /// Policy refused at least one change. Reconcile aborts;
     /// operator surfaces the refusal to the user.
     Refused {
-        plan:    Plan,
-        report:  DriftReport,
+        plan: Plan,
+        report: DriftReport,
         /// Number of refused changes.
         refused: usize,
     },
@@ -265,29 +268,29 @@ impl ReconcileResult {
     /// variant has a plan, so this is total.
     pub fn plan_id(&self) -> &magma_converge::PlanId {
         match self {
-            Self::NoChange            { plan }          => &plan.id,
-            Self::Applied             { plan, .. }      => &plan.id,
-            Self::AppliedWithFailures { plan, .. }      => &plan.id,
-            Self::HeldForApproval     { plan, .. }      => &plan.id,
-            Self::Refused             { plan, .. }      => &plan.id,
+            Self::NoChange { plan } => &plan.id,
+            Self::Applied { plan, .. } => &plan.id,
+            Self::AppliedWithFailures { plan, .. } => &plan.id,
+            Self::HeldForApproval { plan, .. } => &plan.id,
+            Self::Refused { plan, .. } => &plan.id,
         }
     }
 
     /// The Plan that drove this reconcile (carries kind + changes).
     pub fn plan(&self) -> &Plan {
         match self {
-            Self::NoChange            { plan }          => plan,
-            Self::Applied             { plan, .. }      => plan,
-            Self::AppliedWithFailures { plan, .. }      => plan,
-            Self::HeldForApproval     { plan, .. }      => plan,
-            Self::Refused             { plan, .. }      => plan,
+            Self::NoChange { plan } => plan,
+            Self::Applied { plan, .. } => plan,
+            Self::AppliedWithFailures { plan, .. } => plan,
+            Self::HeldForApproval { plan, .. } => plan,
+            Self::Refused { plan, .. } => plan,
         }
     }
 
     /// Outcome, when one ran (Applied or AppliedWithFailures).
     pub fn outcome(&self) -> Option<&Outcome> {
         match self {
-            Self::Applied             { outcome, .. } => Some(outcome),
+            Self::Applied { outcome, .. } => Some(outcome),
             Self::AppliedWithFailures { outcome, .. } => Some(outcome),
             _ => None,
         }
@@ -298,11 +301,11 @@ impl ReconcileResult {
     /// `classify(&result.plan(), &policy)` to get an empty report.
     pub fn report(&self) -> Option<&DriftReport> {
         match self {
-            Self::NoChange            { .. }            => None,
-            Self::Applied             { report, .. }    => Some(report),
-            Self::AppliedWithFailures { report, .. }    => Some(report),
-            Self::HeldForApproval     { report, .. }    => Some(report),
-            Self::Refused             { report, .. }    => Some(report),
+            Self::NoChange { .. } => None,
+            Self::Applied { report, .. } => Some(report),
+            Self::AppliedWithFailures { report, .. } => Some(report),
+            Self::HeldForApproval { report, .. } => Some(report),
+            Self::Refused { report, .. } => Some(report),
         }
     }
 }
@@ -319,11 +322,11 @@ impl ReconcileResult {
 ///   → run `apply` → `Applied`
 pub async fn reconcile_with_policy<R: Reconciler>(
     reconciler: &R,
-    config:     &Value,
-    policy:     &DriftPolicy,
+    config: &Value,
+    policy: &DriftPolicy,
 ) -> Result<ReconcileResult, ReconcilerError> {
     let state = reconciler.read_state().await?;
-    let plan  = reconciler.compute_plan(config, &state)?;
+    let plan = reconciler.compute_plan(config, &state)?;
 
     if plan.is_noop() {
         return Ok(ReconcileResult::NoChange { plan });
@@ -333,7 +336,11 @@ pub async fn reconcile_with_policy<R: Reconciler>(
 
     if report.summary.refused > 0 {
         let refused = report.summary.refused;
-        return Ok(ReconcileResult::Refused { plan, refused, report });
+        return Ok(ReconcileResult::Refused {
+            plan,
+            refused,
+            report,
+        });
     }
     if report.summary.awaiting_approval > 0 {
         let held = report.summary.awaiting_approval;
@@ -342,9 +349,17 @@ pub async fn reconcile_with_policy<R: Reconciler>(
 
     let outcome = reconciler.apply(&plan).await?;
     Ok(if outcome.fully_succeeded() {
-        ReconcileResult::Applied { plan, outcome, report }
+        ReconcileResult::Applied {
+            plan,
+            outcome,
+            report,
+        }
     } else {
-        ReconcileResult::AppliedWithFailures { plan, outcome, report }
+        ReconcileResult::AppliedWithFailures {
+            plan,
+            outcome,
+            report,
+        }
     })
 }
 
@@ -392,7 +407,7 @@ impl DriftDeduplicator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magma_converge::{change, change_with_severity, inmemory::InMemoryKvReconciler, Action};
+    use magma_converge::{Action, change, change_with_severity, inmemory::InMemoryKvReconciler};
     use serde_json::json;
 
     fn mk_plan(changes: Vec<Change>) -> Plan {
@@ -417,12 +432,27 @@ mod tests {
     #[test]
     fn conservative_default_routes_by_severity() {
         let plan = mk_plan(vec![
-            change_with_severity("kv.cosmetic", Action::Update,
-                ChangeSeverity::Cosmetic, Some(json!(1)), Some(json!(2))),
-            change_with_severity("kv.functional", Action::Update,
-                ChangeSeverity::Functional, Some(json!("a")), Some(json!("b"))),
-            change_with_severity("kv.critical", Action::Delete,
-                ChangeSeverity::Critical, Some(json!({})), None),
+            change_with_severity(
+                "kv.cosmetic",
+                Action::Update,
+                ChangeSeverity::Cosmetic,
+                Some(json!(1)),
+                Some(json!(2)),
+            ),
+            change_with_severity(
+                "kv.functional",
+                Action::Update,
+                ChangeSeverity::Functional,
+                Some(json!("a")),
+                Some(json!("b")),
+            ),
+            change_with_severity(
+                "kv.critical",
+                Action::Delete,
+                ChangeSeverity::Critical,
+                Some(json!({})),
+                None,
+            ),
         ]);
         let report = classify(&plan, &DriftPolicy::conservative_default());
         assert_eq!(report.events.len(), 3);
@@ -437,25 +467,46 @@ mod tests {
             rules: vec![
                 PolicyRule {
                     name: "refuse-anything-prod".into(),
-                    severity: None, action: None,
+                    severity: None,
+                    action: None,
                     address_prefix: Some("aws_iam_role.prod".into()),
                     decision: DriftDecision::Refuse,
                 },
                 PolicyRule {
                     name: "auto-fix-everything-else".into(),
-                    severity: None, action: None, address_prefix: None,
+                    severity: None,
+                    action: None,
+                    address_prefix: None,
                     decision: DriftDecision::AutoCorrect,
                 },
             ],
             fallback: DriftDecision::RequireApproval,
         };
         let plan = mk_plan(vec![
-            change("aws_iam_role.prod-cluster", Action::Update, Some(json!(1)), Some(json!(2))),
-            change("aws_iam_role.dev-cluster",  Action::Update, Some(json!(1)), Some(json!(2))),
+            change(
+                "aws_iam_role.prod-cluster",
+                Action::Update,
+                Some(json!(1)),
+                Some(json!(2)),
+            ),
+            change(
+                "aws_iam_role.dev-cluster",
+                Action::Update,
+                Some(json!(1)),
+                Some(json!(2)),
+            ),
         ]);
         let report = classify(&plan, &policy);
-        let prod = report.events.iter().find(|e| e.address.contains("prod")).unwrap();
-        let dev  = report.events.iter().find(|e| e.address.contains("dev")).unwrap();
+        let prod = report
+            .events
+            .iter()
+            .find(|e| e.address.contains("prod"))
+            .unwrap();
+        let dev = report
+            .events
+            .iter()
+            .find(|e| e.address.contains("dev"))
+            .unwrap();
         assert_eq!(prod.decision, DriftDecision::Refuse);
         assert_eq!(dev.decision, DriftDecision::AutoCorrect);
     }
@@ -466,7 +517,12 @@ mod tests {
             rules: vec![],
             fallback: DriftDecision::AutoCorrect,
         };
-        let plan = mk_plan(vec![change("x.y", Action::Update, Some(json!(1)), Some(json!(2)))]);
+        let plan = mk_plan(vec![change(
+            "x.y",
+            Action::Update,
+            Some(json!(1)),
+            Some(json!(2)),
+        )]);
         let report = classify(&plan, &policy);
         assert_eq!(report.events[0].decision, DriftDecision::AutoCorrect);
         assert_eq!(report.events[0].matched_policy, None);
@@ -497,8 +553,11 @@ mod tests {
         let mut d = DriftDeduplicator::new();
         let fp = "abcd";
         let window = chrono::Duration::seconds(60);
-        assert!(d.observe(fp, window),  "first observation should pass");
-        assert!(!d.observe(fp, window), "immediate re-observation should be suppressed");
+        assert!(d.observe(fp, window), "first observation should pass");
+        assert!(
+            !d.observe(fp, window),
+            "immediate re-observation should be suppressed"
+        );
     }
 
     #[test]
@@ -514,9 +573,8 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_with_policy_no_change_path() {
-        let r = InMemoryKvReconciler::with_state(
-            [("a".to_string(), json!(1))].into_iter().collect(),
-        );
+        let r =
+            InMemoryKvReconciler::with_state([("a".to_string(), json!(1))].into_iter().collect());
         let cfg = json!({ "a": 1 });
         let result = reconcile_with_policy(&r, &cfg, &DriftPolicy::conservative_default())
             .await
@@ -533,7 +591,11 @@ mod tests {
             .await
             .unwrap();
         match &result {
-            ReconcileResult::Applied { outcome, report, plan } => {
+            ReconcileResult::Applied {
+                outcome,
+                report,
+                plan,
+            } => {
                 assert_eq!(outcome.applied.len(), 2);
                 assert_eq!(report.summary.auto_corrected_with_alert, 2);
                 assert_eq!(plan.change_count(), 2);
@@ -554,7 +616,9 @@ mod tests {
         // config would Delete. Conservative policy: Delete →
         // Critical → RequireApproval.
         let r = InMemoryKvReconciler::with_state(
-            [("doomed".to_string(), json!("value"))].into_iter().collect(),
+            [("doomed".to_string(), json!("value"))]
+                .into_iter()
+                .collect(),
         );
         let cfg = json!({});
         let result = reconcile_with_policy(&r, &cfg, &DriftPolicy::conservative_default())
@@ -583,11 +647,11 @@ mod tests {
         let cfg = json!({ "x": 1 });
         let policy = DriftPolicy {
             rules: vec![PolicyRule {
-                name:           "no-creates".into(),
-                severity:       None,
-                action:         Some(Action::Create),
+                name: "no-creates".into(),
+                severity: None,
+                action: Some(Action::Create),
                 address_prefix: None,
-                decision:       DriftDecision::Refuse,
+                decision: DriftDecision::Refuse,
             }],
             fallback: DriftDecision::AutoCorrect,
         };
@@ -607,13 +671,21 @@ mod tests {
         // Lock in that plan() + plan_id() are total — every variant
         // carries them. Catches future variant additions that forget
         // to thread them through.
-        use magma_converge::{change, Action};
+        use magma_converge::{Action, change};
         let plan = Plan::new("k", vec![change("a", Action::Create, None, Some(json!(1)))]);
         let drift = classify(&plan, &DriftPolicy::conservative_default());
         let variants = vec![
             ReconcileResult::NoChange { plan: plan.clone() },
-            ReconcileResult::Refused  { plan: plan.clone(), report: drift.clone(), refused: 1 },
-            ReconcileResult::HeldForApproval { plan: plan.clone(), report: drift.clone(), held: 1 },
+            ReconcileResult::Refused {
+                plan: plan.clone(),
+                report: drift.clone(),
+                refused: 1,
+            },
+            ReconcileResult::HeldForApproval {
+                plan: plan.clone(),
+                report: drift.clone(),
+                held: 1,
+            },
         ];
         for v in &variants {
             assert!(v.plan().change_count() <= 1);

@@ -14,8 +14,8 @@ pub mod shigoto_jobs;
 
 use chrono::Utc;
 use magma_types::{
-    Action, InstanceStatus, Plan, ProviderReference, ResourceAddress, ResourceChange,
-    ResourceKind, ResourceTypeId, State, StateInstance, StateResource,
+    Action, InstanceStatus, Plan, ProviderReference, ResourceAddress, ResourceChange, ResourceKind,
+    ResourceTypeId, State, StateInstance, StateResource,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -27,7 +27,7 @@ pub enum ApplyError {
     #[error("apply failed for {address:?}: {reason}")]
     Failed {
         address: ResourceAddress,
-        reason:  String,
+        reason: String,
     },
     #[error("missing provider for resource {0:?}")]
     MissingProvider(ResourceAddress),
@@ -42,27 +42,27 @@ pub enum ApplyError {
 /// The output of `run_plan` — typed receipt summarizing what happened.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyOutcome {
-    pub plan_id:     magma_types::PlanId,
-    pub state:       State,
-    pub applied:     Vec<AppliedChange>,
-    pub failed:      Vec<FailedChange>,
-    pub started_at:  chrono::DateTime<Utc>,
+    pub plan_id: magma_types::PlanId,
+    pub state: State,
+    pub applied: Vec<AppliedChange>,
+    pub failed: Vec<FailedChange>,
+    pub started_at: chrono::DateTime<Utc>,
     pub finished_at: chrono::DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppliedChange {
     pub address: ResourceAddress,
-    pub action:  Action,
-    pub before:  Option<serde_json::Value>,
-    pub after:   Option<serde_json::Value>,
+    pub action: Action,
+    pub before: Option<serde_json::Value>,
+    pub after: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailedChange {
     pub address: ResourceAddress,
-    pub action:  Action,
-    pub reason:  String,
+    pub action: Action,
+    pub reason: String,
 }
 
 // ── Apply engine (M0 — structural; provider RPC integration in M0.x) ──
@@ -81,15 +81,15 @@ pub struct FailedChange {
 pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyError> {
     let started_at = Utc::now();
     let mut applied = Vec::new();
-    let mut failed  = Vec::new();
+    let mut failed = Vec::new();
 
     for change in &plan.resource_changes {
         match apply_one(change, state) {
             Ok(a) => applied.push(a),
             Err(e) => failed.push(FailedChange {
                 address: change.address.clone(),
-                action:  change.action,
-                reason:  e.to_string(),
+                action: change.action,
+                reason: e.to_string(),
             }),
         }
     }
@@ -100,8 +100,8 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
     }
 
     Ok(ApplyOutcome {
-        plan_id:     plan.id,
-        state:       state.clone(),
+        plan_id: plan.id,
+        state: state.clone(),
         applied,
         failed,
         started_at,
@@ -109,16 +109,13 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
     })
 }
 
-fn apply_one(
-    change: &ResourceChange,
-    state: &mut State,
-) -> Result<AppliedChange, ApplyError> {
+fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange, ApplyError> {
     match change.action {
         Action::NoOp => Ok(AppliedChange {
             address: change.address.clone(),
-            action:  Action::NoOp,
-            before:  change.before.clone(),
-            after:   change.after.clone(),
+            action: Action::NoOp,
+            before: change.before.clone(),
+            after: change.after.clone(),
         }),
 
         Action::Create | Action::Read => {
@@ -129,9 +126,9 @@ fn apply_one(
             insert_resource(state, &change.address, attributes);
             Ok(AppliedChange {
                 address: change.address.clone(),
-                action:  change.action,
-                before:  None,
-                after:   change.after.clone(),
+                action: change.action,
+                before: None,
+                after: change.after.clone(),
             })
         }
 
@@ -139,9 +136,9 @@ fn apply_one(
             remove_resource(state, &change.address);
             Ok(AppliedChange {
                 address: change.address.clone(),
-                action:  change.action,
-                before:  change.before.clone(),
-                after:   None,
+                action: change.action,
+                before: change.before.clone(),
+                after: None,
             })
         }
 
@@ -156,9 +153,9 @@ fn apply_one(
             insert_resource(state, &change.address, attributes);
             Ok(AppliedChange {
                 address: change.address.clone(),
-                action:  Action::Update,
-                before:  change.before.clone(),
-                after:   change.after.clone(),
+                action: Action::Update,
+                before: change.before.clone(),
+                after: change.after.clone(),
             })
         }
 
@@ -174,9 +171,9 @@ fn apply_one(
             insert_resource(state, &change.address, attributes);
             Ok(AppliedChange {
                 address: change.address.clone(),
-                action:  change.action,
-                before:  change.before.clone(),
-                after:   change.after.clone(),
+                action: change.action,
+                before: change.before.clone(),
+                after: change.after.clone(),
             })
         }
     }
@@ -186,14 +183,14 @@ fn insert_resource(state: &mut State, address: &ResourceAddress, attributes: ser
     // Remove any existing then push the fresh instance.
     state.resources.retain(|r| r.address != *address);
     state.resources.push(StateResource {
-        address:   address.clone(),
-        provider:  default_provider_for(address),
+        address: address.clone(),
+        provider: default_provider_for(address),
         instances: vec![StateInstance {
             schema_version: 0,
             attributes,
-            private:        Vec::new(),
-            dependencies:   Vec::new(),
-            status:         InstanceStatus::Ready,
+            private: Vec::new(),
+            dependencies: Vec::new(),
+            status: InstanceStatus::Ready,
         }],
     });
 }
@@ -209,31 +206,31 @@ fn default_provider_for(address: &ResourceAddress) -> ProviderReference {
     let (namespace, name) = type_name
         .split_once('_')
         .map(|(prefix, _)| match prefix {
-            "aws"        => ("hashicorp", "aws"),
+            "aws" => ("hashicorp", "aws"),
             "google" | "gcp" => ("hashicorp", "google"),
-            "azurerm"    => ("hashicorp", "azurerm"),
+            "azurerm" => ("hashicorp", "azurerm"),
             "cloudflare" => ("cloudflare", "cloudflare"),
-            "datadog"    => ("datadog", "datadog"),
+            "datadog" => ("datadog", "datadog"),
             "kubernetes" => ("hashicorp", "kubernetes"),
-            "helm"       => ("hashicorp", "helm"),
-            "null"       => ("hashicorp", "null"),
-            "random"     => ("hashicorp", "random"),
-            "tls"        => ("hashicorp", "tls"),
-            "local"      => ("hashicorp", "local"),
-            "external"   => ("hashicorp", "external"),
-            "archive"    => ("hashicorp", "archive"),
-            "akeyless"   => ("akeyless-community", "akeyless"),
-            "hcloud"     => ("hetznercloud", "hcloud"),
-            "splunk"     => ("splunk", "splunk"),
-            _            => ("hashicorp", prefix),
+            "helm" => ("hashicorp", "helm"),
+            "null" => ("hashicorp", "null"),
+            "random" => ("hashicorp", "random"),
+            "tls" => ("hashicorp", "tls"),
+            "local" => ("hashicorp", "local"),
+            "external" => ("hashicorp", "external"),
+            "archive" => ("hashicorp", "archive"),
+            "akeyless" => ("akeyless-community", "akeyless"),
+            "hcloud" => ("hetznercloud", "hcloud"),
+            "splunk" => ("splunk", "splunk"),
+            _ => ("hashicorp", prefix),
         })
         .unwrap_or(("hashicorp", "null"));
     let _ = type_name; // address is already destructured
     let _ = address.kind;
     ProviderReference {
         source: format!("{namespace}/{name}"),
-        name:   name.into(),
-        alias:  None,
+        name: name.into(),
+        alias: None,
     }
 }
 
@@ -247,7 +244,9 @@ const _: fn(ResourceKind, ResourceTypeId) = |_, _| {};
 mod tests {
     use super::*;
     use chrono::Utc;
-    use magma_types::{ChangeReason, ModulePath, PlanId, ResourceAddress, ResourceKind, ResourceTypeId};
+    use magma_types::{
+        ChangeReason, ModulePath, PlanId, ResourceAddress, ResourceKind, ResourceTypeId,
+    };
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -255,33 +254,33 @@ mod tests {
 
     fn fresh_state() -> State {
         State {
-            version:           4,
+            version: 4,
             terraform_version: "1.7.0".into(),
-            serial:            0,
-            lineage:           Uuid::new_v4(),
-            outputs:           HashMap::new(),
-            resources:         Vec::new(),
+            serial: 0,
+            lineage: Uuid::new_v4(),
+            outputs: HashMap::new(),
+            resources: Vec::new(),
         }
     }
 
     fn addr(type_name: &str, name: &str) -> ResourceAddress {
         ResourceAddress {
-            module:  ModulePath::root(),
-            kind:    ResourceKind::Managed,
+            module: ModulePath::root(),
+            kind: ResourceKind::Managed,
             type_id: ResourceTypeId(type_name.into()),
-            name:    name.into(),
-            key:     None,
+            name: name.into(),
+            key: None,
         }
     }
 
     fn plan_with(changes: Vec<ResourceChange>) -> Plan {
         Plan {
-            id:               PlanId([0u8; 32]),
-            created_at:       Utc::now(),
-            config_root:      PathBuf::new(),
-            variables:        HashMap::new(),
+            id: PlanId([0u8; 32]),
+            created_at: Utc::now(),
+            config_root: PathBuf::new(),
+            variables: HashMap::new(),
             resource_changes: changes,
-            output_changes:   Vec::new(),
+            output_changes: Vec::new(),
         }
     }
 
@@ -290,9 +289,9 @@ mod tests {
         let mut state = fresh_state();
         let p = plan_with(vec![ResourceChange {
             address: addr("aws_vpc", "main"),
-            action:  Action::Create,
-            before:  None,
-            after:   Some(json!({ "cidr_block": "10.0.0.0/16" })),
+            action: Action::Create,
+            before: None,
+            after: Some(json!({ "cidr_block": "10.0.0.0/16" })),
             reasons: vec![ChangeReason::NewResource],
         }]);
 
@@ -308,22 +307,22 @@ mod tests {
     fn apply_delete_removes_from_state() {
         let mut state = fresh_state();
         state.resources.push(StateResource {
-            address:   addr("aws_vpc", "main"),
-            provider:  default_provider_for(&addr("aws_vpc", "main")),
+            address: addr("aws_vpc", "main"),
+            provider: default_provider_for(&addr("aws_vpc", "main")),
             instances: vec![StateInstance {
                 schema_version: 0,
-                attributes:     json!({ "id": "vpc-x" }),
-                private:        vec![],
-                dependencies:   vec![],
-                status:         InstanceStatus::Ready,
+                attributes: json!({ "id": "vpc-x" }),
+                private: vec![],
+                dependencies: vec![],
+                status: InstanceStatus::Ready,
             }],
         });
 
         let p = plan_with(vec![ResourceChange {
             address: addr("aws_vpc", "main"),
-            action:  Action::Delete,
-            before:  Some(json!({ "id": "vpc-x" })),
-            after:   None,
+            action: Action::Delete,
+            before: Some(json!({ "id": "vpc-x" })),
+            after: None,
             reasons: vec![ChangeReason::DeletedResource],
         }]);
 

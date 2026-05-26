@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{lockfile::Lockfile, Result};
+use crate::{Result, lockfile::Lockfile};
 
 /// Opaque BLAKE3-attested materialized gem closure.
 #[derive(Debug, Clone, Serialize, Deserialize)]

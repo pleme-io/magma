@@ -39,8 +39,8 @@ pub enum FlowError {
     #[error("workspace {workspace}: {stage}: {message}")]
     WorkspaceStep {
         workspace: String,
-        stage:     &'static str,
-        message:   String,
+        stage: &'static str,
+        message: String,
     },
 }
 
@@ -51,17 +51,17 @@ pub enum FlowError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowWorkspace {
     pub name: String,
-    pub dir:  PathBuf,
+    pub dir: PathBuf,
 }
 
 /// A typed cross-workspace edge: `from.{from_output}` flows to
 /// `to.{to_input}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowEdge {
-    pub from:        String,
+    pub from: String,
     pub from_output: String,
-    pub to:          String,
-    pub to_input:    String,
+    pub to: String,
+    pub to_input: String,
 }
 
 /// Typed orchestration hints. M0.4 plumbed; honored by the
@@ -70,19 +70,19 @@ pub struct FlowEdge {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OptimizationHints {
     #[serde(default)]
-    pub strategy:         Option<String>,
+    pub strategy: Option<String>,
     #[serde(default)]
-    pub max_concurrency:  Option<usize>,
+    pub max_concurrency: Option<usize>,
     #[serde(default)]
-    pub retries:          Option<OptimizationRetries>,
+    pub retries: Option<OptimizationRetries>,
     #[serde(default)]
-    pub timeout_ms:       Option<u64>,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OptimizationRetries {
     #[serde(default)]
-    pub max:        Option<u32>,
+    pub max: Option<u32>,
     #[serde(default)]
     pub backoff_ms: Option<u64>,
 }
@@ -94,7 +94,7 @@ pub struct OptimizationRetries {
 pub struct FlowFile {
     pub workspaces: Vec<FlowWorkspace>,
     #[serde(default)]
-    pub edges:      Vec<FlowEdge>,
+    pub edges: Vec<FlowEdge>,
     #[serde(default)]
     pub optimization: Option<OptimizationHints>,
 }
@@ -164,9 +164,9 @@ pub fn topological_order(flow: &FlowFile) -> Result<Vec<String>, FlowError> {
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceSummary {
     pub workspace: String,
-    pub plan_id:   String,
-    pub changes:   usize,
-    pub outputs:   HashMap<String, serde_json::Value>,
+    pub plan_id: String,
+    pub changes: usize,
+    pub outputs: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -199,41 +199,42 @@ pub async fn run(flow: &FlowFile) -> Result<AggregateReport, FlowError> {
             .find(|w| w.name == ws_name)
             .ok_or_else(|| FlowError::UnknownWorkspace(ws_name.clone()))?;
 
-        let shape = magma_pangea::WorkspaceShape::discover(&entry.dir)
-            .map_err(|e| FlowError::WorkspaceStep {
+        let shape = magma_pangea::WorkspaceShape::discover(&entry.dir).map_err(|e| {
+            FlowError::WorkspaceStep {
                 workspace: entry.name.clone(),
-                stage:     "discover",
-                message:   e.to_string(),
-            })?;
+                stage: "discover",
+                message: e.to_string(),
+            }
+        })?;
         let loaded = magma_pangea::TerraformJsonLoader
             .load(shape)
             .await
             .map_err(|e| FlowError::WorkspaceStep {
                 workspace: entry.name.clone(),
-                stage:     "load",
-                message:   e.to_string(),
+                stage: "load",
+                message: e.to_string(),
             })?;
-        let cfg = magma_config::Config::from_json(loaded.rendered.clone())
-            .map_err(|e| FlowError::WorkspaceStep {
+        let cfg = magma_config::Config::from_json(loaded.rendered.clone()).map_err(|e| {
+            FlowError::WorkspaceStep {
                 workspace: entry.name.clone(),
-                stage:     "parse",
-                message:   e.to_string(),
-            })?;
+                stage: "parse",
+                message: e.to_string(),
+            }
+        })?;
         let backend = magma_backend::LocalBackend::new(entry.dir.clone());
         let state = backend
             .read_state()
             .await
             .map_err(|e| FlowError::WorkspaceStep {
                 workspace: entry.name.clone(),
-                stage:     "read_state",
-                message:   e.to_string(),
+                stage: "read_state",
+                message: e.to_string(),
             })?;
-        let plan = magma_plan::plan(&cfg, &state)
-            .map_err(|e| FlowError::WorkspaceStep {
-                workspace: entry.name.clone(),
-                stage:     "plan",
-                message:   e.to_string(),
-            })?;
+        let plan = magma_plan::plan(&cfg, &state).map_err(|e| FlowError::WorkspaceStep {
+            workspace: entry.name.clone(),
+            stage: "plan",
+            message: e.to_string(),
+        })?;
 
         let mut workspace_outputs: HashMap<String, serde_json::Value> = HashMap::new();
         for (out_name, decl) in &cfg.outputs {
@@ -241,18 +242,15 @@ pub async fn run(flow: &FlowFile) -> Result<AggregateReport, FlowError> {
         }
         for edge in flow.edges.iter().filter(|e| e.from == entry.name) {
             if let Some(v) = workspace_outputs.get(&edge.from_output) {
-                propagated.insert(
-                    format!("{}.{}", edge.to, edge.to_input),
-                    v.clone(),
-                );
+                propagated.insert(format!("{}.{}", edge.to, edge.to_input), v.clone());
             }
         }
 
         summaries.push(WorkspaceSummary {
             workspace: entry.name.clone(),
-            plan_id:   hex::encode(plan.id.0),
-            changes:   plan.resource_changes.len(),
-            outputs:   workspace_outputs,
+            plan_id: hex::encode(plan.id.0),
+            changes: plan.resource_changes.len(),
+            outputs: workspace_outputs,
         });
     }
 
@@ -271,15 +269,15 @@ mod tests {
     fn ws(name: &str, dir: &str) -> FlowWorkspace {
         FlowWorkspace {
             name: name.into(),
-            dir:  PathBuf::from(dir),
+            dir: PathBuf::from(dir),
         }
     }
     fn edge(from: &str, from_out: &str, to: &str, to_in: &str) -> FlowEdge {
         FlowEdge {
-            from:        from.into(),
+            from: from.into(),
             from_output: from_out.into(),
-            to:          to.into(),
-            to_input:    to_in.into(),
+            to: to.into(),
+            to_input: to_in.into(),
         }
     }
 
@@ -287,7 +285,7 @@ mod tests {
     fn topological_order_linear_chain() {
         let flow = FlowFile {
             workspaces: vec![ws("a", "/a"), ws("b", "/b"), ws("c", "/c")],
-            edges:      vec![edge("a", "x", "b", "x"), edge("b", "y", "c", "y")],
+            edges: vec![edge("a", "x", "b", "x"), edge("b", "y", "c", "y")],
             optimization: None,
         };
         let order = topological_order(&flow).unwrap();
@@ -298,7 +296,7 @@ mod tests {
     fn topological_order_preserves_declaration_order_among_roots() {
         let flow = FlowFile {
             workspaces: vec![ws("first", "/f"), ws("second", "/s"), ws("third", "/t")],
-            edges:      vec![],
+            edges: vec![],
             optimization: None,
         };
         let order = topological_order(&flow).unwrap();
@@ -309,7 +307,7 @@ mod tests {
     fn topological_order_detects_cycle() {
         let flow = FlowFile {
             workspaces: vec![ws("a", "/a"), ws("b", "/b")],
-            edges:      vec![edge("a", "x", "b", "x"), edge("b", "y", "a", "y")],
+            edges: vec![edge("a", "x", "b", "x"), edge("b", "y", "a", "y")],
             optimization: None,
         };
         match topological_order(&flow) {
@@ -322,7 +320,7 @@ mod tests {
     fn topological_order_rejects_unknown_workspace() {
         let flow = FlowFile {
             workspaces: vec![ws("a", "/a")],
-            edges:      vec![edge("a", "x", "ghost", "x")],
+            edges: vec![edge("a", "x", "ghost", "x")],
             optimization: None,
         };
         match topological_order(&flow) {
@@ -336,34 +334,50 @@ mod tests {
         use magma_fixtures::TfJsonBuilder;
 
         let tmp = tempfile::tempdir().unwrap();
-        let vpc_dir     = tmp.path().join("vpc");
+        let vpc_dir = tmp.path().join("vpc");
         let cluster_dir = tmp.path().join("cluster");
 
         TfJsonBuilder::new()
-            .resource("aws_vpc", "net", serde_json::json!({"cidr_block": "10.0.0.0/16"}))
+            .resource(
+                "aws_vpc",
+                "net",
+                serde_json::json!({"cidr_block": "10.0.0.0/16"}),
+            )
             .output("vpc_id", serde_json::json!("vpc-flow-test"))
-            .render_to_dir(&vpc_dir).unwrap();
+            .render_to_dir(&vpc_dir)
+            .unwrap();
         TfJsonBuilder::new()
             .resource("aws_iam_role", "node", serde_json::json!({"name": "n"}))
-            .render_to_dir(&cluster_dir).unwrap();
+            .render_to_dir(&cluster_dir)
+            .unwrap();
 
         let flow = FlowFile {
             workspaces: vec![
-                FlowWorkspace { name: "vpc".into(),     dir: vpc_dir.clone() },
-                FlowWorkspace { name: "cluster".into(), dir: cluster_dir.clone() },
+                FlowWorkspace {
+                    name: "vpc".into(),
+                    dir: vpc_dir.clone(),
+                },
+                FlowWorkspace {
+                    name: "cluster".into(),
+                    dir: cluster_dir.clone(),
+                },
             ],
             edges: vec![FlowEdge {
-                from:        "vpc".into(),
+                from: "vpc".into(),
                 from_output: "vpc_id".into(),
-                to:          "cluster".into(),
-                to_input:    "vpc_id".into(),
+                to: "cluster".into(),
+                to_input: "vpc_id".into(),
             }],
             optimization: None,
         };
 
         let report = run(&flow).await.unwrap();
         assert_eq!(
-            report.workspaces.iter().map(|s| s.workspace.clone()).collect::<Vec<_>>(),
+            report
+                .workspaces
+                .iter()
+                .map(|s| s.workspace.clone())
+                .collect::<Vec<_>>(),
             vec!["vpc", "cluster"]
         );
         assert_eq!(
@@ -397,7 +411,10 @@ mod tests {
             // doesn't guarantee that after dedup).
             let unique: Vec<String> = {
                 let mut seen = std::collections::HashSet::new();
-                let mut v: Vec<_> = names.into_iter().filter(|n| seen.insert(n.clone())).collect();
+                let mut v: Vec<_> = names
+                    .into_iter()
+                    .filter(|n| seen.insert(n.clone()))
+                    .collect();
                 while v.len() < 2 {
                     v.push(format!("node{}", v.len()));
                 }
@@ -410,25 +427,27 @@ mod tests {
             // triangular and DAG by construction. No rejection
             // sampling, no proptest local-reject pressure.
             let edge_strategy = proptest::collection::vec(
-                (0..(n - 1)).prop_flat_map(move |lo| {
-                    ((lo + 1)..n).prop_map(move |hi| (lo, hi))
-                }),
+                (0..(n - 1)).prop_flat_map(move |lo| ((lo + 1)..n).prop_map(move |hi| (lo, hi))),
                 0..=(n * 2),
             );
-            (Just(unique), edge_strategy).prop_map(|(names, edges)| {
-                FlowFile {
-                    workspaces: names.iter().map(|n| FlowWorkspace {
+            (Just(unique), edge_strategy).prop_map(|(names, edges)| FlowFile {
+                workspaces: names
+                    .iter()
+                    .map(|n| FlowWorkspace {
                         name: n.clone(),
-                        dir:  std::path::PathBuf::from(format!("/tmp/{n}")),
-                    }).collect(),
-                    edges: edges.into_iter().map(|(a, b)| FlowEdge {
-                        from:        names[a].clone(),
+                        dir: std::path::PathBuf::from(format!("/tmp/{n}")),
+                    })
+                    .collect(),
+                edges: edges
+                    .into_iter()
+                    .map(|(a, b)| FlowEdge {
+                        from: names[a].clone(),
                         from_output: "out".into(),
-                        to:          names[b].clone(),
-                        to_input:    "in".into(),
-                    }).collect(),
-                    optimization: None,
-                }
+                        to: names[b].clone(),
+                        to_input: "in".into(),
+                    })
+                    .collect(),
+                optimization: None,
             })
         })
     }

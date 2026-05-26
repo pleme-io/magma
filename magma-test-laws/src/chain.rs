@@ -17,7 +17,7 @@
 
 use std::collections::HashSet;
 
-use magma_flow::{topological_order, FlowFile};
+use magma_flow::{FlowFile, topological_order};
 
 // ── Law 1: acyclic ────────────────────────────────────────────────
 
@@ -106,9 +106,8 @@ pub fn assert_all_laws(flow: &FlowFile) {
 /// first. Convenience over `magma_flow::topological_order` that
 /// panics rather than returns a Result for inline test use.
 pub fn apply_order(flow: &FlowFile) -> Vec<String> {
-    topological_order(flow).unwrap_or_else(|e| {
-        panic!("apply_order: chain not topologically orderable: {e:?}")
-    })
+    topological_order(flow)
+        .unwrap_or_else(|e| panic!("apply_order: chain not topologically orderable: {e:?}"))
 }
 
 /// Reverse-apply order is the destroy order — last applied is

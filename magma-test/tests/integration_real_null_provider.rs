@@ -63,7 +63,9 @@ fn skip_if_missing() -> Option<PathBuf> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_null_provider_handshake() {
-    let Some(binary) = skip_if_missing() else { return; };
+    let Some(binary) = skip_if_missing() else {
+        return;
+    };
 
     let spec = PluginSpec {
         binary,
@@ -93,7 +95,10 @@ async fn real_null_provider_handshake() {
         hs.network,
     );
     assert_eq!(hs.proto_type, "grpc");
-    assert!(hs.cert_pem_base64.is_some(), "real provider always emits cert");
+    assert!(
+        hs.cert_pem_base64.is_some(),
+        "real provider always emits cert"
+    );
     eprintln!(
         "null provider handshake: protocol={:?} network={} address={}",
         hs.app_protocol, hs.network, hs.address,
@@ -116,7 +121,9 @@ async fn real_null_provider_handshake() {
 #[ignore = "rustls↔Go-tls interop debug needed (cert exchange + TLS scaffold proven)"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_null_provider_schema() {
-    let Some(binary) = skip_if_missing() else { return; };
+    let Some(binary) = skip_if_missing() else {
+        return;
+    };
 
     let spec = PluginSpec {
         binary,
@@ -161,12 +168,11 @@ async fn real_null_provider_schema() {
 
     // The null_resource schema has a `triggers` attribute (map<string, string>).
     let null_resource = resp.resource_schemas.get("null_resource").unwrap();
-    let block = null_resource.block.as_ref().expect("null_resource has a block");
-    let attr_names: Vec<&str> = block
-        .attributes
-        .iter()
-        .map(|a| a.name.as_str())
-        .collect();
+    let block = null_resource
+        .block
+        .as_ref()
+        .expect("null_resource has a block");
+    let attr_names: Vec<&str> = block.attributes.iter().map(|a| a.name.as_str()).collect();
     assert!(
         attr_names.contains(&"triggers") || attr_names.contains(&"id"),
         "null_resource block has triggers or id attribute, got: {attr_names:?}",
@@ -176,7 +182,9 @@ async fn real_null_provider_schema() {
 #[ignore = "rustls↔Go-tls interop debug needed (cert exchange + TLS scaffold proven)"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_null_provider_lifecycle() {
-    let Some(binary) = skip_if_missing() else { return; };
+    let Some(binary) = skip_if_missing() else {
+        return;
+    };
 
     let spec = PluginSpec {
         binary,
@@ -193,7 +201,7 @@ async fn real_null_provider_lifecycle() {
         terraform_version: "1.7.0".into(),
         config: Some(tfplugin6::DynamicValue {
             msgpack: vec![],
-            json:    b"{}".to_vec(),
+            json: b"{}".to_vec(),
         }),
         client_capabilities: None,
     };
@@ -211,20 +219,23 @@ async fn real_null_provider_lifecycle() {
         "id": null,
     });
     let plan_req = tfplugin6::plan_resource_change::Request {
-        type_name:           "null_resource".into(),
-        prior_state:         Some(tfplugin6::DynamicValue {
-            msgpack: vec![], json: b"null".to_vec(),
+        type_name: "null_resource".into(),
+        prior_state: Some(tfplugin6::DynamicValue {
+            msgpack: vec![],
+            json: b"null".to_vec(),
         }),
-        proposed_new_state:  Some(tfplugin6::DynamicValue {
-            msgpack: vec![], json: serde_json::to_vec(&proposed).unwrap(),
+        proposed_new_state: Some(tfplugin6::DynamicValue {
+            msgpack: vec![],
+            json: serde_json::to_vec(&proposed).unwrap(),
         }),
         config: Some(tfplugin6::DynamicValue {
-            msgpack: vec![], json: serde_json::to_vec(&proposed).unwrap(),
+            msgpack: vec![],
+            json: serde_json::to_vec(&proposed).unwrap(),
         }),
-        prior_private:        vec![],
-        provider_meta:        None,
-        client_capabilities:  None,
-        prior_identity:       None,
+        prior_private: vec![],
+        provider_meta: None,
+        client_capabilities: None,
+        prior_identity: None,
     };
     let plan_resp = client
         .plan_resource_change(plan_req)
@@ -241,16 +252,18 @@ async fn real_null_provider_lifecycle() {
 
     // 3. ApplyResourceChange — use the planned_state from the plan response.
     let apply_req = tfplugin6::apply_resource_change::Request {
-        type_name:        "null_resource".into(),
-        prior_state:      Some(tfplugin6::DynamicValue {
-            msgpack: vec![], json: b"null".to_vec(),
+        type_name: "null_resource".into(),
+        prior_state: Some(tfplugin6::DynamicValue {
+            msgpack: vec![],
+            json: b"null".to_vec(),
         }),
-        planned_state:    plan_resp.planned_state,
+        planned_state: plan_resp.planned_state,
         config: Some(tfplugin6::DynamicValue {
-            msgpack: vec![], json: serde_json::to_vec(&proposed).unwrap(),
+            msgpack: vec![],
+            json: serde_json::to_vec(&proposed).unwrap(),
         }),
-        planned_private:  plan_resp.planned_private,
-        provider_meta:    None,
+        planned_private: plan_resp.planned_private,
+        provider_meta: None,
         planned_identity: None,
     };
     let apply_resp = client

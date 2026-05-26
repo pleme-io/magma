@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    build_outcome, change_with_severity, Action, AppliedChange, ChangeSeverity, Outcome, Plan,
-    Reconciler, ReconcilerError,
+    Action, AppliedChange, ChangeSeverity, Outcome, Plan, Reconciler, ReconcilerError,
+    build_outcome, change_with_severity,
 };
 
 // ── Typed release shape ───────────────────────────────────────────
@@ -25,14 +25,14 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseSpec {
     /// Chart name (e.g. "ingress-nginx/ingress-nginx").
-    pub chart:     String,
+    pub chart: String,
     /// Chart version (semver string).
-    pub version:   String,
+    pub version: String,
     /// Target namespace.
     pub namespace: String,
     /// Values JSON — typed-arbitrary; equality is structural.
     #[serde(default)]
-    pub values:    serde_json::Value,
+    pub values: serde_json::Value,
 }
 
 // ── Client abstraction ────────────────────────────────────────────
@@ -40,8 +40,8 @@ pub struct ReleaseSpec {
 #[async_trait]
 pub trait HelmClient: Send + Sync {
     async fn list_releases(&self) -> Result<HashMap<String, ReleaseSpec>, String>;
-    async fn install(&self,  name: &str, spec: &ReleaseSpec) -> Result<(), String>;
-    async fn upgrade(&self,  name: &str, spec: &ReleaseSpec) -> Result<(), String>;
+    async fn install(&self, name: &str, spec: &ReleaseSpec) -> Result<(), String>;
+    async fn upgrade(&self, name: &str, spec: &ReleaseSpec) -> Result<(), String>;
     async fn uninstall(&self, name: &str) -> Result<(), String>;
 }
 
@@ -57,7 +57,9 @@ impl MockHelmClient {
     }
 
     pub fn with_releases(releases: HashMap<String, ReleaseSpec>) -> Self {
-        Self { state: Mutex::new(releases) }
+        Self {
+            state: Mutex::new(releases),
+        }
     }
 
     pub fn snapshot(&self) -> HashMap<String, ReleaseSpec> {
@@ -141,12 +143,18 @@ impl<C: HelmClient> Reconciler for HelmReleaseReconciler<C> {
             let address = format!("helm_release.{name}");
             match (current.get(name), desired.get(name)) {
                 (None, Some(w)) => changes.push(change_with_severity(
-                    address, Action::Create, helm_severity(Action::Create),
-                    None, Some(serde_json::to_value(w).unwrap()),
+                    address,
+                    Action::Create,
+                    helm_severity(Action::Create),
+                    None,
+                    Some(serde_json::to_value(w).unwrap()),
                 )),
                 (Some(h), None) => changes.push(change_with_severity(
-                    address, Action::Delete, helm_severity(Action::Delete),
-                    Some(serde_json::to_value(h).unwrap()), None,
+                    address,
+                    Action::Delete,
+                    helm_severity(Action::Delete),
+                    Some(serde_json::to_value(h).unwrap()),
+                    None,
                 )),
                 (Some(h), Some(w)) if h != w => {
                     // Chart change is structural — treat as Replace
@@ -158,7 +166,9 @@ impl<C: HelmClient> Reconciler for HelmReleaseReconciler<C> {
                         Action::Update
                     };
                     changes.push(change_with_severity(
-                        address, action, helm_severity(action),
+                        address,
+                        action,
+                        helm_severity(action),
                         Some(serde_json::to_value(h).unwrap()),
                         Some(serde_json::to_value(w).unwrap()),
                     ));
@@ -173,10 +183,13 @@ impl<C: HelmClient> Reconciler for HelmReleaseReconciler<C> {
     async fn apply(&self, plan: &Plan) -> Result<Outcome, ReconcilerError> {
         let started_at = Utc::now();
         let mut applied = vec![];
-        let mut failed  = vec![];
+        let mut failed = vec![];
 
         for c in &plan.changes {
-            let name = c.address.strip_prefix("helm_release.").unwrap_or(&c.address);
+            let name = c
+                .address
+                .strip_prefix("helm_release.")
+                .unwrap_or(&c.address);
             let res = match c.action {
                 Action::Create => match &c.after {
                     Some(v) => match serde_json::from_value::<ReleaseSpec>(v.clone()) {
@@ -209,7 +222,10 @@ impl<C: HelmClient> Reconciler for HelmReleaseReconciler<C> {
                 Action::NoOp => continue,
             };
             match res {
-                Ok(()) => applied.push(AppliedChange { address: c.address.clone(), action: c.action }),
+                Ok(()) => applied.push(AppliedChange {
+                    address: c.address.clone(),
+                    action: c.action,
+                }),
                 Err(e) => failed.push(crate::FailedChange {
                     address: c.address.clone(),
                     action: c.action,
@@ -229,8 +245,8 @@ mod tests {
 
     fn rel(chart: &str, version: &str, values: Value) -> ReleaseSpec {
         ReleaseSpec {
-            chart:     chart.into(),
-            version:   version.into(),
+            chart: chart.into(),
+            version: version.into(),
             namespace: "default".into(),
             values,
         }
@@ -247,7 +263,10 @@ mod tests {
     async fn install_new_release() {
         let r = HelmReleaseReconciler::new(MockHelmClient::new());
         let mut desired: HashMap<String, ReleaseSpec> = HashMap::new();
-        desired.insert("nginx".to_string(), rel("ingress-nginx", "4.7.0", json!({"replicaCount": 2})));
+        desired.insert(
+            "nginx".to_string(),
+            rel("ingress-nginx", "4.7.0", json!({"replicaCount": 2})),
+        );
         let config = serde_json::to_value(desired).unwrap();
         let state = r.read_state().await.unwrap();
         let plan = r.compute_plan(&config, &state).unwrap();
@@ -267,10 +286,12 @@ mod tests {
         let r = HelmReleaseReconciler::new(MockHelmClient::with_releases(initial));
         let mut desired: HashMap<String, ReleaseSpec> = HashMap::new();
         desired.insert("nginx".into(), rel("ingress-nginx", "4.8.0", json!({})));
-        let plan = r.compute_plan(
-            &serde_json::to_value(desired).unwrap(),
-            &r.read_state().await.unwrap(),
-        ).unwrap();
+        let plan = r
+            .compute_plan(
+                &serde_json::to_value(desired).unwrap(),
+                &r.read_state().await.unwrap(),
+            )
+            .unwrap();
         assert_eq!(plan.changes[0].action, Action::Update);
         assert_eq!(plan.changes[0].severity, ChangeSeverity::Functional);
     }
@@ -282,10 +303,12 @@ mod tests {
         let r = HelmReleaseReconciler::new(MockHelmClient::with_releases(initial));
         let mut desired: HashMap<String, ReleaseSpec> = HashMap::new();
         desired.insert("traffic".into(), rel("envoy-gateway", "1.0.0", json!({})));
-        let plan = r.compute_plan(
-            &serde_json::to_value(desired).unwrap(),
-            &r.read_state().await.unwrap(),
-        ).unwrap();
+        let plan = r
+            .compute_plan(
+                &serde_json::to_value(desired).unwrap(),
+                &r.read_state().await.unwrap(),
+            )
+            .unwrap();
         assert_eq!(plan.changes[0].action, Action::Replace);
         assert_eq!(plan.changes[0].severity, ChangeSeverity::Critical);
     }
@@ -293,14 +316,22 @@ mod tests {
     #[tokio::test]
     async fn values_diff_is_update() {
         let mut initial = HashMap::new();
-        initial.insert("nginx".into(), rel("ingress-nginx", "4.7.0", json!({"replicaCount": 2})));
+        initial.insert(
+            "nginx".into(),
+            rel("ingress-nginx", "4.7.0", json!({"replicaCount": 2})),
+        );
         let r = HelmReleaseReconciler::new(MockHelmClient::with_releases(initial));
         let mut desired: HashMap<String, ReleaseSpec> = HashMap::new();
-        desired.insert("nginx".into(), rel("ingress-nginx", "4.7.0", json!({"replicaCount": 5})));
-        let plan = r.compute_plan(
-            &serde_json::to_value(desired).unwrap(),
-            &r.read_state().await.unwrap(),
-        ).unwrap();
+        desired.insert(
+            "nginx".into(),
+            rel("ingress-nginx", "4.7.0", json!({"replicaCount": 5})),
+        );
+        let plan = r
+            .compute_plan(
+                &serde_json::to_value(desired).unwrap(),
+                &r.read_state().await.unwrap(),
+            )
+            .unwrap();
         assert_eq!(plan.changes[0].action, Action::Update);
     }
 
@@ -310,10 +341,12 @@ mod tests {
         initial.insert("old".into(), rel("legacy", "1.0", json!({})));
         let r = HelmReleaseReconciler::new(MockHelmClient::with_releases(initial));
         let desired: HashMap<String, ReleaseSpec> = HashMap::new();
-        let plan = r.compute_plan(
-            &serde_json::to_value(desired).unwrap(),
-            &r.read_state().await.unwrap(),
-        ).unwrap();
+        let plan = r
+            .compute_plan(
+                &serde_json::to_value(desired).unwrap(),
+                &r.read_state().await.unwrap(),
+            )
+            .unwrap();
         assert_eq!(plan.changes[0].action, Action::Delete);
         assert_eq!(plan.changes[0].severity, ChangeSeverity::Critical);
     }
@@ -322,9 +355,14 @@ mod tests {
     async fn apply_converges() {
         let r = HelmReleaseReconciler::new(MockHelmClient::new());
         let mut desired: HashMap<String, ReleaseSpec> = HashMap::new();
-        desired.insert("nginx".to_string(), rel("ingress-nginx", "4.7.0", json!({})));
+        desired.insert(
+            "nginx".to_string(),
+            rel("ingress-nginx", "4.7.0", json!({})),
+        );
         let config = serde_json::to_value(desired).unwrap();
-        let plan = r.compute_plan(&config, &r.read_state().await.unwrap()).unwrap();
+        let plan = r
+            .compute_plan(&config, &r.read_state().await.unwrap())
+            .unwrap();
         r.apply(&plan).await.unwrap();
         // Drift is now empty.
         let drift = r.detect_drift(&config).await.unwrap();

@@ -49,7 +49,10 @@ async fn full_lifecycle_against_mock() {
         .await
         .expect("GetProviderSchema RPC")
         .into_inner();
-    assert!(schema_resp.diagnostics.is_empty(), "no diagnostics expected");
+    assert!(
+        schema_resp.diagnostics.is_empty(),
+        "no diagnostics expected"
+    );
     assert!(schema_resp.provider.is_some(), "provider schema present");
     assert!(
         schema_resp.resource_schemas.contains_key("mock_resource"),
@@ -58,14 +61,14 @@ async fn full_lifecycle_against_mock() {
 
     // 4. PlanResourceChange — assert the canned response echoes inputs.
     let plan_req = tfplugin6::plan_resource_change::Request {
-        type_name:              "mock_resource".into(),
-        prior_state:            None,
-        proposed_new_state:     None,
-        config:                 None,
-        prior_private:          vec![],
-        provider_meta:          None,
-        client_capabilities:    None,
-        prior_identity:         None,
+        type_name: "mock_resource".into(),
+        prior_state: None,
+        proposed_new_state: None,
+        config: None,
+        prior_private: vec![],
+        provider_meta: None,
+        client_capabilities: None,
+        prior_identity: None,
     };
     let plan_resp = client
         .plan_resource_change(plan_req)
@@ -77,20 +80,23 @@ async fn full_lifecycle_against_mock() {
 
     // 5. ApplyResourceChange — assert new_state echoes planned_state.
     let apply_req = tfplugin6::apply_resource_change::Request {
-        type_name:              "mock_resource".into(),
-        prior_state:            None,
-        planned_state:          None,
-        config:                 None,
-        planned_private:        vec![],
-        provider_meta:          None,
-        planned_identity:       None,
+        type_name: "mock_resource".into(),
+        prior_state: None,
+        planned_state: None,
+        config: None,
+        planned_private: vec![],
+        provider_meta: None,
+        planned_identity: None,
     };
     let apply_resp = client
         .apply_resource_change(apply_req)
         .await
         .expect("ApplyResourceChange RPC")
         .into_inner();
-    assert!(apply_resp.diagnostics.is_empty(), "apply has no diagnostics");
+    assert!(
+        apply_resp.diagnostics.is_empty(),
+        "apply has no diagnostics"
+    );
 
     // 6. Clean up — Plugin::drop sends SIGTERM/SIGKILL.
     drop(plugin);

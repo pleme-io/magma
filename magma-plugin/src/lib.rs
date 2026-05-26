@@ -36,7 +36,9 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose};
+use rcgen::{
+    BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
+};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -165,10 +167,10 @@ pub enum PluginError {
 /// can act as its own root for the single hop.
 #[derive(Debug, Clone)]
 pub struct ParentIdentity {
-    pub cert_der:    Vec<u8>,
-    pub cert_pem:    String,
-    pub key_pem:     String,
-    pub key_der:     Vec<u8>,
+    pub cert_der: Vec<u8>,
+    pub cert_pem: String,
+    pub key_pem: String,
+    pub key_der: Vec<u8>,
     pub base64_cert: String,
 }
 
@@ -229,11 +231,11 @@ impl ParentIdentity {
 /// Format: `CORE_PROTOCOL|APP_PROTOCOL|NETWORK|ADDRESS|PROTO_TYPE|CERT`.
 #[derive(Debug, Clone)]
 pub struct HandshakeLine {
-    pub core_protocol:   u32,
-    pub app_protocol:    PluginProtocol,
-    pub network:         String,
-    pub address:         String,
-    pub proto_type:      String,
+    pub core_protocol: u32,
+    pub app_protocol: PluginProtocol,
+    pub network: String,
+    pub address: String,
+    pub proto_type: String,
     pub cert_pem_base64: Option<String>,
 }
 
@@ -280,7 +282,8 @@ impl HandshakeLine {
         self.cert_pem_base64.as_ref().map(|b64| {
             let pad_count = (4 - b64.len() % 4) % 4;
             let padded = format!("{b64}{}", "=".repeat(pad_count));
-            B64.decode(&padded).map_err(|e| PluginError::Base64(e.to_string()))
+            B64.decode(&padded)
+                .map_err(|e| PluginError::Base64(e.to_string()))
         })
     }
 }
@@ -291,7 +294,7 @@ impl HandshakeLine {
 #[derive(Debug, Clone)]
 pub struct PluginSpec {
     pub binary: PathBuf,
-    pub magic_cookie_key:   String,
+    pub magic_cookie_key: String,
     pub magic_cookie_value: String,
     pub accepted_protocols: Vec<PluginProtocol>,
     pub min_port: u16,
@@ -310,13 +313,13 @@ impl Default for PluginSpec {
     fn default() -> Self {
         Self {
             binary: PathBuf::new(),
-            magic_cookie_key:   "TF_PLUGIN_MAGIC_COOKIE".into(),
+            magic_cookie_key: "TF_PLUGIN_MAGIC_COOKIE".into(),
             // Real value from OpenTofu's internal/plugin/serve.go +
             // Terraform's terraform-plugin-go HandshakeConfig. This is
             // the publicly-published well-known cookie every Terraform-
             // ecosystem provider validates against.
-            magic_cookie_value:
-                "d602bf8f470bc67ca7faa0386276bbdd4330efaf76d1a219cb4d6991ca9872b2".into(),
+            magic_cookie_value: "d602bf8f470bc67ca7faa0386276bbdd4330efaf76d1a219cb4d6991ca9872b2"
+                .into(),
             accepted_protocols: vec![PluginProtocol::V6, PluginProtocol::V5],
             min_port: 10_000,
             max_port: 25_000,
@@ -332,11 +335,11 @@ impl Default for PluginSpec {
 /// the ephemeral parent identity used for mTLS, and (once dialed) the
 /// tonic gRPC `Channel` ready for typed RPC.
 pub struct Plugin {
-    process:   Child,
+    process: Child,
     handshake: HandshakeLine,
-    spec:      PluginSpec,
-    identity:  ParentIdentity,
-    channel:   Option<Channel>,
+    spec: PluginSpec,
+    identity: ParentIdentity,
+    channel: Option<Channel>,
 }
 
 impl Plugin {
@@ -454,11 +457,8 @@ impl Plugin {
                             move |_: tonic::transport::Uri| {
                                 let path = path.clone();
                                 async move {
-                                    let stream =
-                                        tokio::net::UnixStream::connect(&path).await?;
-                                    Ok::<_, std::io::Error>(
-                                        hyper_util::rt::TokioIo::new(stream),
-                                    )
+                                    let stream = tokio::net::UnixStream::connect(&path).await?;
+                                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
                                 }
                             },
                         ))
@@ -476,14 +476,12 @@ impl Plugin {
         }
 
         // Build the mTLS ClientConfig once for this Plugin's lifetime.
-        let provider_cert_der = self
-            .handshake
-            .provider_cert_der()
-            .ok_or_else(|| {
-                PluginError::Transport("provider handshake omitted cert; mTLS impossible".into())
-            })??;
+        let provider_cert_der = self.handshake.provider_cert_der().ok_or_else(|| {
+            PluginError::Transport("provider handshake omitted cert; mTLS impossible".into())
+        })??;
         let parent_cert = CertificateDer::from(self.identity.cert_der.clone());
-        let parent_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.identity.key_der.clone()));
+        let parent_key =
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.identity.key_der.clone()));
 
         let verifier = Arc::new(TrustOnlyPeerVerifier {
             trusted_cert_der: provider_cert_der,
@@ -552,16 +550,22 @@ impl Plugin {
 
     /// The negotiated handshake (protocol version, transport, address, cert).
     #[must_use]
-    pub fn handshake(&self) -> &HandshakeLine { &self.handshake }
+    pub fn handshake(&self) -> &HandshakeLine {
+        &self.handshake
+    }
 
     /// The ephemeral parent identity (cert + key) generated for this
     /// spawn. Exposed for tonic-rustls mTLS layering in M0.x.
     #[must_use]
-    pub fn parent_identity(&self) -> &ParentIdentity { &self.identity }
+    pub fn parent_identity(&self) -> &ParentIdentity {
+        &self.identity
+    }
 
     /// The dialed gRPC channel, if `dial()` has been called.
     #[must_use]
-    pub fn channel(&self) -> Option<&Channel> { self.channel.as_ref() }
+    pub fn channel(&self) -> Option<&Channel> {
+        self.channel.as_ref()
+    }
 }
 
 impl Drop for Plugin {
@@ -587,7 +591,10 @@ mod tests {
         assert_eq!(h.network, "tcp");
         assert_eq!(h.address, "127.0.0.1:42839");
         assert_eq!(h.proto_type, "grpc");
-        assert_eq!(h.cert_pem_base64.as_deref(), Some("MIIBkTCCATegAwIBAgIBATAK"));
+        assert_eq!(
+            h.cert_pem_base64.as_deref(),
+            Some("MIIBkTCCATegAwIBAgIBATAK")
+        );
     }
 
     #[test]
@@ -635,10 +642,10 @@ mod tests {
         let identity = ParentIdentity::generate().unwrap();
         let handshake = HandshakeLine {
             core_protocol: 1,
-            app_protocol:  PluginProtocol::V6,
-            network:       "tcp".into(),
-            address:       "127.0.0.1:50051".into(),
-            proto_type:    "grpc".into(),
+            app_protocol: PluginProtocol::V6,
+            network: "tcp".into(),
+            address: "127.0.0.1:50051".into(),
+            proto_type: "grpc".into(),
             cert_pem_base64: Some(identity.base64_cert.clone()),
         };
         // The `provider_cert_der` helper preserves whatever base64-decoded

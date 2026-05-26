@@ -23,7 +23,7 @@ use magma_converge::{
     inmemory::InMemoryKvReconciler,
 };
 use proptest::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -36,11 +36,7 @@ fn arb_kind_set() -> impl Strategy<Value = Vec<String>> {
 }
 
 fn arb_config_map() -> impl Strategy<Value = HashMap<String, Value>> {
-    proptest::collection::hash_map(
-        "[a-z][a-z0-9_]{0,7}",
-        Just(json!({})),
-        1..=8,
-    )
+    proptest::collection::hash_map("[a-z][a-z0-9_]{0,7}", Just(json!({})), 1..=8)
 }
 
 // ── Property 1: drift_sweep result keys equal input keys ───────────

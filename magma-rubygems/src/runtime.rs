@@ -34,9 +34,9 @@ pub struct RubyEnvironment {
 /// real impl will be a few lines once `tree::materialize` lands.
 pub fn into_ruby_env(tree: &VirtualGemTree, ruby_version: impl Into<String>) -> RubyEnvironment {
     RubyEnvironment {
-        gem_path:              tree.gem_path.clone(),
-        ruby_lib:              vec![],
-        ruby_version:          ruby_version.into(),
-        gem_tree_attestation:  tree.attestation.clone(),
+        gem_path: tree.gem_path.clone(),
+        ruby_lib: vec![],
+        ruby_version: ruby_version.into(),
+        gem_tree_attestation: tree.attestation.clone(),
     }
 }

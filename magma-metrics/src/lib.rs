@@ -18,9 +18,7 @@
 
 #![deny(unsafe_code)]
 
-use prometheus::{
-    HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
-};
+use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 use thiserror::Error;
 
 use magma_converge::{ApplyMetrics, ChangeSeverity, Outcome, Plan};
@@ -82,37 +80,55 @@ impl Metrics {
     /// registry. Returns the typed handle.
     pub fn register(registry: &Registry) -> Result<Self, MetricsError> {
         let plans_computed_total = IntCounterVec::new(
-            Opts::new("magma_plan_computed_total", "magma — total compute_plan invocations per reconciler kind"),
+            Opts::new(
+                "magma_plan_computed_total",
+                "magma — total compute_plan invocations per reconciler kind",
+            ),
             &["kind"],
         )?;
         registry.register(Box::new(plans_computed_total.clone()))?;
 
         let plan_changes_total = IntCounterVec::new(
-            Opts::new("magma_plan_changes_total", "magma — typed change count per (kind, action) emitted by compute_plan"),
+            Opts::new(
+                "magma_plan_changes_total",
+                "magma — typed change count per (kind, action) emitted by compute_plan",
+            ),
             &["kind", "action"],
         )?;
         registry.register(Box::new(plan_changes_total.clone()))?;
 
         let drift_classified_total = IntCounterVec::new(
-            Opts::new("magma_drift_classified_total", "magma — drift-classification count per (kind, severity)"),
+            Opts::new(
+                "magma_drift_classified_total",
+                "magma — drift-classification count per (kind, severity)",
+            ),
             &["kind", "severity"],
         )?;
         registry.register(Box::new(drift_classified_total.clone()))?;
 
         let drift_decisions_total = IntCounterVec::new(
-            Opts::new("magma_drift_decisions_total", "magma — drift-policy decisions per (kind, decision)"),
+            Opts::new(
+                "magma_drift_decisions_total",
+                "magma — drift-policy decisions per (kind, decision)",
+            ),
             &["kind", "decision"],
         )?;
         registry.register(Box::new(drift_decisions_total.clone()))?;
 
         let apply_outcome_total = IntCounterVec::new(
-            Opts::new("magma_apply_outcome_total", "magma — apply lifecycle outcomes per (kind, result)"),
+            Opts::new(
+                "magma_apply_outcome_total",
+                "magma — apply lifecycle outcomes per (kind, result)",
+            ),
             &["kind", "result"],
         )?;
         registry.register(Box::new(apply_outcome_total.clone()))?;
 
         let apply_resources_total = IntCounterVec::new(
-            Opts::new("magma_apply_resources_total", "magma — per-resource apply outcomes per (kind, status)"),
+            Opts::new(
+                "magma_apply_resources_total",
+                "magma — per-resource apply outcomes per (kind, status)",
+            ),
             &["kind", "status"],
         )?;
         registry.register(Box::new(apply_resources_total.clone()))?;
@@ -130,7 +146,10 @@ impl Metrics {
         registry.register(Box::new(apply_duration_seconds.clone()))?;
 
         let in_flight_applies = IntGaugeVec::new(
-            Opts::new("magma_in_flight_applies", "magma — current in-flight applies per reconciler kind"),
+            Opts::new(
+                "magma_in_flight_applies",
+                "magma — current in-flight applies per reconciler kind",
+            ),
             &["kind"],
         )?;
         registry.register(Box::new(in_flight_applies.clone()))?;
@@ -243,28 +262,28 @@ impl ApplyMetrics for Metrics {
 
 fn action_label(a: magma_converge::Action) -> &'static str {
     match a {
-        magma_converge::Action::Create  => "create",
-        magma_converge::Action::Update  => "update",
-        magma_converge::Action::Delete  => "delete",
+        magma_converge::Action::Create => "create",
+        magma_converge::Action::Update => "update",
+        magma_converge::Action::Delete => "delete",
         magma_converge::Action::Replace => "replace",
-        magma_converge::Action::NoOp    => "noop",
+        magma_converge::Action::NoOp => "noop",
     }
 }
 
 fn severity_label(s: ChangeSeverity) -> &'static str {
     match s {
-        ChangeSeverity::Cosmetic   => "cosmetic",
+        ChangeSeverity::Cosmetic => "cosmetic",
         ChangeSeverity::Functional => "functional",
-        ChangeSeverity::Critical   => "critical",
+        ChangeSeverity::Critical => "critical",
     }
 }
 
 fn decision_label(d: DriftDecision) -> &'static str {
     match d {
-        DriftDecision::AutoCorrect          => "auto_correct",
+        DriftDecision::AutoCorrect => "auto_correct",
         DriftDecision::AutoCorrectWithAlert => "auto_correct_with_alert",
-        DriftDecision::RequireApproval      => "require_approval",
-        DriftDecision::Refuse               => "refuse",
+        DriftDecision::RequireApproval => "require_approval",
+        DriftDecision::Refuse => "refuse",
     }
 }
 
@@ -273,8 +292,8 @@ fn decision_label(d: DriftDecision) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magma_converge::{change, change_with_severity, Action, AppliedChange, FailedChange};
-    use magma_drift::{classify, DriftPolicy};
+    use magma_converge::{Action, AppliedChange, FailedChange, change, change_with_severity};
+    use magma_drift::{DriftPolicy, classify};
     use prometheus::Encoder;
     use serde_json::json;
 
@@ -308,12 +327,20 @@ mod tests {
     #[test]
     fn record_plan_increments_typed_counters() {
         let (registry, metrics) = fresh();
-        let plan = Plan::new("github_repo", vec![
-            change("github_repo.a", Action::Create, None, Some(json!({}))),
-            change("github_repo.b", Action::Update, Some(json!({})), Some(json!({}))),
-            change("github_repo.c", Action::Delete, Some(json!({})), None),
-            change("github_repo.d", Action::NoOp, None, None),
-        ]);
+        let plan = Plan::new(
+            "github_repo",
+            vec![
+                change("github_repo.a", Action::Create, None, Some(json!({}))),
+                change(
+                    "github_repo.b",
+                    Action::Update,
+                    Some(json!({})),
+                    Some(json!({})),
+                ),
+                change("github_repo.c", Action::Delete, Some(json!({})), None),
+                change("github_repo.d", Action::NoOp, None, None),
+            ],
+        );
         metrics.record_plan(&plan);
 
         let text = render(&registry);
@@ -327,40 +354,70 @@ mod tests {
     #[test]
     fn record_drift_emits_severity_and_decision_counters() {
         let (registry, metrics) = fresh();
-        let plan = Plan::new("dns_record", vec![
-            change_with_severity("dns_record:a", Action::Update, ChangeSeverity::Functional,
-                Some(json!({})), Some(json!({}))),
-            change_with_severity("dns_record:b", Action::Delete, ChangeSeverity::Critical,
-                Some(json!({})), None),
-        ]);
+        let plan = Plan::new(
+            "dns_record",
+            vec![
+                change_with_severity(
+                    "dns_record:a",
+                    Action::Update,
+                    ChangeSeverity::Functional,
+                    Some(json!({})),
+                    Some(json!({})),
+                ),
+                change_with_severity(
+                    "dns_record:b",
+                    Action::Delete,
+                    ChangeSeverity::Critical,
+                    Some(json!({})),
+                    None,
+                ),
+            ],
+        );
         let report = classify(&plan, &DriftPolicy::conservative_default());
         metrics.record_drift(&report);
 
         let text = render(&registry);
         // Severity counters
-        assert!(text.contains(r#"magma_drift_classified_total{kind="dns_record",severity="functional"} 1"#));
-        assert!(text.contains(r#"magma_drift_classified_total{kind="dns_record",severity="critical"} 1"#));
+        assert!(text.contains(
+            r#"magma_drift_classified_total{kind="dns_record",severity="functional"} 1"#
+        ));
+        assert!(
+            text.contains(
+                r#"magma_drift_classified_total{kind="dns_record",severity="critical"} 1"#
+            )
+        );
         // Decision counters
-        assert!(text.contains(r#"magma_drift_decisions_total{decision="auto_correct_with_alert",kind="dns_record"} 1"#));
-        assert!(text.contains(r#"magma_drift_decisions_total{decision="require_approval",kind="dns_record"} 1"#));
+        assert!(text.contains(
+            r#"magma_drift_decisions_total{decision="auto_correct_with_alert",kind="dns_record"} 1"#
+        ));
+        assert!(text.contains(
+            r#"magma_drift_decisions_total{decision="require_approval",kind="dns_record"} 1"#
+        ));
     }
 
     #[test]
     fn record_outcome_emits_result_and_duration() {
         let (registry, metrics) = fresh();
         let outcome = Outcome {
-            plan_id:     magma_converge::PlanId("p1".into()),
-            kind:        "helm_release".into(),
-            applied:     vec![AppliedChange { address: "x".into(), action: Action::Create }],
-            failed:      vec![],
-            started_at:  chrono::Utc::now() - chrono::Duration::milliseconds(200),
+            plan_id: magma_converge::PlanId("p1".into()),
+            kind: "helm_release".into(),
+            applied: vec![AppliedChange {
+                address: "x".into(),
+                action: Action::Create,
+            }],
+            failed: vec![],
+            started_at: chrono::Utc::now() - chrono::Duration::milliseconds(200),
             finished_at: chrono::Utc::now(),
         };
         metrics.record_outcome(&outcome);
 
         let text = render(&registry);
-        assert!(text.contains(r#"magma_apply_outcome_total{kind="helm_release",result="applied"} 1"#));
-        assert!(text.contains(r#"magma_apply_resources_total{kind="helm_release",status="applied"} 1"#));
+        assert!(
+            text.contains(r#"magma_apply_outcome_total{kind="helm_release",result="applied"} 1"#)
+        );
+        assert!(
+            text.contains(r#"magma_apply_resources_total{kind="helm_release",status="applied"} 1"#)
+        );
         // Duration histogram observed at least once.
         assert!(text.contains(r#"magma_apply_duration_seconds_count{kind="helm_release"} 1"#));
     }
@@ -369,27 +426,40 @@ mod tests {
     fn outcome_with_failures_is_partial() {
         let (registry, metrics) = fresh();
         let outcome = Outcome {
-            plan_id:     magma_converge::PlanId("p1".into()),
-            kind:        "vault_policy".into(),
-            applied:     vec![AppliedChange { address: "a".into(), action: Action::Create }],
-            failed:      vec![FailedChange { address: "b".into(), action: Action::Update, error: "oops".into() }],
-            started_at:  chrono::Utc::now(),
+            plan_id: magma_converge::PlanId("p1".into()),
+            kind: "vault_policy".into(),
+            applied: vec![AppliedChange {
+                address: "a".into(),
+                action: Action::Create,
+            }],
+            failed: vec![FailedChange {
+                address: "b".into(),
+                action: Action::Update,
+                error: "oops".into(),
+            }],
+            started_at: chrono::Utc::now(),
             finished_at: chrono::Utc::now(),
         };
         metrics.record_outcome(&outcome);
         let text = render(&registry);
-        assert!(text.contains(r#"magma_apply_outcome_total{kind="vault_policy",result="partial"} 1"#));
+        assert!(
+            text.contains(r#"magma_apply_outcome_total{kind="vault_policy",result="partial"} 1"#)
+        );
     }
 
     #[test]
     fn outcome_with_only_failures_is_failed() {
         let (registry, metrics) = fresh();
         let outcome = Outcome {
-            plan_id:     magma_converge::PlanId("p1".into()),
-            kind:        "terraform".into(),
-            applied:     vec![],
-            failed:      vec![FailedChange { address: "x".into(), action: Action::Create, error: "boom".into() }],
-            started_at:  chrono::Utc::now(),
+            plan_id: magma_converge::PlanId("p1".into()),
+            kind: "terraform".into(),
+            applied: vec![],
+            failed: vec![FailedChange {
+                address: "x".into(),
+                action: Action::Create,
+                error: "boom".into(),
+            }],
+            started_at: chrono::Utc::now(),
             finished_at: chrono::Utc::now(),
         };
         metrics.record_outcome(&outcome);
@@ -433,14 +503,24 @@ mod tests {
         // If a metric name changes here, the PrometheusRule
         // breaks silently in prod — this test fails first.
         let (registry, metrics) = fresh();
-        let plan = Plan::new("test_kind", vec![
-            change_with_severity("test_kind.x", Action::Update, ChangeSeverity::Critical,
-                Some(json!({})), Some(json!({}))),
-        ]);
+        let plan = Plan::new(
+            "test_kind",
+            vec![change_with_severity(
+                "test_kind.x",
+                Action::Update,
+                ChangeSeverity::Critical,
+                Some(json!({})),
+                Some(json!({})),
+            )],
+        );
         let report = classify(&plan, &DriftPolicy::conservative_default());
         metrics.record_drift(&report);
         let text = render(&registry);
         // pleme-reconciler.prometheusRule queries this exact metric name + labels.
-        assert!(text.contains(r#"magma_drift_classified_total{kind="test_kind",severity="critical"} 1"#));
+        assert!(
+            text.contains(
+                r#"magma_drift_classified_total{kind="test_kind",severity="critical"} 1"#
+            )
+        );
     }
 }

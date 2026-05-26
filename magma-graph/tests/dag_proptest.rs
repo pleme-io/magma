@@ -16,15 +16,15 @@ use proptest::prelude::*;
 
 fn arb_address() -> impl Strategy<Value = ResourceAddress> {
     (
-        "[a-z][a-z0-9_]{0,7}",  // type
-        "[a-z][a-z0-9_]{0,7}",  // name
+        "[a-z][a-z0-9_]{0,7}", // type
+        "[a-z][a-z0-9_]{0,7}", // name
     )
         .prop_map(|(t, n)| ResourceAddress {
-            module:  ModulePath::root(),
-            kind:    ResourceKind::Managed,
+            module: ModulePath::root(),
+            kind: ResourceKind::Managed,
             type_id: ResourceTypeId(t),
-            name:    n,
-            key:     None::<InstanceKey>,
+            name: n,
+            key: None::<InstanceKey>,
         })
 }
 
@@ -38,8 +38,9 @@ fn arb_unique_addresses(min: usize, max: usize) -> impl Strategy<Value = Vec<Res
 
 // Edge generator that produces a strict upper-triangular set on a
 // sorted node list — guaranteed acyclic by construction.
-fn arb_dag(addrs: Vec<ResourceAddress>) -> impl Strategy<Value = (Vec<ResourceAddress>, Vec<(usize, usize)>)>
-{
+fn arb_dag(
+    addrs: Vec<ResourceAddress>,
+) -> impl Strategy<Value = (Vec<ResourceAddress>, Vec<(usize, usize)>)> {
     let n = addrs.len();
     if n < 2 {
         return Just((addrs, vec![])).boxed();
@@ -48,7 +49,9 @@ fn arb_dag(addrs: Vec<ResourceAddress>) -> impl Strategy<Value = (Vec<ResourceAd
         (0..(n - 1)).prop_flat_map(move |lo| ((lo + 1)..n).prop_map(move |hi| (lo, hi))),
         0..=(n * 2),
     );
-    edge_strategy.prop_map(move |edges| (addrs.clone(), edges)).boxed()
+    edge_strategy
+        .prop_map(move |edges| (addrs.clone(), edges))
+        .boxed()
 }
 
 // ── Property 1: add is idempotent ─────────────────────────────────

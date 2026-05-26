@@ -75,9 +75,9 @@ pub struct TerraformBlock {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequiredProvider {
-    pub source:   String,
+    pub source: String,
     #[serde(default)]
-    pub version:  Option<String>,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -88,7 +88,7 @@ pub struct ProviderConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputDecl {
-    pub value:     serde_json::Value,
+    pub value: serde_json::Value,
     #[serde(default)]
     pub sensitive: bool,
     #[serde(default)]
@@ -107,20 +107,20 @@ impl Config {
     pub fn resource_addresses(&self) -> impl Iterator<Item = ResourceAddress> + '_ {
         let managed = self.resources.iter().flat_map(|(type_name, by_name)| {
             by_name.keys().map(move |n| ResourceAddress {
-                module:  Default::default(),
-                kind:    ResourceKind::Managed,
+                module: Default::default(),
+                kind: ResourceKind::Managed,
                 type_id: ResourceTypeId(type_name.clone()),
-                name:    n.clone(),
-                key:     None,
+                name: n.clone(),
+                key: None,
             })
         });
         let data = self.data.iter().flat_map(|(type_name, by_name)| {
             by_name.keys().map(move |n| ResourceAddress {
-                module:  Default::default(),
-                kind:    ResourceKind::Data,
+                module: Default::default(),
+                kind: ResourceKind::Data,
                 type_id: ResourceTypeId(type_name.clone()),
-                name:    n.clone(),
-                key:     None,
+                name: n.clone(),
+                key: None,
             })
         });
         managed.chain(data)
@@ -134,8 +134,8 @@ impl Config {
             .iter()
             .map(|(name, rp)| ProviderReference {
                 source: rp.source.clone(),
-                name:   name.clone(),
-                alias:  None,
+                name: name.clone(),
+                alias: None,
             })
             .collect()
     }
@@ -233,7 +233,10 @@ mod tests {
     #[test]
     fn resolve_simple_reference() {
         let mut state = HashMap::new();
-        state.insert("aws_vpc".to_string(), json!({ "main": { "id": "vpc-abc123" } }));
+        state.insert(
+            "aws_vpc".to_string(),
+            json!({ "main": { "id": "vpc-abc123" } }),
+        );
         let resolved = resolve_reference("${aws_vpc.main.id}", &state).unwrap();
         assert_eq!(resolved, json!("vpc-abc123"));
     }

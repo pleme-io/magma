@@ -8,11 +8,11 @@
 
 use std::path::PathBuf;
 
-use magma_arch_test::{verify_directory, WorkspaceTestHarness};
+use magma_arch_test::{WorkspaceTestHarness, verify_directory};
 
 fn fixtures_root() -> PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR available in cargo test");
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR available in cargo test");
     PathBuf::from(manifest_dir).join("fixtures/pangea-architectures")
 }
 
@@ -32,11 +32,14 @@ async fn every_pangea_architectures_fixture_plans_cleanly() {
         match &ws.report {
             Some(r) => eprintln!(
                 "  + {:<32} {:>2} changes  [providers: {}]",
-                ws.name, r.resource_change_count, r.providers.join(", "),
+                ws.name,
+                r.resource_change_count,
+                r.providers.join(", "),
             ),
             None => eprintln!(
                 "  - {:<32} FAILED: {}",
-                ws.name, ws.error.as_deref().unwrap_or("<no error>"),
+                ws.name,
+                ws.error.as_deref().unwrap_or("<no error>"),
             ),
         }
     }
@@ -58,9 +61,10 @@ async fn every_fixture_uses_at_least_one_provider() {
     let root = fixtures_root();
     let agg = verify_directory(&root).await.expect("verify_directory");
     for ws in &agg.workspaces {
-        let report = ws.report.as_ref().unwrap_or_else(|| {
-            panic!("fixture {} did not produce a report", ws.name)
-        });
+        let report = ws
+            .report
+            .as_ref()
+            .unwrap_or_else(|| panic!("fixture {} did not produce a report", ws.name));
         assert!(
             !report.providers.is_empty(),
             "fixture {} declares no providers",
@@ -93,9 +97,7 @@ async fn every_fixture_plan_id_is_deterministic() {
             harness
                 .assert_plan_id_deterministic()
                 .await
-                .unwrap_or_else(|e| {
-                    panic!("fixture {} failed determinism: {e}", path.display())
-                });
+                .unwrap_or_else(|e| panic!("fixture {} failed determinism: {e}", path.display()));
         }
     }
 }
@@ -120,7 +122,10 @@ async fn every_fixture_passes_all_substrate_laws() {
                 .assert_all_substrate_laws()
                 .await
                 .unwrap_or_else(|e| {
-                    panic!("fixture {} failed substrate law battery: {e}", path.display())
+                    panic!(
+                        "fixture {} failed substrate law battery: {e}",
+                        path.display()
+                    )
                 });
         }
     }

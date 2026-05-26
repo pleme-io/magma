@@ -26,7 +26,11 @@
 //!
 //! Per [`theory/MAGMA-AS-PLATFORM.md`](https://github.com/pleme-io/theory/blob/main/MAGMA-AS-PLATFORM.md) §IV.M7.
 
-use crate::{lockfile::{Lockfile, ResolvedGem}, source::Source, Result};
+use crate::{
+    Result,
+    lockfile::{Lockfile, ResolvedGem},
+    source::Source,
+};
 
 /// Sentinel emitted for rubygems.org-sourced gems until M3
 /// fetcher lands. Operators that want a usable gemset.nix today
@@ -95,7 +99,10 @@ pub fn emit_gemset(lock: &Lockfile) -> Result<String> {
                 let remote = mirror_url
                     .clone()
                     .unwrap_or_else(|| "https://rubygems.org".into());
-                out.push_str(&format!("      remotes = [\"{}\"];\n", remote.trim_end_matches('/')));
+                out.push_str(&format!(
+                    "      remotes = [\"{}\"];\n",
+                    remote.trim_end_matches('/')
+                ));
                 out.push_str(&format!("      sha256 = \"{PLACEHOLDER_SHA256}\";\n"));
                 out.push_str("      type = \"gem\";\n");
             }
@@ -119,10 +126,7 @@ pub fn emit_gemset(lock: &Lockfile) -> Result<String> {
 fn emit_path_expr(dir: &str) -> String {
     if dir.is_empty() || dir == "." {
         "./.".into()
-    } else if dir.starts_with('/')
-        || dir.starts_with("./")
-        || dir.starts_with("../")
-    {
+    } else if dir.starts_with('/') || dir.starts_with("./") || dir.starts_with("../") {
         dir.into()
     } else {
         format!("./{dir}")
@@ -137,27 +141,23 @@ mod tests {
     fn sample_lock() -> Lockfile {
         Lockfile {
             bundler_version: Some("2.5.22".into()),
-            ruby:            None,
-            platforms:       vec!["ruby".into()],
-            dependencies:    vec!["rspec".into()],
-            specs:           vec![],
+            ruby: None,
+            platforms: vec!["ruby".into()],
+            dependencies: vec!["rspec".into()],
+            specs: vec![],
             gems: vec![
                 ResolvedGem {
-                    name:       "pangea-core".into(),
-                    version:    "0.3.0".into(),
-                    source:     Source::Path {
+                    name: "pangea-core".into(),
+                    version: "0.3.0".into(),
+                    source: Source::Path {
                         dir: std::path::PathBuf::from("../pangea-core"),
                     },
-                    depends_on: vec![
-                        "dry-struct".into(),
-                        "dry-types".into(),
-                        "base64".into(),
-                    ],
+                    depends_on: vec!["dry-struct".into(), "dry-types".into(), "base64".into()],
                 },
                 ResolvedGem {
-                    name:       "rspec".into(),
-                    version:    "3.12.0".into(),
-                    source:     Source::default_rubygems(),
+                    name: "rspec".into(),
+                    version: "3.12.0".into(),
+                    source: Source::default_rubygems(),
                     depends_on: vec!["rspec-core".into()],
                 },
             ],
@@ -218,10 +218,10 @@ mod tests {
 
     #[test]
     fn path_expr_handles_various_shapes() {
-        assert_eq!(emit_path_expr("."),              "./.");
-        assert_eq!(emit_path_expr("./foo"),          "./foo");
-        assert_eq!(emit_path_expr("../foo"),         "../foo");
-        assert_eq!(emit_path_expr("/abs"),           "/abs");
-        assert_eq!(emit_path_expr("relative/path"),  "./relative/path");
+        assert_eq!(emit_path_expr("."), "./.");
+        assert_eq!(emit_path_expr("./foo"), "./foo");
+        assert_eq!(emit_path_expr("../foo"), "../foo");
+        assert_eq!(emit_path_expr("/abs"), "/abs");
+        assert_eq!(emit_path_expr("relative/path"), "./relative/path");
     }
 }

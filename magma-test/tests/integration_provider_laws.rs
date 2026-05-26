@@ -10,16 +10,16 @@ use magma_test_laws::provider::{
 };
 
 fn fixtures_root() -> PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR available in cargo test");
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR available in cargo test");
     PathBuf::from(manifest_dir).join("fixtures/pangea-architectures")
 }
 
 fn load_fixture(name: &str) -> Config {
     let path = fixtures_root().join(name);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
-    let v: serde_json::Value = serde_json::from_slice(&bytes)
-        .unwrap_or_else(|e| panic!("parse {path:?}: {e}"));
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("parse {path:?}: {e}"));
     Config::from_json(v).unwrap_or_else(|e| panic!("Config::from_json {path:?}: {e}"))
 }
 
@@ -45,7 +45,8 @@ fn fixtures_iam_wildcard_audit_reports_findings() {
             if let Err(violations) = assert_no_iam_wildcards(&cfg) {
                 eprintln!(
                     "fixture {} has {} IAM wildcard finding(s):",
-                    name, violations.len(),
+                    name,
+                    violations.len(),
                 );
                 for v in &violations {
                     eprintln!("  - {} {} ({}): {}", v.resource, v.field, v.rule, v.message);
@@ -57,7 +58,8 @@ fn fixtures_iam_wildcard_audit_reports_findings() {
     }
     eprintln!(
         "\nIAM-wildcard audit summary: {} finding(s) across {} fixture(s)",
-        total_findings, fixtures_with_findings.len(),
+        total_findings,
+        fixtures_with_findings.len(),
     );
     // Sanity: the check itself works — total findings is computable.
     let _ = total_findings;
@@ -100,9 +102,13 @@ fn every_aws_subnet_has_valid_cidr_block() {
             if let Some(by_name) = cfg.resources.get("aws_subnet") {
                 for subnet_name in by_name.keys() {
                     assert_resource_has_field(&cfg, "aws_subnet", subnet_name, "cidr_block")
-                        .unwrap_or_else(|v| panic!("fixture {name} aws_subnet.{subnet_name}: {v:?}"));
+                        .unwrap_or_else(|v| {
+                            panic!("fixture {name} aws_subnet.{subnet_name}: {v:?}")
+                        });
                     assert_field_is_cidr(&cfg, "aws_subnet", subnet_name, "cidr_block")
-                        .unwrap_or_else(|v| panic!("fixture {name} aws_subnet.{subnet_name}: {v:?}"));
+                        .unwrap_or_else(|v| {
+                            panic!("fixture {name} aws_subnet.{subnet_name}: {v:?}")
+                        });
                 }
             }
         }
@@ -122,10 +128,14 @@ fn fixtures_cover_aws_vpc_and_aws_subnet() {
         if path.extension().is_some_and(|e| e == "json") {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
             let cfg = load_fixture(&name);
-            if cfg.resources.contains_key("aws_vpc")    { has_vpc    = true; }
-            if cfg.resources.contains_key("aws_subnet") { has_subnet = true; }
+            if cfg.resources.contains_key("aws_vpc") {
+                has_vpc = true;
+            }
+            if cfg.resources.contains_key("aws_subnet") {
+                has_subnet = true;
+            }
         }
     }
-    assert!(has_vpc,    "no fixture exercises aws_vpc");
+    assert!(has_vpc, "no fixture exercises aws_vpc");
     assert!(has_subnet, "no fixture exercises aws_subnet");
 }

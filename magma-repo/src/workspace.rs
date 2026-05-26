@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::{
-    config::{NamespaceConfig, StateBackend},
     RepoError, Result,
+    config::{NamespaceConfig, StateBackend},
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

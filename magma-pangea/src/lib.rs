@@ -44,7 +44,9 @@ pub enum PangeaError {
     JsonParse(#[from] serde_json::Error),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    #[error("magnus feature is required for in-process Pangea Ruby evaluation; build with --features magnus")]
+    #[error(
+        "magnus feature is required for in-process Pangea Ruby evaluation; build with --features magnus"
+    )]
     MagnusDisabled,
 }
 
@@ -119,12 +121,12 @@ impl WorkspaceShape {
 /// `magma_types::Config` values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoadedWorkspace {
-    pub shape:     ShapeKind,
-    pub root:      PathBuf,
+    pub shape: ShapeKind,
+    pub root: PathBuf,
     /// Rendered Terraform JSON — the lingua franca regardless of input
     /// path. For PangeaRuby, this is the synthesizer's output. For
     /// TerraformJson, this is the concatenated input JSON.
-    pub rendered:  serde_json::Value,
+    pub rendered: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,7 +169,7 @@ impl WorkspaceLoader for TerraformJsonLoader {
         }
 
         Ok(LoadedWorkspace {
-            shape:    ShapeKind::TerraformJson,
+            shape: ShapeKind::TerraformJson,
             root,
             rendered: serde_json::Value::Object(merged),
         })
@@ -196,14 +198,19 @@ pub mod ruby {
 
     impl PangeaRubyLoader {
         pub fn new() -> Result<Self, PangeaError> {
-            Ok(Self { _phantom: std::marker::PhantomData })
+            Ok(Self {
+                _phantom: std::marker::PhantomData,
+            })
         }
     }
 
     #[async_trait]
     impl WorkspaceLoader for PangeaRubyLoader {
         async fn load(&self, shape: WorkspaceShape) -> Result<LoadedWorkspace, PangeaError> {
-            let WorkspaceShape::PangeaRuby { root, ruby_files, .. } = shape else {
+            let WorkspaceShape::PangeaRuby {
+                root, ruby_files, ..
+            } = shape
+            else {
                 return Err(PangeaError::RubyEval(
                     "PangeaRubyLoader requires a PangeaRuby workspace shape".into(),
                 ));
@@ -220,7 +227,7 @@ pub mod ruby {
             // file list as metadata so dependent crates can compile.
             let _ = ruby_files;
             Ok(LoadedWorkspace {
-                shape:    ShapeKind::PangeaRuby,
+                shape: ShapeKind::PangeaRuby,
                 root,
                 rendered: serde_json::json!({}),
             })

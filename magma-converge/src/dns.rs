@@ -16,16 +16,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    build_outcome, change_with_severity, AppliedChange, Action, ChangeSeverity, Outcome, Plan,
-    Reconciler, ReconcilerError,
+    Action, AppliedChange, ChangeSeverity, Outcome, Plan, Reconciler, ReconcilerError,
+    build_outcome, change_with_severity,
 };
 
 // ── Typed record shape ────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RecordKey {
-    pub zone:   String,
-    pub name:   String,
+    pub zone: String,
+    pub name: String,
     /// "A", "CNAME", "MX", "TXT", …
     pub r#type: String,
 }
@@ -34,14 +34,19 @@ impl RecordKey {
     /// Address encoding uses `:` as separator since DNS zones and
     /// names commonly contain `.` characters. `dns_record:<zone>:<name>:<type>`.
     pub fn address(&self) -> String {
-        format!("dns_record:{}:{}:{}", self.zone, self.name, self.r#type.to_lowercase())
+        format!(
+            "dns_record:{}:{}:{}",
+            self.zone,
+            self.name,
+            self.r#type.to_lowercase()
+        )
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordValue {
     pub value: String,
-    pub ttl:   u32,
+    pub ttl: u32,
     /// Whether the record routes through the provider's proxy
     /// (Cloudflare orange-cloud, Route53 alias targets, etc.).
     #[serde(default)]
@@ -50,7 +55,7 @@ pub struct RecordValue {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
-    pub key:   RecordKey,
+    pub key: RecordKey,
     pub value: RecordValue,
 }
 
@@ -70,11 +75,15 @@ pub struct MockDnsClient {
 }
 
 impl MockDnsClient {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn with_records(records: Vec<Record>) -> Self {
         let map: HashMap<_, _> = records.into_iter().map(|r| (r.key, r.value)).collect();
-        Self { state: Mutex::new(map) }
+        Self {
+            state: Mutex::new(map),
+        }
     }
 
     pub fn snapshot(&self) -> HashMap<RecordKey, RecordValue> {
@@ -90,15 +99,24 @@ impl DnsClient for MockDnsClient {
             .lock()
             .unwrap()
             .iter()
-            .map(|(k, v)| Record { key: k.clone(), value: v.clone() })
+            .map(|(k, v)| Record {
+                key: k.clone(),
+                value: v.clone(),
+            })
             .collect())
     }
     async fn create_record(&self, r: &Record) -> Result<(), String> {
-        self.state.lock().unwrap().insert(r.key.clone(), r.value.clone());
+        self.state
+            .lock()
+            .unwrap()
+            .insert(r.key.clone(), r.value.clone());
         Ok(())
     }
     async fn update_record(&self, r: &Record) -> Result<(), String> {
-        self.state.lock().unwrap().insert(r.key.clone(), r.value.clone());
+        self.state
+            .lock()
+            .unwrap()
+            .insert(r.key.clone(), r.value.clone());
         Ok(())
     }
     async fn delete_record(&self, k: &RecordKey) -> Result<(), String> {
@@ -132,7 +150,7 @@ fn dns_severity(action: Action, k: &RecordKey) -> ChangeSeverity {
         Action::Create => ChangeSeverity::Functional,
         Action::Update if k.r#type.to_uppercase() == "CNAME" => ChangeSeverity::Critical,
         Action::Update => ChangeSeverity::Functional,
-        Action::NoOp   => ChangeSeverity::Cosmetic,
+        Action::NoOp => ChangeSeverity::Cosmetic,
     }
 }
 
@@ -163,8 +181,7 @@ impl<C: DnsClient> Reconciler for DnsRecordReconciler<C> {
         let current: HashMap<RecordKey, RecordValue> =
             current_vec.into_iter().map(|r| (r.key, r.value)).collect();
 
-        let mut all_keys: Vec<RecordKey> =
-            desired.keys().chain(current.keys()).cloned().collect();
+        let mut all_keys: Vec<RecordKey> = desired.keys().chain(current.keys()).cloned().collect();
         all_keys.sort_by_key(|k| (k.zone.clone(), k.name.clone(), k.r#type.clone()));
         all_keys.dedup();
 
@@ -173,17 +190,22 @@ impl<C: DnsClient> Reconciler for DnsRecordReconciler<C> {
             let address = key.address();
             match (current.get(&key), desired.get(&key)) {
                 (None, Some(v)) => changes.push(change_with_severity(
-                    address, Action::Create,
+                    address,
+                    Action::Create,
                     dns_severity(Action::Create, &key),
-                    None, Some(serde_json::to_value(v).unwrap()),
+                    None,
+                    Some(serde_json::to_value(v).unwrap()),
                 )),
                 (Some(v), None) => changes.push(change_with_severity(
-                    address, Action::Delete,
+                    address,
+                    Action::Delete,
                     dns_severity(Action::Delete, &key),
-                    Some(serde_json::to_value(v).unwrap()), None,
+                    Some(serde_json::to_value(v).unwrap()),
+                    None,
                 )),
                 (Some(a), Some(b)) if a != b => changes.push(change_with_severity(
-                    address, Action::Update,
+                    address,
+                    Action::Update,
                     dns_severity(Action::Update, &key),
                     Some(serde_json::to_value(a).unwrap()),
                     Some(serde_json::to_value(b).unwrap()),
@@ -198,7 +220,7 @@ impl<C: DnsClient> Reconciler for DnsRecordReconciler<C> {
     async fn apply(&self, plan: &Plan) -> Result<Outcome, ReconcilerError> {
         let started_at = Utc::now();
         let mut applied = vec![];
-        let mut failed  = vec![];
+        let mut failed = vec![];
 
         for c in &plan.changes {
             let res: Result<(), String> = match c.action {
@@ -235,7 +257,10 @@ impl<C: DnsClient> Reconciler for DnsRecordReconciler<C> {
                 Action::NoOp => continue,
             };
             match res {
-                Ok(()) => applied.push(AppliedChange { address: c.address.clone(), action: c.action }),
+                Ok(()) => applied.push(AppliedChange {
+                    address: c.address.clone(),
+                    action: c.action,
+                }),
                 Err(e) => failed.push(crate::FailedChange {
                     address: c.address.clone(),
                     action: c.action,
@@ -257,8 +282,8 @@ fn parse_address(addr: &str) -> Option<RecordKey> {
         return None;
     }
     Some(RecordKey {
-        zone:   parts[0].to_string(),
-        name:   parts[1].to_string(),
+        zone: parts[0].to_string(),
+        name: parts[1].to_string(),
         r#type: parts[2].to_uppercase(),
     })
 }
@@ -269,8 +294,16 @@ mod tests {
 
     fn rec(zone: &str, name: &str, ty: &str, value: &str) -> Record {
         Record {
-            key: RecordKey { zone: zone.into(), name: name.into(), r#type: ty.into() },
-            value: RecordValue { value: value.into(), ttl: 300, proxied: false },
+            key: RecordKey {
+                zone: zone.into(),
+                name: name.into(),
+                r#type: ty.into(),
+            },
+            value: RecordValue {
+                value: value.into(),
+                ttl: 300,
+                proxied: false,
+            },
         }
     }
 
@@ -301,7 +334,8 @@ mod tests {
     async fn cname_update_is_critical_severity() {
         let initial = vec![rec("ex.com", "www", "CNAME", "old.target.")];
         let r = DnsRecordReconciler::new(MockDnsClient::with_records(initial));
-        let config = serde_json::to_value(vec![rec("ex.com", "www", "CNAME", "new.target.")]).unwrap();
+        let config =
+            serde_json::to_value(vec![rec("ex.com", "www", "CNAME", "new.target.")]).unwrap();
         let state = r.read_state().await.unwrap();
         let plan = r.compute_plan(&config, &state).unwrap();
         assert_eq!(plan.change_count(), 1);
@@ -333,9 +367,9 @@ mod tests {
     #[test]
     fn parse_address_round_trips() {
         let key = RecordKey {
-            zone:  "ex.com".into(),
-            name:  "api".into(),
-            r#type:"A".into(),
+            zone: "ex.com".into(),
+            name: "api".into(),
+            r#type: "A".into(),
         };
         let addr = key.address();
         let parsed = parse_address(&addr).unwrap();

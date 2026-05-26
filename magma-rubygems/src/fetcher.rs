@@ -4,7 +4,7 @@
 //! aware via samba (per theory/RATE-LIMITED-CONSUMERS.md). Stores
 //! fetched bytes in `cache` for the materialize stage.
 
-use crate::{source::Source, Result, RubygemsError};
+use crate::{Result, RubygemsError, source::Source};
 
 /// Fetch the tarball bytes for one (name, version) pair from a
 /// typed Source. Returns the raw `.gem` bytes.

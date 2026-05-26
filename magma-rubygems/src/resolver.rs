@@ -9,7 +9,7 @@
 //! bundler-produced lockfile byte-for-byte across all Pangea
 //! workspaces.
 
-use crate::{lockfile::Lockfile, manifest::Manifest, Result, RubygemsError};
+use crate::{Result, RubygemsError, lockfile::Lockfile, manifest::Manifest};
 
 /// Resolve a Manifest into a Lockfile.
 ///

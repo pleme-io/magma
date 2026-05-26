@@ -79,8 +79,8 @@ pub type Result<T> = std::result::Result<T, RubygemsError>;
 
 // ── Re-exports for the canonical API surface ──────────────────────
 
-pub use manifest::{Dependency, Manifest, RubyVersion};
 pub use lockfile::{Lockfile, ResolvedGem};
+pub use manifest::{Dependency, Manifest, RubyVersion};
 pub use source::Source;
 pub use tree::VirtualGemTree;
 
@@ -115,9 +115,9 @@ pub async fn realize(gemfile_source: &str) -> Result<VirtualGemTree> {
 /// fields as they land.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Spec {
-    pub name:    String,
+    pub name: String,
     pub version: String,
-    pub source:  Source,
+    pub source: Source,
     /// BLAKE3 over the canonical `gemspec` text. Identity for the
     /// resolved gem; two specs with the same hash are bit-identical.
     pub gemspec_hash: String,
@@ -128,7 +128,7 @@ pub struct Spec {
 /// module lands; for now just a typed placeholder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Status {
-    pub resolved_gems:   usize,
-    pub materialized:    bool,
-    pub attestation:     Option<String>,
+    pub resolved_gems: usize,
+    pub materialized: bool,
+    pub attestation: Option<String>,
 }

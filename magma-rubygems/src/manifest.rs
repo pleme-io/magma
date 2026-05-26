@@ -12,27 +12,29 @@ pub struct RubyVersion {
     pub interpreter: String,
 }
 
-fn default_interpreter() -> String { "mri".into() }
+fn default_interpreter() -> String {
+    "mri".into()
+}
 
 /// One dependency entry from the Gemfile DSL.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dependency {
-    pub name:        String,
+    pub name: String,
     /// Version constraint expression: `~> 1.2`, `>= 2.0, < 3`, etc.
     pub requirement: Option<String>,
     /// Source override for this gem. None = inherit `Manifest::sources`.
-    pub source:      Option<crate::source::Source>,
+    pub source: Option<crate::source::Source>,
     /// Dependency groups (`:development`, `:test`, `:default`).
     #[serde(default)]
-    pub groups:      Vec<String>,
+    pub groups: Vec<String>,
 }
 
 /// Typed image of a parsed Gemfile. M1 populates fields from
 /// `gemfile_parser::parse`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
-    pub ruby:    RubyVersion,
-    pub deps:    Vec<Dependency>,
+    pub ruby: RubyVersion,
+    pub deps: Vec<Dependency>,
     pub sources: Vec<crate::source::Source>,
     /// Path-style "gemspec" directives that import a sibling gem's spec.
     #[serde(default)]

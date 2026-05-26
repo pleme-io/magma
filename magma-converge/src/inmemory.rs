@@ -14,7 +14,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::{
-    build_outcome, change, AppliedChange, Outcome, Plan, Reconciler, ReconcilerError, Action,
+    Action, AppliedChange, Outcome, Plan, Reconciler, ReconcilerError, build_outcome, change,
 };
 
 /// In-memory KV reconciler. State is a HashMap. Thread-safe via Mutex.
@@ -30,12 +30,16 @@ impl Default for InMemoryKvReconciler {
 
 impl InMemoryKvReconciler {
     pub fn new() -> Self {
-        Self { state: Mutex::new(HashMap::new()) }
+        Self {
+            state: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Seed with an initial state (for tests).
     pub fn with_state(state: HashMap<String, Value>) -> Self {
-        Self { state: Mutex::new(state) }
+        Self {
+            state: Mutex::new(state),
+        }
     }
 
     /// Direct (non-trait) state inspection — useful for test asserts.
@@ -73,13 +77,22 @@ impl Reconciler for InMemoryKvReconciler {
             let have = current.get(key);
             let address = format!("kv.{key}");
             match (have, want) {
-                (None, Some(v))      => changes.push(change(address, Action::Create, None, Some(v.clone()))),
-                (Some(h), None)      => changes.push(change(address, Action::Delete, Some(h.clone()), None)),
-                (Some(h), Some(w)) if h != w => {
-                    changes.push(change(address, Action::Update, Some(h.clone()), Some(w.clone())));
+                (None, Some(v)) => {
+                    changes.push(change(address, Action::Create, None, Some(v.clone())))
                 }
-                (Some(_), Some(_))   => { /* equal — no-op, omit */ }
-                (None, None)         => unreachable!(),
+                (Some(h), None) => {
+                    changes.push(change(address, Action::Delete, Some(h.clone()), None))
+                }
+                (Some(h), Some(w)) if h != w => {
+                    changes.push(change(
+                        address,
+                        Action::Update,
+                        Some(h.clone()),
+                        Some(w.clone()),
+                    ));
+                }
+                (Some(_), Some(_)) => { /* equal — no-op, omit */ }
+                (None, None) => unreachable!(),
             }
         }
 
@@ -98,17 +111,26 @@ impl Reconciler for InMemoryKvReconciler {
                 Action::Create | Action::Update => {
                     if let Some(after) = &c.after {
                         state.insert(key.to_string(), after.clone());
-                        applied.push(AppliedChange { address: c.address.clone(), action: c.action });
+                        applied.push(AppliedChange {
+                            address: c.address.clone(),
+                            action: c.action,
+                        });
                     }
                 }
                 Action::Delete => {
                     state.remove(key);
-                    applied.push(AppliedChange { address: c.address.clone(), action: c.action });
+                    applied.push(AppliedChange {
+                        address: c.address.clone(),
+                        action: c.action,
+                    });
                 }
                 Action::Replace => {
                     if let Some(after) = &c.after {
                         state.insert(key.to_string(), after.clone());
-                        applied.push(AppliedChange { address: c.address.clone(), action: c.action });
+                        applied.push(AppliedChange {
+                            address: c.address.clone(),
+                            action: c.action,
+                        });
                     }
                 }
                 Action::NoOp => {}
@@ -147,8 +169,8 @@ mod tests {
     async fn apply_creates_resources_in_state() {
         let r = InMemoryKvReconciler::new();
         let config = json!({ "a": 1 });
-        let state  = r.read_state().await.unwrap();
-        let plan   = r.compute_plan(&config, &state).unwrap();
+        let state = r.read_state().await.unwrap();
+        let plan = r.compute_plan(&config, &state).unwrap();
         let outcome = r.apply(&plan).await.unwrap();
         assert!(outcome.fully_succeeded());
         assert_eq!(outcome.applied.len(), 1);
@@ -157,9 +179,8 @@ mod tests {
 
     #[tokio::test]
     async fn update_plan_emits_typed_diff() {
-        let r = InMemoryKvReconciler::with_state(
-            [("k".to_string(), json!(1))].into_iter().collect(),
-        );
+        let r =
+            InMemoryKvReconciler::with_state([("k".to_string(), json!(1))].into_iter().collect());
         let config = json!({ "k": 2 });
         let state = r.read_state().await.unwrap();
         let plan = r.compute_plan(&config, &state).unwrap();
@@ -167,7 +188,7 @@ mod tests {
         let c = &plan.changes[0];
         assert_eq!(c.action, Action::Update);
         assert_eq!(c.before, Some(json!(1)));
-        assert_eq!(c.after,  Some(json!(2)));
+        assert_eq!(c.after, Some(json!(2)));
     }
 
     #[tokio::test]
@@ -175,7 +196,7 @@ mod tests {
         let r = InMemoryKvReconciler::with_state(
             [("doomed".to_string(), json!("bye"))].into_iter().collect(),
         );
-        let config = json!({});  // empty desired = remove everything
+        let config = json!({}); // empty desired = remove everything
         let state = r.read_state().await.unwrap();
         let plan = r.compute_plan(&config, &state).unwrap();
         assert_eq!(plan.change_count(), 1);

@@ -46,27 +46,27 @@ pub enum BundleError {
 pub struct Bundle {
     /// BLAKE3 hash over the canonical projection (every field
     /// except `bundle_id` itself + `built_at`).
-    pub bundle_id:   String,
+    pub bundle_id: String,
     /// When the bundle was built (NOT in the hash so two bundles
     /// over the same reconcile data hash equally).
-    pub built_at:    DateTime<Utc>,
+    pub built_at: DateTime<Utc>,
     /// Reconciler kind that produced this reconcile.
-    pub kind:        String,
+    pub kind: String,
     /// Workspace identifier (CR name + namespace, or operator-side
     /// state-name triple).
-    pub workspace:   String,
+    pub workspace: String,
     /// The typed Plan.
-    pub plan:        Plan,
+    pub plan: Plan,
     /// The Outcome of applying the Plan (may be a no-op outcome
     /// if the plan never applied — e.g. HeldForApproval).
-    pub outcome:     Option<Outcome>,
+    pub outcome: Option<Outcome>,
     /// Drift classification report.
-    pub drift:       DriftReport,
+    pub drift: DriftReport,
     /// FSM lifecycle snapshot at bundle-build time.
-    pub lifecycle:   LifecycleState,
+    pub lifecycle: LifecycleState,
     /// Audit events (typically the magma-stream chain for this
     /// reconcile). May be empty if no stream was wired.
-    pub audit:       Vec<Event>,
+    pub audit: Vec<Event>,
     /// BLAKE3 attestation of the materialized `magma-rubygems`
     /// gem tree this reconcile ran against. `None` means the
     /// reconcile ran outside a magma-rubygems-materialized
@@ -82,15 +82,17 @@ impl Bundle {
     /// Construct a Bundle. Computes `bundle_id` from the canonical
     /// projection of every field except `bundle_id` + `built_at`.
     pub fn new(
-        kind:      impl Into<String>,
+        kind: impl Into<String>,
         workspace: impl Into<String>,
-        plan:      Plan,
-        outcome:   Option<Outcome>,
-        drift:     DriftReport,
+        plan: Plan,
+        outcome: Option<Outcome>,
+        drift: DriftReport,
         lifecycle: LifecycleState,
-        audit:     Vec<Event>,
+        audit: Vec<Event>,
     ) -> Result<Self, BundleError> {
-        Self::new_with_gem_tree(kind, workspace, plan, outcome, drift, lifecycle, audit, None)
+        Self::new_with_gem_tree(
+            kind, workspace, plan, outcome, drift, lifecycle, audit, None,
+        )
     }
 
     /// Like `new`, but also records a `magma-rubygems` gem tree
@@ -100,19 +102,25 @@ impl Bundle {
     /// bundle-install workspaces still go through `new` and set
     /// the field to `None`.
     pub fn new_with_gem_tree(
-        kind:                 impl Into<String>,
-        workspace:            impl Into<String>,
-        plan:                 Plan,
-        outcome:              Option<Outcome>,
-        drift:                DriftReport,
-        lifecycle:            LifecycleState,
-        audit:                Vec<Event>,
+        kind: impl Into<String>,
+        workspace: impl Into<String>,
+        plan: Plan,
+        outcome: Option<Outcome>,
+        drift: DriftReport,
+        lifecycle: LifecycleState,
+        audit: Vec<Event>,
         gem_tree_attestation: Option<String>,
     ) -> Result<Self, BundleError> {
         let kind = kind.into();
         let workspace = workspace.into();
         let bundle_id = Self::derive_id(
-            &kind, &workspace, &plan, &outcome, &drift, &lifecycle, &audit,
+            &kind,
+            &workspace,
+            &plan,
+            &outcome,
+            &drift,
+            &lifecycle,
+            &audit,
             gem_tree_attestation.as_deref(),
         )?;
         Ok(Self {
@@ -134,13 +142,13 @@ impl Bundle {
     /// so identical reconciles against different gem closures hash
     /// to different bundle_ids (catches gem-closure drift).
     pub fn derive_id(
-        kind:                 &str,
-        workspace:            &str,
-        plan:                 &Plan,
-        outcome:              &Option<Outcome>,
-        drift:                &DriftReport,
-        lifecycle:            &LifecycleState,
-        audit:                &[Event],
+        kind: &str,
+        workspace: &str,
+        plan: &Plan,
+        outcome: &Option<Outcome>,
+        drift: &DriftReport,
+        lifecycle: &LifecycleState,
+        audit: &[Event],
         gem_tree_attestation: Option<&str>,
     ) -> Result<String, BundleError> {
         // Plan and Outcome carry timestamps that vary across runs.
@@ -205,7 +213,7 @@ impl Bundle {
         )?;
         if recomputed != self.bundle_id {
             return Err(BundleError::IdMismatch {
-                have:       self.bundle_id.clone(),
+                have: self.bundle_id.clone(),
                 recomputed,
             });
         }
@@ -226,7 +234,7 @@ impl Bundle {
     pub fn fully_succeeded(&self) -> bool {
         match &self.outcome {
             Some(o) => o.fully_succeeded() && self.lifecycle.current == magma_fsm::Phase::Stable,
-            None    => false,
+            None => false,
         }
     }
 
@@ -249,38 +257,48 @@ impl Bundle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magma_converge::{change, Action, ChangeSeverity, Outcome};
-    use magma_drift::{classify, DriftPolicy};
+    use magma_converge::{Action, ChangeSeverity, Outcome, change};
+    use magma_drift::{DriftPolicy, classify};
     use magma_fsm::{LifecycleState, Phase};
     use magma_stream::{Event, EventPayload};
     use serde_json::json;
 
     fn sample_plan() -> Plan {
-        Plan::new("terraform", vec![
-            change("aws_vpc.net", Action::Create, None, Some(json!({"cidr": "10.0.0.0/16"}))),
-        ])
+        Plan::new(
+            "terraform",
+            vec![change(
+                "aws_vpc.net",
+                Action::Create,
+                None,
+                Some(json!({"cidr": "10.0.0.0/16"})),
+            )],
+        )
     }
 
     fn sample_outcome(plan: &Plan) -> Outcome {
         Outcome {
-            plan_id:     plan.id.clone(),
-            kind:        plan.kind.clone(),
-            applied:     vec![magma_converge::AppliedChange {
+            plan_id: plan.id.clone(),
+            kind: plan.kind.clone(),
+            applied: vec![magma_converge::AppliedChange {
                 address: "aws_vpc.net".into(),
-                action:  Action::Create,
+                action: Action::Create,
             }],
-            failed:      vec![],
-            started_at:  Utc::now(),
+            failed: vec![],
+            started_at: Utc::now(),
             finished_at: Utc::now(),
         }
     }
 
     fn sample_lifecycle(plan_id: &PlanId) -> LifecycleState {
         let mut l = LifecycleState::new();
-        l.transition(Phase::Planning, Some(plan_id.clone()), "trigger").unwrap();
-        l.transition(Phase::Applying, Some(plan_id.clone()), "auto").unwrap();
-        l.transition(Phase::Verifying, Some(plan_id.clone()), "applied").unwrap();
-        l.transition(Phase::Stable, Some(plan_id.clone()), "verified").unwrap();
+        l.transition(Phase::Planning, Some(plan_id.clone()), "trigger")
+            .unwrap();
+        l.transition(Phase::Applying, Some(plan_id.clone()), "auto")
+            .unwrap();
+        l.transition(Phase::Verifying, Some(plan_id.clone()), "applied")
+            .unwrap();
+        l.transition(Phase::Stable, Some(plan_id.clone()), "verified")
+            .unwrap();
         l
     }
 
@@ -288,12 +306,18 @@ mod tests {
         // Two events with a valid hash chain (built directly).
         let e0 = Event::new(
             0,
-            EventPayload::Custom { category: "test".into(), message: "a".into() },
+            EventPayload::Custom {
+                category: "test".into(),
+                message: "a".into(),
+            },
             "0".repeat(64),
         );
         let e1 = Event::new(
             1,
-            EventPayload::Custom { category: "test".into(), message: "b".into() },
+            EventPayload::Custom {
+                category: "test".into(),
+                message: "b".into(),
+            },
             e0.hash.clone(),
         );
         vec![e0, e1]
@@ -308,9 +332,15 @@ mod tests {
         let audit = sample_audit();
 
         let bundle = Bundle::new(
-            "terraform", "ws-1",
-            plan, Some(outcome), drift, lifecycle, audit,
-        ).unwrap();
+            "terraform",
+            "ws-1",
+            plan,
+            Some(outcome),
+            drift,
+            lifecycle,
+            audit,
+        )
+        .unwrap();
         // bundle_id is 64-char hex.
         assert_eq!(bundle.bundle_id.len(), 64);
         // Verify passes immediately.
@@ -328,15 +358,27 @@ mod tests {
         let audit = sample_audit();
 
         let id1 = Bundle::derive_id(
-            "terraform", "ws-1",
-            &plan, &Some(outcome.clone()), &drift, &lifecycle, &audit,
+            "terraform",
+            "ws-1",
+            &plan,
+            &Some(outcome.clone()),
+            &drift,
+            &lifecycle,
+            &audit,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         let id2 = Bundle::derive_id(
-            "terraform", "ws-1",
-            &plan, &Some(outcome), &drift, &lifecycle, &audit,
+            "terraform",
+            "ws-1",
+            &plan,
+            &Some(outcome),
+            &drift,
+            &lifecycle,
+            &audit,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(id1, id2);
     }
 
@@ -351,15 +393,27 @@ mod tests {
         let lifecycle = sample_lifecycle(&plan.id);
         let audit = sample_audit();
         let id_a = Bundle::derive_id(
-            "terraform", "ws-1",
-            &plan, &Some(outcome.clone()), &drift, &lifecycle, &audit,
+            "terraform",
+            "ws-1",
+            &plan,
+            &Some(outcome.clone()),
+            &drift,
+            &lifecycle,
+            &audit,
             Some("a".repeat(64).as_str()),
-        ).unwrap();
+        )
+        .unwrap();
         let id_b = Bundle::derive_id(
-            "terraform", "ws-1",
-            &plan, &Some(outcome), &drift, &lifecycle, &audit,
+            "terraform",
+            "ws-1",
+            &plan,
+            &Some(outcome),
+            &drift,
+            &lifecycle,
+            &audit,
             Some("b".repeat(64).as_str()),
-        ).unwrap();
+        )
+        .unwrap();
         assert_ne!(id_a, id_b);
     }
 
@@ -373,13 +427,22 @@ mod tests {
         let lifecycle = sample_lifecycle(&plan.id);
         let audit = sample_audit();
         let bundle = Bundle::new_with_gem_tree(
-            "terraform", "ws-1",
-            plan, Some(outcome), drift, lifecycle, audit,
+            "terraform",
+            "ws-1",
+            plan,
+            Some(outcome),
+            drift,
+            lifecycle,
+            audit,
             Some("c".repeat(64)),
-        ).unwrap();
+        )
+        .unwrap();
         let v = bundle.to_json().unwrap();
         let back = Bundle::from_json_verified(v).unwrap();
-        assert_eq!(back.gem_tree_attestation.as_deref(), Some("c".repeat(64).as_str()));
+        assert_eq!(
+            back.gem_tree_attestation.as_deref(),
+            Some("c".repeat(64).as_str())
+        );
         assert_eq!(back.bundle_id, bundle.bundle_id);
     }
 
@@ -391,9 +454,15 @@ mod tests {
         let audit = sample_audit();
         let outcome = sample_outcome(&plan);
         let bundle = Bundle::new(
-            "terraform", "ws-1",
-            plan, Some(outcome), drift, lifecycle, audit,
-        ).unwrap();
+            "terraform",
+            "ws-1",
+            plan,
+            Some(outcome),
+            drift,
+            lifecycle,
+            audit,
+        )
+        .unwrap();
 
         let json_value = bundle.to_json().unwrap();
         let restored = Bundle::from_json_verified(json_value).unwrap();
@@ -409,9 +478,15 @@ mod tests {
         let audit = sample_audit();
         let outcome = sample_outcome(&plan);
         let mut bundle = Bundle::new(
-            "terraform", "ws-1",
-            plan, Some(outcome), drift, lifecycle, audit,
-        ).unwrap();
+            "terraform",
+            "ws-1",
+            plan,
+            Some(outcome),
+            drift,
+            lifecycle,
+            audit,
+        )
+        .unwrap();
         // Tamper with the workspace after build.
         bundle.workspace = "ws-evil".into();
         match bundle.verify() {
@@ -428,9 +503,15 @@ mod tests {
         let outcome = sample_outcome(&plan);
         let audit = sample_audit();
         let bundle = Bundle::new(
-            "terraform", "ws-1",
-            plan, Some(outcome), drift, lifecycle, audit,
-        ).unwrap();
+            "terraform",
+            "ws-1",
+            plan,
+            Some(outcome),
+            drift,
+            lifecycle,
+            audit,
+        )
+        .unwrap();
         assert!(bundle.fully_succeeded());
     }
 
@@ -439,14 +520,22 @@ mod tests {
         let plan = sample_plan();
         let drift = classify(&plan, &DriftPolicy::conservative_default());
         let mut lifecycle = LifecycleState::new();
-        lifecycle.transition(Phase::Planning, Some(plan.id.clone()), "x").unwrap();
+        lifecycle
+            .transition(Phase::Planning, Some(plan.id.clone()), "x")
+            .unwrap();
         // Stops at Planning — not Stable.
         let outcome = sample_outcome(&plan);
         let audit = sample_audit();
         let bundle = Bundle::new(
-            "terraform", "ws-1",
-            plan, Some(outcome), drift, lifecycle, audit,
-        ).unwrap();
+            "terraform",
+            "ws-1",
+            plan,
+            Some(outcome),
+            drift,
+            lifecycle,
+            audit,
+        )
+        .unwrap();
         assert!(!bundle.fully_succeeded());
     }
 
@@ -456,10 +545,7 @@ mod tests {
         let drift = classify(&plan, &DriftPolicy::conservative_default());
         let lifecycle = sample_lifecycle(&plan.id);
         let audit = sample_audit();
-        let bundle = Bundle::new(
-            "terraform", "ws-1",
-            plan, None, drift, lifecycle, audit,
-        ).unwrap();
+        let bundle = Bundle::new("terraform", "ws-1", plan, None, drift, lifecycle, audit).unwrap();
         assert!(!bundle.fully_succeeded());
     }
 
@@ -470,9 +556,15 @@ mod tests {
         let lifecycle = sample_lifecycle(&plan.id);
         let outcome = sample_outcome(&plan);
         let bundle = Bundle::new(
-            "terraform", "ws-1",
-            plan, Some(outcome), drift, lifecycle, vec![],
-        ).unwrap();
+            "terraform",
+            "ws-1",
+            plan,
+            Some(outcome),
+            drift,
+            lifecycle,
+            vec![],
+        )
+        .unwrap();
         bundle.verify().unwrap();
     }
 }

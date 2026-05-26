@@ -43,7 +43,7 @@ pub enum DiscoverError {
 pub struct DiscoveredResource {
     /// Reconciler kind that discovered this resource (matches
     /// `Reconciler::kind()`).
-    pub kind:    String,
+    pub kind: String,
     /// Stable resource address — same format the reconciler would
     /// use in `Plan` changes.
     pub address: String,
@@ -57,7 +57,7 @@ pub struct DiscoveredResource {
 pub struct DiscoveryClassification {
     /// Resources present in both the live system and the declared
     /// config — these are "known/managed".
-    pub managed:    Vec<DiscoveredResource>,
+    pub managed: Vec<DiscoveredResource>,
     /// Resources in the live system but NOT in the declared config.
     /// These are candidates for adoption or removal.
     pub undeclared: Vec<DiscoveredResource>,
@@ -92,9 +92,9 @@ pub trait Discoverable {
 /// config — extract addresses, pass them here.
 pub fn classify_discovered(
     discovered: Vec<DiscoveredResource>,
-    declared:   &HashSet<String>,
+    declared: &HashSet<String>,
 ) -> DiscoveryClassification {
-    let mut managed    = vec![];
+    let mut managed = vec![];
     let mut undeclared = vec![];
     for r in discovered {
         if declared.contains(&r.address) {
@@ -106,14 +106,17 @@ pub fn classify_discovered(
     // Stable order.
     managed.sort_by(|a, b| a.address.cmp(&b.address));
     undeclared.sort_by(|a, b| a.address.cmp(&b.address));
-    DiscoveryClassification { managed, undeclared }
+    DiscoveryClassification {
+        managed,
+        undeclared,
+    }
 }
 
 /// Find the addresses currently absent from a declared config.
 /// Used as a quick sanity-check before any adoption flow.
 pub fn find_undeclared(
     discovered: &[DiscoveredResource],
-    declared:   &HashSet<String>,
+    declared: &HashSet<String>,
 ) -> Vec<DiscoveredResource> {
     let mut out: Vec<_> = discovered
         .iter()
@@ -148,13 +151,16 @@ pub mod test_support {
 
     /// A static `Discoverable` impl with a fixed list of resources.
     pub struct StaticDiscoverable {
-        kind:      String,
+        kind: String,
         resources: Vec<DiscoveredResource>,
     }
 
     impl StaticDiscoverable {
         pub fn new(kind: impl Into<String>, resources: Vec<DiscoveredResource>) -> Self {
-            Self { kind: kind.into(), resources }
+            Self {
+                kind: kind.into(),
+                resources,
+            }
         }
 
         pub fn kind(&self) -> &str {
@@ -179,7 +185,11 @@ mod tests {
     use test_support::StaticDiscoverable;
 
     fn mk(kind: &str, addr: &str, current: Value) -> DiscoveredResource {
-        DiscoveredResource { kind: kind.into(), address: addr.into(), current }
+        DiscoveredResource {
+            kind: kind.into(),
+            address: addr.into(),
+            current,
+        }
     }
 
     #[tokio::test]
@@ -251,7 +261,7 @@ mod tests {
     fn emit_adoption_config_maps_address_to_attrs() {
         let resources = vec![
             mk("k", "alpha", json!({ "name": "alpha" })),
-            mk("k", "beta",  json!({ "name": "beta" })),
+            mk("k", "beta", json!({ "name": "beta" })),
         ];
         let cfg = emit_adoption_config(&resources);
         assert_eq!(cfg["alpha"]["name"], "alpha");

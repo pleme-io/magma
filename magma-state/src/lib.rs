@@ -32,12 +32,12 @@ pub enum StateError {
 #[must_use]
 pub fn empty_state() -> State {
     State {
-        version:           4,
+        version: 4,
         terraform_version: "1.7.0".into(),
-        serial:            0,
-        lineage:           Uuid::new_v4(),
-        outputs:           Default::default(),
-        resources:         Vec::new(),
+        serial: 0,
+        lineage: Uuid::new_v4(),
+        outputs: Default::default(),
+        resources: Vec::new(),
     }
 }
 

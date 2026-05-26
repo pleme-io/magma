@@ -23,28 +23,28 @@ use thiserror::Error;
 #[serde(rename_all = "camelCase")]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
-    pub id:      serde_json::Value,
-    pub method:  String,
+    pub id: serde_json::Value,
+    pub method: String,
     #[serde(default)]
-    pub params:  serde_json::Value,
+    pub params: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcResponse {
     pub jsonrpc: String,
-    pub id:      serde_json::Value,
+    pub id: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub result:  Option<serde_json::Value>,
+    pub result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error:   Option<JsonRpcError>,
+    pub error: Option<JsonRpcError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcError {
-    pub code:    i32,
+    pub code: i32,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data:    Option<serde_json::Value>,
+    pub data: Option<serde_json::Value>,
 }
 
 // ── MCP tool registry ─────────────────────────────────────────────
@@ -54,9 +54,9 @@ pub struct JsonRpcError {
 /// draft-7 object for the tool's parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
-    pub name:        String,
+    pub name: String,
     pub description: String,
-    pub schema:      serde_json::Value,
+    pub schema: serde_json::Value,
     pub destructive: bool,
 }
 
@@ -311,12 +311,9 @@ fn migration_plan_schema() -> serde_json::Value {
 
 fn minimal_schema(params: &[(&str, &str, bool)]) -> serde_json::Value {
     let mut properties = serde_json::Map::new();
-    let mut required   = Vec::new();
+    let mut required = Vec::new();
     for (name, ty, is_required) in params {
-        properties.insert(
-            (*name).to_string(),
-            serde_json::json!({ "type": *ty }),
-        );
+        properties.insert((*name).to_string(), serde_json::json!({ "type": *ty }));
         if *is_required {
             required.push((*name).to_string());
         }
@@ -351,17 +348,17 @@ pub async fn dispatch(req: JsonRpcRequest) -> JsonRpcResponse {
             Ok(v) => JsonRpcResponse {
                 jsonrpc: "2.0".into(),
                 id,
-                result:  Some(v),
-                error:   None,
+                result: Some(v),
+                error: None,
             },
             Err(e) => JsonRpcResponse {
                 jsonrpc: "2.0".into(),
-                id:      serde_json::Value::Null,
-                result:  None,
-                error:   Some(JsonRpcError {
-                    code:    -32000,
+                id: serde_json::Value::Null,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32000,
                     message: e.to_string(),
-                    data:    None,
+                    data: None,
                 }),
             },
         }
@@ -406,9 +403,8 @@ async fn handle_tool_call(
 
     match tool {
         "magma_state_list" => {
-            let dir = workspace_dir.ok_or_else(|| {
-                McpError::InvalidParams("workspace_dir required".into())
-            })?;
+            let dir = workspace_dir
+                .ok_or_else(|| McpError::InvalidParams("workspace_dir required".into()))?;
             let state = read_state_inline(&dir).await?;
             let addresses: Vec<String> = state
                 .resources
@@ -419,20 +415,22 @@ async fn handle_tool_call(
         }
 
         "magma_state_show" => {
-            let dir = workspace_dir.ok_or_else(|| {
-                McpError::InvalidParams("workspace_dir required".into())
-            })?;
+            let dir = workspace_dir
+                .ok_or_else(|| McpError::InvalidParams("workspace_dir required".into()))?;
             let address = params
                 .get("address")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| McpError::InvalidParams("address required".into()))?;
             let state = read_state_inline(&dir).await?;
-            let found = state.resources.iter().find(|r| {
-                format!("{}.{}", r.address.type_id.0, r.address.name) == address
-            });
+            let found = state
+                .resources
+                .iter()
+                .find(|r| format!("{}.{}", r.address.type_id.0, r.address.name) == address);
             match found {
                 Some(r) => Ok(serde_json::to_value(r)?),
-                None => Err(McpError::InvalidParams(format!("address {address} not in state"))),
+                None => Err(McpError::InvalidParams(format!(
+                    "address {address} not in state"
+                ))),
             }
         }
 
@@ -449,9 +447,8 @@ async fn handle_tool_call(
         }
 
         "magma_fixture_verify_dir" => {
-            let dir = workspace_dir.ok_or_else(|| {
-                McpError::InvalidParams("workspace_dir required".into())
-            })?;
+            let dir = workspace_dir
+                .ok_or_else(|| McpError::InvalidParams("workspace_dir required".into()))?;
             match magma_arch_test::verify_directory(&dir).await {
                 Ok(agg) => Ok(serde_json::to_value(agg)?),
                 Err(e) => Err(McpError::InvalidParams(e.to_string())),
@@ -466,9 +463,8 @@ async fn handle_tool_call(
             use magma_backend::Backend as _;
             use magma_pangea::WorkspaceLoader as _;
 
-            let dir = workspace_dir.ok_or_else(|| {
-                McpError::InvalidParams("workspace_dir required".into())
-            })?;
+            let dir = workspace_dir
+                .ok_or_else(|| McpError::InvalidParams("workspace_dir required".into()))?;
             let shape = magma_pangea::WorkspaceShape::discover(&dir)
                 .map_err(|e| McpError::InvalidParams(format!("discover: {e}")))?;
             let loaded = magma_pangea::TerraformJsonLoader
@@ -499,9 +495,9 @@ async fn handle_tool_call(
         // ── Pangea orchestration dispatch (M0.6) ─────────────────
         "pangea_orchestrate" => dispatch_pangea_orchestrate(params).await,
         "magma_migrate_dry_run" => dispatch_migrate(params, /*force_dry*/ true).await,
-        "magma_migrate"         => dispatch_migrate(params, /*force_dry*/ false).await,
-        "magma_split"           => dispatch_split(params).await,
-        "magma_merge"           => dispatch_merge(params).await,
+        "magma_migrate" => dispatch_migrate(params, /*force_dry*/ false).await,
+        "magma_split" => dispatch_split(params).await,
+        "magma_merge" => dispatch_merge(params).await,
 
         // Other tools surface via MCP routing but their full dispatch
         // requires either (a) magma-mcp depending on magma-plan / magma-apply
@@ -533,32 +529,45 @@ async fn dispatch_migrate(
     Ok(serde_json::to_value(receipt)?)
 }
 
-async fn dispatch_split(
-    params: &serde_json::Value,
-) -> Result<serde_json::Value, McpError> {
-    let from        = require_str(params, "from")?;
-    let from_state  = require_str(params, "from_state")?;
-    let to          = require_str(params, "to")?;
-    let to_state    = require_str(params, "to_state")?;
-    let resources   = params.get("resources")
+async fn dispatch_split(params: &serde_json::Value) -> Result<serde_json::Value, McpError> {
+    let from = require_str(params, "from")?;
+    let from_state = require_str(params, "from_state")?;
+    let to = require_str(params, "to")?;
+    let to_state = require_str(params, "to_state")?;
+    let resources = params
+        .get("resources")
         .and_then(|v| v.as_array())
         .ok_or_else(|| McpError::InvalidParams("resources array required".into()))?;
-    let dry_run     = params.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+    let dry_run = params
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if resources.is_empty() {
-        return Err(McpError::InvalidParams("split: resources cannot be empty".into()));
+        return Err(McpError::InvalidParams(
+            "split: resources cannot be empty".into(),
+        ));
     }
 
-    let moves: Vec<magma_migrate::ResourceMove> = resources.iter().filter_map(|r| {
-        r.as_str().map(|addr| magma_migrate::ResourceMove {
-            source_address: addr.into(),
-            target_address: addr.into(),
+    let moves: Vec<magma_migrate::ResourceMove> = resources
+        .iter()
+        .filter_map(|r| {
+            r.as_str().map(|addr| magma_migrate::ResourceMove {
+                source_address: addr.into(),
+                target_address: addr.into(),
+            })
         })
-    }).collect();
+        .collect();
 
     let plan = magma_migrate::MigrationPlan {
-        from: magma_migrate::WorkspaceRef { name: from.into(), state_path: from_state.into() },
-        to:   magma_migrate::WorkspaceRef { name: to.into(),   state_path: to_state.into()   },
+        from: magma_migrate::WorkspaceRef {
+            name: from.into(),
+            state_path: from_state.into(),
+        },
+        to: magma_migrate::WorkspaceRef {
+            name: to.into(),
+            state_path: to_state.into(),
+        },
         moves,
         preserve: magma_migrate::PreserveFlags::default(),
         dry_run,
@@ -569,31 +578,42 @@ async fn dispatch_split(
     Ok(serde_json::to_value(receipt)?)
 }
 
-async fn dispatch_merge(
-    params: &serde_json::Value,
-) -> Result<serde_json::Value, McpError> {
-    let from       = require_str(params, "from")?;
+async fn dispatch_merge(params: &serde_json::Value) -> Result<serde_json::Value, McpError> {
+    let from = require_str(params, "from")?;
     let from_state = require_str(params, "from_state")?;
-    let to         = require_str(params, "to")?;
-    let to_state   = require_str(params, "to_state")?;
-    let dry_run    = params.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+    let to = require_str(params, "to")?;
+    let to_state = require_str(params, "to_state")?;
+    let dry_run = params
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let from_state_path = std::path::PathBuf::from(from_state);
     let state = magma_state::read_state(&from_state_path)
         .await
         .map_err(|e| McpError::InvalidParams(format!("read source state: {e}")))?;
 
-    let moves: Vec<magma_migrate::ResourceMove> = state.resources.iter().map(|r| {
-        let addr = format!("{}.{}", r.address.type_id.0, r.address.name);
-        magma_migrate::ResourceMove {
-            source_address: addr.clone(),
-            target_address: addr,
-        }
-    }).collect();
+    let moves: Vec<magma_migrate::ResourceMove> = state
+        .resources
+        .iter()
+        .map(|r| {
+            let addr = format!("{}.{}", r.address.type_id.0, r.address.name);
+            magma_migrate::ResourceMove {
+                source_address: addr.clone(),
+                target_address: addr,
+            }
+        })
+        .collect();
 
     let plan = magma_migrate::MigrationPlan {
-        from: magma_migrate::WorkspaceRef { name: from.into(), state_path: from_state_path },
-        to:   magma_migrate::WorkspaceRef { name: to.into(),   state_path: to_state.into() },
+        from: magma_migrate::WorkspaceRef {
+            name: from.into(),
+            state_path: from_state_path,
+        },
+        to: magma_migrate::WorkspaceRef {
+            name: to.into(),
+            state_path: to_state.into(),
+        },
         moves,
         preserve: magma_migrate::PreserveFlags::default(),
         dry_run,
@@ -610,7 +630,8 @@ async fn dispatch_merge(
 async fn dispatch_pangea_orchestrate(
     params: &serde_json::Value,
 ) -> Result<serde_json::Value, McpError> {
-    let flow_value = params.get("flow")
+    let flow_value = params
+        .get("flow")
         .ok_or_else(|| McpError::InvalidParams("flow required".into()))?;
     let flow: magma_flow::FlowFile = serde_json::from_value(flow_value.clone())
         .map_err(|e| McpError::InvalidParams(format!("flow: {e}")))?;
@@ -620,20 +641,18 @@ async fn dispatch_pangea_orchestrate(
     Ok(serde_json::to_value(report)?)
 }
 
-fn require_str<'a>(
-    params: &'a serde_json::Value,
-    key: &str,
-) -> Result<&'a str, McpError> {
-    params.get(key)
+fn require_str<'a>(params: &'a serde_json::Value, key: &str) -> Result<&'a str, McpError> {
+    params
+        .get(key)
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams(format!("{key} required")))
 }
 
 async fn read_state_inline(dir: &std::path::Path) -> Result<magma_types::State, McpError> {
     let path = dir.join("terraform.tfstate");
-    magma_state::read_state(path).await.map_err(|e| {
-        McpError::InvalidParams(format!("read state: {e}"))
-    })
+    magma_state::read_state(path)
+        .await
+        .map_err(|e| McpError::InvalidParams(format!("read state: {e}")))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -645,20 +664,40 @@ mod tests {
     #[test]
     fn tool_specs_carries_destructive_flags() {
         let specs = tool_specs();
-        assert!(specs.iter().any(|t| t.name == "magma_plan" && !t.destructive));
-        assert!(specs.iter().any(|t| t.name == "magma_apply" && t.destructive));
-        assert!(specs.iter().any(|t| t.name == "magma_destroy" && t.destructive));
-        assert!(specs.iter().any(|t| t.name == "magma_state_mv" && t.destructive));
-        assert!(specs.iter().any(|t| t.name == "magma_state_show" && !t.destructive));
+        assert!(
+            specs
+                .iter()
+                .any(|t| t.name == "magma_plan" && !t.destructive)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|t| t.name == "magma_apply" && t.destructive)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|t| t.name == "magma_destroy" && t.destructive)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|t| t.name == "magma_state_mv" && t.destructive)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|t| t.name == "magma_state_show" && !t.destructive)
+        );
     }
 
     #[tokio::test]
     async fn tools_list_lists_all() {
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
-            id:      serde_json::json!(1),
-            method:  "tools/list".into(),
-            params:  serde_json::Value::Null,
+            id: serde_json::json!(1),
+            method: "tools/list".into(),
+            params: serde_json::Value::Null,
         };
         let resp = dispatch(req).await;
         let result = resp.result.unwrap();
@@ -670,9 +709,9 @@ mod tests {
     async fn destructive_call_without_confirm_errs() {
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
-            id:      serde_json::json!(1),
-            method:  "tools/call/magma_apply".into(),
-            params:  serde_json::json!({
+            id: serde_json::json!(1),
+            method: "tools/call/magma_apply".into(),
+            params: serde_json::json!({
                 "workspace_dir": "/tmp/x",
                 "plan_id":       "0000",
                 "confirm":       false,
@@ -680,20 +719,21 @@ mod tests {
         };
         let resp = dispatch(req).await;
         assert!(resp.error.is_some());
-        assert!(resp
-            .error
-            .unwrap()
-            .message
-            .contains("requires confirm: true"));
+        assert!(
+            resp.error
+                .unwrap()
+                .message
+                .contains("requires confirm: true")
+        );
     }
 
     #[tokio::test]
     async fn destructive_call_with_confirm_routes() {
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
-            id:      serde_json::json!(1),
-            method:  "tools/call/magma_apply".into(),
-            params:  serde_json::json!({
+            id: serde_json::json!(1),
+            method: "tools/call/magma_apply".into(),
+            params: serde_json::json!({
                 "workspace_dir": "/tmp/x",
                 "plan_id":       "0000",
                 "confirm":       true,
@@ -708,9 +748,9 @@ mod tests {
     async fn nondestructive_call_routes() {
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
-            id:      serde_json::json!(1),
-            method:  "tools/call/magma_state_list".into(),
-            params:  serde_json::json!({ "workspace_dir": "/tmp/x" }),
+            id: serde_json::json!(1),
+            method: "tools/call/magma_state_list".into(),
+            params: serde_json::json!({ "workspace_dir": "/tmp/x" }),
         };
         let resp = dispatch(req).await;
         assert!(resp.result.is_some());
@@ -728,15 +768,23 @@ mod tests {
     fn m06_tools_registered() {
         let specs = tool_specs();
         for name in [
-            "pangea_orchestrate", "magma_migrate", "magma_migrate_dry_run",
-            "magma_split", "magma_merge",
+            "pangea_orchestrate",
+            "magma_migrate",
+            "magma_migrate_dry_run",
+            "magma_split",
+            "magma_merge",
         ] {
-            assert!(specs.iter().any(|t| t.name == name),
-                    "missing M0.6 tool: {name}");
+            assert!(
+                specs.iter().any(|t| t.name == name),
+                "missing M0.6 tool: {name}"
+            );
         }
         // Destructive gating
-        let destructive_set: std::collections::HashSet<&str> = specs.iter()
-            .filter(|t| t.destructive).map(|t| t.name.as_str()).collect();
+        let destructive_set: std::collections::HashSet<&str> = specs
+            .iter()
+            .filter(|t| t.destructive)
+            .map(|t| t.name.as_str())
+            .collect();
         assert!(destructive_set.contains("magma_migrate"));
         assert!(destructive_set.contains("magma_split"));
         assert!(destructive_set.contains("magma_merge"));
@@ -752,15 +800,17 @@ mod tests {
 
         let (src_path, _src_tmp) = StateBuilder::new()
             .resource("aws_iam_role", "alpha", serde_json::json!({"name":"alpha"}))
-            .write_tempfile().await.unwrap();
-        let dst_tmp  = tempfile::tempdir().unwrap();
+            .write_tempfile()
+            .await
+            .unwrap();
+        let dst_tmp = tempfile::tempdir().unwrap();
         let dst_path = dst_tmp.path().join("dst.tfstate");
 
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
-            id:      serde_json::json!(1),
-            method:  "tools/call/magma_migrate_dry_run".into(),
-            params:  serde_json::json!({
+            id: serde_json::json!(1),
+            method: "tools/call/magma_migrate_dry_run".into(),
+            params: serde_json::json!({
                 "from": { "name": "src", "state_path": src_path },
                 "to":   { "name": "dst", "state_path": dst_path },
                 "moves": [
@@ -782,14 +832,19 @@ mod tests {
         // Render a minimal Pangea-shaped .tf.json via the shared
         // builder and dispatch magma_plan through the MCP entry point.
         let ws = magma_fixtures::TfJsonBuilder::new()
-            .resource("aws_iam_role", "r", serde_json::json!({"name": "mcp-plan-test"}))
-            .render_to_tempdir().unwrap();
+            .resource(
+                "aws_iam_role",
+                "r",
+                serde_json::json!({"name": "mcp-plan-test"}),
+            )
+            .render_to_tempdir()
+            .unwrap();
 
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
-            id:      serde_json::json!(1),
-            method:  "tools/call/magma_plan".into(),
-            params:  serde_json::json!({ "workspace_dir": ws.dir() }),
+            id: serde_json::json!(1),
+            method: "tools/call/magma_plan".into(),
+            params: serde_json::json!({ "workspace_dir": ws.dir() }),
         };
         let resp = dispatch(req).await;
         assert!(resp.error.is_none(), "plan errored: {:?}", resp.error);
@@ -802,9 +857,9 @@ mod tests {
     async fn m06_destructive_migrate_without_confirm_errs() {
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
-            id:      serde_json::json!(1),
-            method:  "tools/call/magma_migrate".into(),
-            params:  serde_json::json!({
+            id: serde_json::json!(1),
+            method: "tools/call/magma_migrate".into(),
+            params: serde_json::json!({
                 "from": { "name": "x", "state_path": "/tmp/_nope_src.tfstate" },
                 "to":   { "name": "y", "state_path": "/tmp/_nope_dst.tfstate" },
                 "moves": [],

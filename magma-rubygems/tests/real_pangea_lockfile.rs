@@ -22,12 +22,16 @@ fn parses_real_pangea_lockfile() {
     );
 
     // Platforms include at least one entry.
-    assert!(!lock.platforms.is_empty(), "platforms list shouldn't be empty");
+    assert!(
+        !lock.platforms.is_empty(),
+        "platforms list shouldn't be empty"
+    );
 
     // Dependencies include the pangea-* gem set.
     assert!(
         lock.dependencies.iter().any(|d| d.starts_with("pangea-")),
-        "expected at least one pangea-* dep, got: {:?}", lock.dependencies,
+        "expected at least one pangea-* dep, got: {:?}",
+        lock.dependencies,
     );
 
     // Resolved gems include the pangea-* PATH-sourced gems.
@@ -44,7 +48,10 @@ fn parses_real_pangea_lockfile() {
         .iter()
         .filter(|g| matches!(g.source, Source::RubyGemsOrg { .. }))
         .count();
-    assert!(rubygems_count >= 5, "expected ≥5 rubygems.org gems, got {rubygems_count}");
+    assert!(
+        rubygems_count >= 5,
+        "expected ≥5 rubygems.org gems, got {rubygems_count}"
+    );
 }
 
 #[test]
@@ -81,7 +88,8 @@ fn real_pangea_lockfile_emits_structurally_valid_gemset_nix() {
         assert!(
             gemset.contains(&expected_version),
             "gemset.nix missing version `{}` for `{}`",
-            gem.version, gem.name,
+            gem.version,
+            gem.name,
         );
     }
 
@@ -124,26 +132,38 @@ fn real_pangea_lockfile_emit_roundtrips_structurally() {
 
     // Same set of resolved gems (by name + version + source kind).
     let by_id = |l: &magma_rubygems::lockfile::Lockfile| {
-        let mut v: Vec<(String, String, &'static str)> = l.gems.iter().map(|g| (
-            g.name.clone(),
-            g.version.clone(),
-            match g.source {
-                Source::Path { .. }        => "path",
-                Source::Git { .. }         => "git",
-                Source::RubyGemsOrg { .. } => "rubygems",
-            },
-        )).collect();
+        let mut v: Vec<(String, String, &'static str)> = l
+            .gems
+            .iter()
+            .map(|g| {
+                (
+                    g.name.clone(),
+                    g.version.clone(),
+                    match g.source {
+                        Source::Path { .. } => "path",
+                        Source::Git { .. } => "git",
+                        Source::RubyGemsOrg { .. } => "rubygems",
+                    },
+                )
+            })
+            .collect();
         v.sort();
         v
     };
-    assert_eq!(by_id(&lock1), by_id(&lock2),
-        "round-trip lost gems or changed source kinds");
+    assert_eq!(
+        by_id(&lock1),
+        by_id(&lock2),
+        "round-trip lost gems or changed source kinds"
+    );
 
     // BLAKE3 attestation: emitted+re-parsed has same attestation
     // as the original (because attestation hashes the typed
     // shape, not the text).
-    assert_eq!(attest_lockfile(&lock1), attest_lockfile(&lock2),
-        "attestation must survive structural round-trip");
+    assert_eq!(
+        attest_lockfile(&lock1),
+        attest_lockfile(&lock2),
+        "attestation must survive structural round-trip"
+    );
 }
 
 #[test]
@@ -151,9 +171,9 @@ fn parse_is_referentially_transparent() {
     let lock1 = parse(FIXTURE).unwrap();
     let lock2 = parse(FIXTURE).unwrap();
     assert_eq!(lock1.bundler_version, lock2.bundler_version);
-    assert_eq!(lock1.platforms,       lock2.platforms);
-    assert_eq!(lock1.dependencies,    lock2.dependencies);
-    assert_eq!(lock1.gems.len(),      lock2.gems.len());
+    assert_eq!(lock1.platforms, lock2.platforms);
+    assert_eq!(lock1.dependencies, lock2.dependencies);
+    assert_eq!(lock1.gems.len(), lock2.gems.len());
     // Per-gem identity check.
     for (a, b) in lock1.gems.iter().zip(lock2.gems.iter()) {
         assert_eq!(a.name, b.name);

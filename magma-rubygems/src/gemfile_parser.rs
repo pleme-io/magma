@@ -19,17 +19,20 @@
 //! tractable + the typed Manifest deterministic.
 
 use crate::{
+    Result, RubygemsError,
     manifest::{Dependency, Manifest, RubyVersion},
     source::Source,
-    Result, RubygemsError,
 };
 
 /// Parse a Gemfile source string into a typed `Manifest`.
 pub fn parse(source: &str) -> Result<Manifest> {
     let mut manifest = Manifest {
-        ruby:          RubyVersion { version: String::new(), interpreter: "mri".into() },
-        deps:          vec![],
-        sources:       vec![],
+        ruby: RubyVersion {
+            version: String::new(),
+            interpreter: "mri".into(),
+        },
+        deps: vec![],
+        sources: vec![],
         gemspec_paths: vec![],
     };
     let mut current_groups: Vec<String> = vec![]; // nested `group` block tracker
@@ -94,7 +97,10 @@ pub fn parse(source: &str) -> Result<Manifest> {
         }
 
         // Anything else: refuse.
-        return Err(parse_err(line_no, format!("unsupported Gemfile directive: {line:?}")));
+        return Err(parse_err(
+            line_no,
+            format!("unsupported Gemfile directive: {line:?}"),
+        ));
     }
 
     Ok(manifest)
@@ -112,8 +118,8 @@ fn strip_inline_comment(line: &str) -> &str {
     for (i, c) in line.char_indices() {
         match c {
             '\'' if !in_double => in_single = !in_single,
-            '"'  if !in_single => in_double = !in_double,
-            '#'  if !in_single && !in_double => return &line[..i],
+            '"' if !in_single => in_double = !in_double,
+            '#' if !in_single && !in_double => return &line[..i],
             _ => {}
         }
     }
@@ -140,30 +146,31 @@ fn extract_quoted(s: &str) -> Option<String> {
     end.map(|e| s[1..e].to_string())
 }
 
-fn parse_gem_line(rest: &str, current_groups: &[String]) -> std::result::Result<Dependency, String> {
+fn parse_gem_line(
+    rest: &str,
+    current_groups: &[String],
+) -> std::result::Result<Dependency, String> {
     // Tokenize as: <quoted name>[, <quoted version>][, key: value pairs]
     let rest = rest.trim();
     let name = extract_quoted(rest).ok_or_else(|| "missing gem name".to_string())?;
 
     // Drop the name literal + its trailing comma.
-    let after_name = rest
-        .splitn(2, ',')
-        .nth(1)
-        .map(|s| s.trim())
-        .unwrap_or("");
+    let after_name = rest.splitn(2, ',').nth(1).map(|s| s.trim()).unwrap_or("");
 
     // Optional version: a quoted string as the FIRST remaining token.
-    let (requirement, after_version) = if after_name.starts_with('\'') || after_name.starts_with('"') {
-        let req = extract_quoted(after_name).ok_or_else(|| "malformed version constraint".to_string())?;
-        let dropped = after_name
-            .splitn(2, ',')
-            .nth(1)
-            .map(|s| s.trim())
-            .unwrap_or("");
-        (Some(req), dropped)
-    } else {
-        (None, after_name)
-    };
+    let (requirement, after_version) =
+        if after_name.starts_with('\'') || after_name.starts_with('"') {
+            let req = extract_quoted(after_name)
+                .ok_or_else(|| "malformed version constraint".to_string())?;
+            let dropped = after_name
+                .splitn(2, ',')
+                .nth(1)
+                .map(|s| s.trim())
+                .unwrap_or("");
+            (Some(req), dropped)
+        } else {
+            (None, after_name)
+        };
 
     // Parse optional kwargs: `path: '../foo'`, `git: 'URL'`, `ref: 'tag'`, `branch: 'main'`, `group: :test`
     let mut path: Option<String> = None;
@@ -175,21 +182,23 @@ fn parse_gem_line(rest: &str, current_groups: &[String]) -> std::result::Result<
         for kv in split_kwargs(after_version) {
             let (k, v) = kv;
             match k.as_str() {
-                "path"   => path      = Some(v),
-                "git"    => git       = Some(v),
-                "ref"    => reference = Some(v),
+                "path" => path = Some(v),
+                "git" => git = Some(v),
+                "ref" => reference = Some(v),
                 "branch" => reference = Some(v),
-                "tag"    => reference = Some(v),
-                "group"  => group_kw  = Some(v),
+                "tag" => reference = Some(v),
+                "group" => group_kw = Some(v),
                 _ => {} // ignore unknown kwargs
             }
         }
     }
 
     let source = match (path, git) {
-        (Some(p), _) => Some(Source::Path { dir: std::path::PathBuf::from(p) }),
+        (Some(p), _) => Some(Source::Path {
+            dir: std::path::PathBuf::from(p),
+        }),
         (_, Some(u)) => Some(Source::Git {
-            url:       u,
+            url: u,
             reference: reference.unwrap_or_default(),
         }),
         _ => None,
@@ -200,7 +209,12 @@ fn parse_gem_line(rest: &str, current_groups: &[String]) -> std::result::Result<
         groups.push(g);
     }
 
-    Ok(Dependency { name, requirement, source, groups })
+    Ok(Dependency {
+        name,
+        requirement,
+        source,
+        groups,
+    })
 }
 
 /// Split a `key: value, key: value` string into (key, value)
@@ -228,7 +242,9 @@ fn split_kwargs(s: &str) -> Vec<(String, String)> {
         while i < bytes.len() && bytes[i] != b':' && bytes[i] != b' ' {
             i += 1;
         }
-        let key = std::str::from_utf8(&bytes[key_start..i]).unwrap_or("").to_string();
+        let key = std::str::from_utf8(&bytes[key_start..i])
+            .unwrap_or("")
+            .to_string();
 
         // Expect `:`.
         if i >= bytes.len() || bytes[i] != b':' {
@@ -250,7 +266,9 @@ fn split_kwargs(s: &str) -> Vec<(String, String)> {
             while i < bytes.len() && bytes[i] != quote {
                 i += 1;
             }
-            let v = std::str::from_utf8(&bytes[v_start..i]).unwrap_or("").to_string();
+            let v = std::str::from_utf8(&bytes[v_start..i])
+                .unwrap_or("")
+                .to_string();
             if i < bytes.len() {
                 i += 1; // consume closing quote
             }
@@ -261,13 +279,18 @@ fn split_kwargs(s: &str) -> Vec<(String, String)> {
             while i < bytes.len() && bytes[i] != b',' && bytes[i] != b' ' {
                 i += 1;
             }
-            std::str::from_utf8(&bytes[v_start..i]).unwrap_or("").to_string()
+            std::str::from_utf8(&bytes[v_start..i])
+                .unwrap_or("")
+                .to_string()
         } else {
             let v_start = i;
             while i < bytes.len() && bytes[i] != b',' {
                 i += 1;
             }
-            std::str::from_utf8(&bytes[v_start..i]).unwrap_or("").trim().to_string()
+            std::str::from_utf8(&bytes[v_start..i])
+                .unwrap_or("")
+                .trim()
+                .to_string()
         };
 
         if !key.is_empty() {
@@ -310,7 +333,9 @@ gem 'rspec'
     fn parses_path_sourced_gem() {
         let src = "gem 'pangea-core', path: '../pangea-core'\n";
         let m = parse(src).unwrap();
-        assert!(matches!(&m.deps[0].source, Some(Source::Path { dir }) if dir.to_string_lossy() == "../pangea-core"));
+        assert!(
+            matches!(&m.deps[0].source, Some(Source::Path { dir }) if dir.to_string_lossy() == "../pangea-core")
+        );
     }
 
     #[test]

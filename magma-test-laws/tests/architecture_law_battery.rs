@@ -86,13 +86,18 @@ fn duplicate_resource_address_caught() {
     let mut seen = std::collections::HashSet::new();
     let key = ("aws_vpc".to_string(), "main".to_string());
     seen.insert(key.clone());
-    assert!(seen.insert(key.clone()), "Architecture law violated: duplicate resource address: aws_vpc.main");
+    assert!(
+        seen.insert(key.clone()),
+        "Architecture law violated: duplicate resource address: aws_vpc.main"
+    );
 }
 
 // ── Property 4: missing required_provider for a used type is caught
 
 #[test]
-#[should_panic(expected = "references provider `cloudflare` which is not in terraform.required_providers")]
+#[should_panic(
+    expected = "references provider `cloudflare` which is not in terraform.required_providers"
+)]
 fn missing_required_provider_is_caught() {
     let v = json!({
         "terraform": {
@@ -180,7 +185,12 @@ fn helpers_round_trip_correctly() {
     assert!(declared.contains("aws_subnet.web"));
     assert!(declared.contains("output.id"));
     let refs = collect_all_references(&cfg);
-    assert_eq!(refs.len(), 2, "expected 2 references (subnet.vpc_id + output.id.value), got {:?}", refs);
+    assert_eq!(
+        refs.len(),
+        2,
+        "expected 2 references (subnet.vpc_id + output.id.value), got {:?}",
+        refs
+    );
     for r in &refs {
         assert_eq!(r, "aws_vpc.main.id");
     }

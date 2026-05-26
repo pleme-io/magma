@@ -23,7 +23,7 @@
 //! }
 //! ```
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreflightViolation {
     /// Stable identifier for the broken law (e.g. "architecture::no_dangling_references").
-    pub law:     String,
+    pub law: String,
     /// Human-readable message from the underlying assertion.
     pub message: String,
 }
@@ -56,7 +56,10 @@ fn run_assertion<F: FnOnce()>(law: &str, f: F) -> PreflightResult {
             } else {
                 "<unknown panic>".to_string()
             };
-            Err(PreflightViolation { law: law.into(), message })
+            Err(PreflightViolation {
+                law: law.into(),
+                message,
+            })
         }
     }
 }
@@ -146,7 +149,8 @@ mod tests {
         assert_eq!(v.law, "architecture::assert_all_laws");
         assert!(
             v.message.contains("dangling reference"),
-            "expected dangling ref message, got: {}", v.message,
+            "expected dangling ref message, got: {}",
+            v.message,
         );
     }
 
@@ -187,7 +191,9 @@ mod tests {
         // resolved at apply time, not plan time).
         assert!(!violations.is_empty());
         assert!(
-            violations.iter().any(|v| v.message.contains("dangling reference")),
+            violations
+                .iter()
+                .any(|v| v.message.contains("dangling reference")),
             "expected dangling-ref violation, got: {violations:?}",
         );
     }

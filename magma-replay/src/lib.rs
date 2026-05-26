@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use magma_converge::PlanId;
-use magma_stream::{verify_chain, Event, EventPayload};
+use magma_stream::{Event, EventPayload, verify_chain};
 
 #[derive(Debug, Error)]
 pub enum ReplayError {
@@ -39,7 +39,7 @@ pub enum ReplayError {
     Io(#[from] std::io::Error),
     #[error("parse error at line {line}: {source}")]
     ParseLine {
-        line:   usize,
+        line: usize,
         #[source]
         source: serde_json::Error,
     },
@@ -50,41 +50,41 @@ pub enum ReplayError {
 /// Per-kind activity summary derived from the event stream.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct KindActivity {
-    pub kind:                 String,
-    pub plans_computed:       usize,
-    pub applies:              usize,
-    pub apply_failures:       usize,
-    pub drift_classified:     usize,
-    pub auto_corrected:       usize,
+    pub kind: String,
+    pub plans_computed: usize,
+    pub applies: usize,
+    pub apply_failures: usize,
+    pub drift_classified: usize,
+    pub auto_corrected: usize,
     pub auto_corrected_with_alert: usize,
-    pub approvals_required:   usize,
-    pub refusals:             usize,
+    pub approvals_required: usize,
+    pub refusals: usize,
     /// Plan ids observed for this kind, in order of first appearance.
-    pub plan_ids:             Vec<PlanId>,
+    pub plan_ids: Vec<PlanId>,
 }
 
 /// Chronological timeline summary.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Timeline {
-    pub event_count:         usize,
-    pub first_at:            Option<DateTime<Utc>>,
-    pub last_at:             Option<DateTime<Utc>>,
+    pub event_count: usize,
+    pub first_at: Option<DateTime<Utc>>,
+    pub last_at: Option<DateTime<Utc>>,
     /// All distinct reconciler kinds that appeared.
-    pub kinds:               Vec<String>,
+    pub kinds: Vec<String>,
     /// All distinct plan_ids observed, in first-seen order.
-    pub plan_ids:            Vec<PlanId>,
+    pub plan_ids: Vec<PlanId>,
 }
 
 /// Aggregate replay result.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReplayReport {
-    pub timeline:           Timeline,
+    pub timeline: Timeline,
     /// Per-kind activity (sorted by kind name).
-    pub activity:           Vec<KindActivity>,
+    pub activity: Vec<KindActivity>,
     /// Whether the BLAKE3 chain verified end-to-end.
-    pub chain_verified:     bool,
+    pub chain_verified: bool,
     /// If chain verification failed, the first bad index.
-    pub chain_break_at:     Option<usize>,
+    pub chain_break_at: Option<usize>,
 }
 
 impl ReplayReport {
@@ -112,15 +112,15 @@ pub fn replay(events: &[Event]) -> Result<ReplayReport, ReplayError> {
 
     let mut timeline = Timeline {
         event_count: events.len(),
-        first_at:    events.first().map(|e| e.emitted_at),
-        last_at:     events.last().map(|e| e.emitted_at),
-        kinds:       vec![],
-        plan_ids:    vec![],
+        first_at: events.first().map(|e| e.emitted_at),
+        last_at: events.last().map(|e| e.emitted_at),
+        kinds: vec![],
+        plan_ids: vec![],
     };
 
-    let mut kinds_seen:    HashSet<String> = HashSet::new();
+    let mut kinds_seen: HashSet<String> = HashSet::new();
     let mut plan_ids_seen: HashSet<String> = HashSet::new();
-    let mut activity:      BTreeMap<String, KindActivity> = BTreeMap::new();
+    let mut activity: BTreeMap<String, KindActivity> = BTreeMap::new();
     let mut kind_plan_seen: HashMap<String, HashSet<String>> = HashMap::new();
 
     for e in events {
@@ -170,15 +170,17 @@ fn update_activity(act: &mut KindActivity, payload: &EventPayload) {
             refused,
             ..
         } => {
-            act.drift_classified                += total;
-            act.auto_corrected                  += auto_corrected;
-            act.auto_corrected_with_alert       += auto_corrected_with_alert;
-            act.approvals_required              += awaiting_approval;
-            act.refusals                        += refused;
+            act.drift_classified += total;
+            act.auto_corrected += auto_corrected;
+            act.auto_corrected_with_alert += auto_corrected_with_alert;
+            act.approvals_required += awaiting_approval;
+            act.refusals += refused;
         }
-        EventPayload::ApplyOutcome { applied, failed, .. } => {
-            act.applies                += applied;
-            act.apply_failures         += failed;
+        EventPayload::ApplyOutcome {
+            applied, failed, ..
+        } => {
+            act.applies += applied;
+            act.apply_failures += failed;
         }
         EventPayload::Custom { .. } => {}
     }
@@ -188,11 +190,21 @@ fn update_activity(act: &mut KindActivity, payload: &EventPayload) {
 /// payloads that don't carry these fields (`Custom`).
 fn extract_kind_and_plan_id(payload: &EventPayload) -> (Option<String>, Option<PlanId>) {
     match payload {
-        EventPayload::PlanComputed   { reconciler, plan_id, .. } |
-        EventPayload::ApplyOutcome   { reconciler, plan_id, .. } |
-        EventPayload::DriftClassified { reconciler, plan_id, .. } => {
-            (Some(reconciler.clone()), Some(plan_id.clone()))
+        EventPayload::PlanComputed {
+            reconciler,
+            plan_id,
+            ..
         }
+        | EventPayload::ApplyOutcome {
+            reconciler,
+            plan_id,
+            ..
+        }
+        | EventPayload::DriftClassified {
+            reconciler,
+            plan_id,
+            ..
+        } => (Some(reconciler.clone()), Some(plan_id.clone())),
         EventPayload::Custom { .. } => (None, None),
     }
 }
@@ -255,8 +267,11 @@ pub fn parse_jsonl<R: Read>(reader: R) -> Result<Vec<Event>, ReplayError> {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        let event: Event = serde_json::from_str(trimmed)
-            .map_err(|source| ReplayError::ParseLine { line: idx + 1, source })?;
+        let event: Event =
+            serde_json::from_str(trimmed).map_err(|source| ReplayError::ParseLine {
+                line: idx + 1,
+                source,
+            })?;
         out.push(event);
     }
     Ok(out)
@@ -291,32 +306,50 @@ mod tests {
     use std::sync::Arc;
 
     async fn emit_plan(stream: &PlanStream, kind: &str, plan_id: &str, changes: usize) {
-        stream.emit(EventPayload::PlanComputed {
-            reconciler: kind.into(),
-            plan_id:    PlanId(plan_id.into()),
-            changes,
-        }).await;
+        stream
+            .emit(EventPayload::PlanComputed {
+                reconciler: kind.into(),
+                plan_id: PlanId(plan_id.into()),
+                changes,
+            })
+            .await;
     }
 
-    async fn emit_drift(stream: &PlanStream, kind: &str, plan_id: &str, total: usize, refused: usize) {
-        stream.emit(EventPayload::DriftClassified {
-            reconciler:                kind.into(),
-            plan_id:                   PlanId(plan_id.into()),
-            total,
-            auto_corrected:            0,
-            auto_corrected_with_alert: total - refused,
-            awaiting_approval:         0,
-            refused,
-        }).await;
+    async fn emit_drift(
+        stream: &PlanStream,
+        kind: &str,
+        plan_id: &str,
+        total: usize,
+        refused: usize,
+    ) {
+        stream
+            .emit(EventPayload::DriftClassified {
+                reconciler: kind.into(),
+                plan_id: PlanId(plan_id.into()),
+                total,
+                auto_corrected: 0,
+                auto_corrected_with_alert: total - refused,
+                awaiting_approval: 0,
+                refused,
+            })
+            .await;
     }
 
-    async fn emit_outcome(stream: &PlanStream, kind: &str, plan_id: &str, applied: usize, failed: usize) {
-        stream.emit(EventPayload::ApplyOutcome {
-            reconciler: kind.into(),
-            plan_id:    PlanId(plan_id.into()),
-            applied,
-            failed,
-        }).await;
+    async fn emit_outcome(
+        stream: &PlanStream,
+        kind: &str,
+        plan_id: &str,
+        applied: usize,
+        failed: usize,
+    ) {
+        stream
+            .emit(EventPayload::ApplyOutcome {
+                reconciler: kind.into(),
+                plan_id: PlanId(plan_id.into()),
+                applied,
+                failed,
+            })
+            .await;
     }
 
     #[tokio::test]
@@ -360,19 +393,27 @@ mod tests {
         let sink = Arc::new(InMemorySink::new("test"));
         stream.register(sink.clone());
 
-        emit_plan(&stream, "terraform",      "p1", 5).await;
-        emit_plan(&stream, "github_repo",    "p2", 2).await;
-        emit_drift(&stream, "github_repo",   "p2", 2, 0).await;
+        emit_plan(&stream, "terraform", "p1", 5).await;
+        emit_plan(&stream, "github_repo", "p2", 2).await;
+        emit_drift(&stream, "github_repo", "p2", 2, 0).await;
         emit_outcome(&stream, "github_repo", "p2", 2, 0).await;
-        emit_drift(&stream, "terraform",     "p1", 5, 1).await;
-        emit_outcome(&stream, "terraform",   "p1", 4, 1).await;
+        emit_drift(&stream, "terraform", "p1", 5, 1).await;
+        emit_outcome(&stream, "terraform", "p1", 4, 1).await;
 
         let report = replay(&sink.events()).unwrap();
         assert_eq!(report.timeline.event_count, 6);
 
         // Find each kind's activity.
-        let tf = report.activity.iter().find(|a| a.kind == "terraform").unwrap();
-        let gh = report.activity.iter().find(|a| a.kind == "github_repo").unwrap();
+        let tf = report
+            .activity
+            .iter()
+            .find(|a| a.kind == "terraform")
+            .unwrap();
+        let gh = report
+            .activity
+            .iter()
+            .find(|a| a.kind == "github_repo")
+            .unwrap();
 
         assert_eq!(tf.plans_computed, 1);
         assert_eq!(tf.applies, 4);
@@ -401,7 +442,10 @@ mod tests {
 
         // Tampered: chain_verified false, break_at points at the bad index.
         let mut events = sink.events();
-        if let EventPayload::PlanComputed { ref mut changes, .. } = events[0].payload {
+        if let EventPayload::PlanComputed {
+            ref mut changes, ..
+        } = events[0].payload
+        {
             *changes = 999;
         }
         let report2 = replay(&events).unwrap();
@@ -489,7 +533,11 @@ mod tests {
 
         let report = replay_from_jsonl_path(&path).unwrap();
         assert_eq!(report.timeline.event_count, 2);
-        let act = report.activity.iter().find(|a| a.kind == "helm_release").unwrap();
+        let act = report
+            .activity
+            .iter()
+            .find(|a| a.kind == "helm_release")
+            .unwrap();
         assert_eq!(act.plans_computed, 1);
         assert_eq!(act.applies, 1);
     }

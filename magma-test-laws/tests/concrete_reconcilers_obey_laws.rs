@@ -17,16 +17,14 @@ use std::sync::Arc;
 
 use magma_test_laws::assert_all_laws;
 
+use magma_backend::InMemoryBackend;
 use magma_converge::Reconciler;
-use magma_converge::dns::{
-    DnsRecordReconciler, MockDnsClient, Record, RecordKey, RecordValue,
-};
+use magma_converge::dns::{DnsRecordReconciler, MockDnsClient, Record, RecordKey, RecordValue};
 use magma_converge::github::{GithubRepoReconciler, MockGithubClient, RepoSettings};
 use magma_converge::helm::{HelmReleaseReconciler, MockHelmClient, ReleaseSpec};
 use magma_converge::terraform::TerraformReconciler;
 use magma_converge::vault::{MockVaultClient, PolicyBody, VaultPolicyReconciler};
-use magma_backend::InMemoryBackend;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -35,10 +33,10 @@ fn helm_config(version: &str) -> Value {
     m.insert(
         "nginx".into(),
         ReleaseSpec {
-            chart:     "ingress-nginx/ingress-nginx".into(),
-            version:   version.into(),
+            chart: "ingress-nginx/ingress-nginx".into(),
+            version: version.into(),
             namespace: "ingress".into(),
-            values:    json!({"replicaCount": 2}),
+            values: json!({"replicaCount": 2}),
         },
     );
     serde_json::to_value(m).unwrap()
@@ -46,14 +44,14 @@ fn helm_config(version: &str) -> Value {
 
 fn dns_config(value: &str) -> Value {
     serde_json::to_value(vec![Record {
-        key:   RecordKey {
-            zone:   "ex.com".into(),
-            name:   "api".into(),
+        key: RecordKey {
+            zone: "ex.com".into(),
+            name: "api".into(),
             r#type: "A".into(),
         },
         value: RecordValue {
-            value:   value.into(),
-            ttl:     300,
+            value: value.into(),
+            ttl: 300,
             proxied: false,
         },
     }])
@@ -66,7 +64,7 @@ fn vault_config(version: &str) -> Value {
         "ro".into(),
         PolicyBody {
             version: version.into(),
-            rules:   json!({"path": {"secret/*": {"capabilities": ["read"]}}}),
+            rules: json!({"path": {"secret/*": {"capabilities": ["read"]}}}),
         },
     );
     serde_json::to_value(m).unwrap()
@@ -77,10 +75,10 @@ fn github_config(description: &str) -> Value {
     m.insert(
         "rio".into(),
         RepoSettings {
-            description:    Some(description.into()),
-            private:        false,
+            description: Some(description.into()),
+            private: false,
             default_branch: "main".into(),
-            topics:         vec!["k8s".into(), "platform".into()],
+            topics: vec!["k8s".into(), "platform".into()],
         },
     );
     serde_json::to_value(m).unwrap()

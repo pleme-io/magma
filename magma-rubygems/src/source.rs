@@ -21,9 +21,7 @@ pub enum Source {
         reference: String,
     },
     /// Path-sourced gem (sibling crate in the same workspace).
-    Path {
-        dir: std::path::PathBuf,
-    },
+    Path { dir: std::path::PathBuf },
 }
 
 impl Source {

@@ -106,35 +106,35 @@ fn build_state(decls: &[(String, String)]) -> State {
         .iter()
         .map(|(type_name, name)| StateResource {
             address: ResourceAddress {
-                module:  ModulePath::root(),
-                kind:    ResourceKind::Managed,
+                module: ModulePath::root(),
+                kind: ResourceKind::Managed,
                 type_id: ResourceTypeId(type_name.clone()),
-                name:    name.clone(),
-                key:     None,
+                name: name.clone(),
+                key: None,
             },
             provider: ProviderReference {
                 source: format!("hashicorp/{type_name}"),
-                name:   type_name.clone(),
-                alias:  None,
+                name: type_name.clone(),
+                alias: None,
             },
             instances: vec![StateInstance {
                 schema_version: 0,
-                attributes:     json!({ "id": format!("{}-id", name) }),
-                private:        vec![],
-                dependencies:   vec![],
-                status:         InstanceStatus::Ready,
+                attributes: json!({ "id": format!("{}-id", name) }),
+                private: vec![],
+                dependencies: vec![],
+                status: InstanceStatus::Ready,
             }],
         })
         .collect();
     State {
-        version:           4,
+        version: 4,
         terraform_version: "1.7.0".into(),
-        serial:            0,
+        serial: 0,
         // Use a FIXED lineage so plan-id determinism tests aren't
         // confounded by uuid randomness. Real plan-id determinism
         // includes the state lineage by design.
-        lineage:           Uuid::nil(),
-        outputs:           Default::default(),
+        lineage: Uuid::nil(),
+        outputs: Default::default(),
         resources,
     }
 }

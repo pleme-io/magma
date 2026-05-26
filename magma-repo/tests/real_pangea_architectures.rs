@@ -26,19 +26,30 @@ fn discovers_real_pangea_architectures_repo() {
         return;
     };
 
-    let repo = magma_repo::discover(root.clone())
-        .unwrap_or_else(|e| panic!("discover {root:?}: {e}"));
+    let repo =
+        magma_repo::discover(root.clone()).unwrap_or_else(|e| panic!("discover {root:?}: {e}"));
 
     // Root config: must have accounts + state backend.
     assert!(!repo.root_config.accounts.is_empty(), "expected ≥1 account");
-    assert!(repo.root_config.state.is_some(), "expected S3 state backend");
-    let s3 = repo.root_config.state.as_ref().unwrap().s3.as_ref().unwrap();
+    assert!(
+        repo.root_config.state.is_some(),
+        "expected S3 state backend"
+    );
+    let s3 = repo
+        .root_config
+        .state
+        .as_ref()
+        .unwrap()
+        .s3
+        .as_ref()
+        .unwrap();
     assert_eq!(s3.bucket, "pleme-dev-terraform-state");
 
     // Workspaces: expect ≥10 (pangea-architectures has ~20+).
     assert!(
         repo.workspaces.len() >= 5,
-        "expected ≥5 workspaces, got {}", repo.workspaces.len(),
+        "expected ≥5 workspaces, got {}",
+        repo.workspaces.len(),
     );
 
     // At least one workspace has a pangea.yml with default_namespace set.
@@ -70,9 +81,18 @@ fn workspace_paths_are_absolute_under_root() {
     };
     let repo = magma_repo::discover(root.clone()).unwrap();
     for w in &repo.workspaces {
-        assert!(w.dir.is_absolute() || w.dir.starts_with(&root),
-            "workspace {} dir not under repo root: {:?}", w.name, w.dir);
-        assert!(w.dir.exists(), "workspace {} dir missing: {:?}", w.name, w.dir);
+        assert!(
+            w.dir.is_absolute() || w.dir.starts_with(&root),
+            "workspace {} dir not under repo root: {:?}",
+            w.name,
+            w.dir
+        );
+        assert!(
+            w.dir.exists(),
+            "workspace {} dir missing: {:?}",
+            w.name,
+            w.dir
+        );
     }
 }
 
@@ -90,8 +110,10 @@ fn each_workspace_with_pangea_yml_parses() {
             parsed_count += 1;
         }
     }
-    assert!(parsed_count >= 3,
-        "expected ≥3 workspaces to ship a pangea.yml, got {parsed_count}");
+    assert!(
+        parsed_count >= 3,
+        "expected ≥3 workspaces to ship a pangea.yml, got {parsed_count}"
+    );
 }
 
 fn _unused(_: &Path) {}

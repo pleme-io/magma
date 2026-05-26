@@ -52,32 +52,29 @@ pub enum EventPayload {
     /// A `compute_plan` produced a typed Plan.
     PlanComputed {
         reconciler: String,
-        plan_id:    PlanId,
-        changes:    usize,
+        plan_id: PlanId,
+        changes: usize,
     },
     /// A drift classification ran (output of `magma-drift::classify`).
     DriftClassified {
-        reconciler:               String,
-        plan_id:                  PlanId,
-        total:                    usize,
-        auto_corrected:           usize,
-        auto_corrected_with_alert:usize,
-        awaiting_approval:        usize,
-        refused:                  usize,
+        reconciler: String,
+        plan_id: PlanId,
+        total: usize,
+        auto_corrected: usize,
+        auto_corrected_with_alert: usize,
+        awaiting_approval: usize,
+        refused: usize,
     },
     /// An `apply` ran; carries the Outcome summary.
     ApplyOutcome {
-        reconciler:  String,
-        plan_id:     PlanId,
-        applied:     usize,
-        failed:      usize,
+        reconciler: String,
+        plan_id: PlanId,
+        applied: usize,
+        failed: usize,
     },
     /// An operator-defined free-form event for things outside the
     /// reconciler-trait surface (e.g. lifecycle escalations).
-    Custom {
-        category: String,
-        message:  String,
-    },
+    Custom { category: String, message: String },
 }
 
 /// One emitted event. Contains payload + timestamps + BLAKE3 hash
@@ -86,13 +83,13 @@ pub enum EventPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     /// Sequence number from the producing stream's perspective.
-    pub seq:         u64,
-    pub emitted_at:  DateTime<Utc>,
-    pub payload:     EventPayload,
+    pub seq: u64,
+    pub emitted_at: DateTime<Utc>,
+    pub payload: EventPayload,
     /// BLAKE3 hash of the previous event's `hash` || canonical bytes
     /// of (seq, payload). For seq=0, prev_hash is "0"*64.
-    pub prev_hash:   String,
-    pub hash:        String,
+    pub prev_hash: String,
+    pub hash: String,
 }
 
 impl Event {
@@ -114,7 +111,13 @@ impl Event {
     /// events without a full PlanStream.
     pub fn new(seq: u64, payload: EventPayload, prev_hash: String) -> Self {
         let hash = Self::compute_hash(seq, &payload, &prev_hash);
-        Self { seq, emitted_at: Utc::now(), payload, prev_hash, hash }
+        Self {
+            seq,
+            emitted_at: Utc::now(),
+            payload,
+            prev_hash,
+            hash,
+        }
     }
 }
 
@@ -145,13 +148,13 @@ pub type SharedSink = Arc<dyn EventSink>;
 /// via the typed helpers; the stream computes the next hash, fans
 /// out to every sink, and returns per-sink results.
 pub struct PlanStream {
-    sinks:        Vec<SharedSink>,
-    state:        Mutex<ChainState>,
+    sinks: Vec<SharedSink>,
+    state: Mutex<ChainState>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct ChainState {
-    next_seq:  u64,
+    next_seq: u64,
     last_hash: String,
 }
 
@@ -161,7 +164,7 @@ impl PlanStream {
         Self {
             sinks: vec![],
             state: Mutex::new(ChainState {
-                next_seq:  0,
+                next_seq: 0,
                 last_hash: "0".repeat(64),
             }),
         }
@@ -206,39 +209,40 @@ impl PlanStream {
     }
 
     /// Typed helpers for the common emit shapes.
-    pub async fn emit_plan(&self, reconciler: &str, plan: &Plan)
-        -> Vec<(String, Result<(), StreamError>)>
-    {
+    pub async fn emit_plan(
+        &self,
+        reconciler: &str,
+        plan: &Plan,
+    ) -> Vec<(String, Result<(), StreamError>)> {
         self.emit(EventPayload::PlanComputed {
             reconciler: reconciler.to_string(),
-            plan_id:    plan.id.clone(),
-            changes:    plan.change_count(),
-        }).await
+            plan_id: plan.id.clone(),
+            changes: plan.change_count(),
+        })
+        .await
     }
 
-    pub async fn emit_drift(&self, report: &DriftReport)
-        -> Vec<(String, Result<(), StreamError>)>
-    {
+    pub async fn emit_drift(&self, report: &DriftReport) -> Vec<(String, Result<(), StreamError>)> {
         self.emit(EventPayload::DriftClassified {
-            reconciler:                report.kind.clone(),
-            plan_id:                   report.plan_id.clone(),
-            total:                     report.summary.total_changes,
-            auto_corrected:            report.summary.auto_corrected,
+            reconciler: report.kind.clone(),
+            plan_id: report.plan_id.clone(),
+            total: report.summary.total_changes,
+            auto_corrected: report.summary.auto_corrected,
             auto_corrected_with_alert: report.summary.auto_corrected_with_alert,
-            awaiting_approval:         report.summary.awaiting_approval,
-            refused:                   report.summary.refused,
-        }).await
+            awaiting_approval: report.summary.awaiting_approval,
+            refused: report.summary.refused,
+        })
+        .await
     }
 
-    pub async fn emit_outcome(&self, outcome: &Outcome)
-        -> Vec<(String, Result<(), StreamError>)>
-    {
+    pub async fn emit_outcome(&self, outcome: &Outcome) -> Vec<(String, Result<(), StreamError>)> {
         self.emit(EventPayload::ApplyOutcome {
             reconciler: outcome.kind.clone(),
-            plan_id:    outcome.plan_id.clone(),
-            applied:    outcome.applied.len(),
-            failed:     outcome.failed.len(),
-        }).await
+            plan_id: outcome.plan_id.clone(),
+            applied: outcome.applied.len(),
+            failed: outcome.failed.len(),
+        })
+        .await
     }
 }
 
@@ -275,13 +279,16 @@ pub fn verify_chain(events: &[Event]) -> Result<(), usize> {
 /// In-memory sink — accumulates events in a Vec. Tests use this.
 #[derive(Default)]
 pub struct InMemorySink {
-    name:   String,
+    name: String,
     events: Mutex<Vec<Event>>,
 }
 
 impl InMemorySink {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), events: Mutex::new(vec![]) }
+        Self {
+            name: name.into(),
+            events: Mutex::new(vec![]),
+        }
     }
 
     pub fn events(&self) -> Vec<Event> {
@@ -299,7 +306,9 @@ impl InMemorySink {
 
 #[async_trait]
 impl EventSink for InMemorySink {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     async fn handle(&self, event: &Event) -> Result<(), StreamError> {
         self.events.lock().unwrap().push(event.clone());
@@ -315,7 +324,10 @@ pub struct JsonLinesSink {
 
 impl JsonLinesSink {
     pub fn new(name: impl Into<String>, path: impl Into<PathBuf>) -> Self {
-        Self { name: name.into(), path: path.into() }
+        Self {
+            name: name.into(),
+            path: path.into(),
+        }
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -325,7 +337,9 @@ impl JsonLinesSink {
 
 #[async_trait]
 impl EventSink for JsonLinesSink {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     async fn handle(&self, event: &Event) -> Result<(), StreamError> {
         let line = serde_json::to_string(event)?;
@@ -354,7 +368,9 @@ impl TracingSink {
 
 #[async_trait]
 impl EventSink for TracingSink {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     async fn handle(&self, event: &Event) -> Result<(), StreamError> {
         // Use info! with structured fields. Higher-level controllers
@@ -385,7 +401,9 @@ impl FailingSink {
 
 #[async_trait]
 impl EventSink for FailingSink {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     async fn handle(&self, _event: &Event) -> Result<(), StreamError> {
         Err(StreamError::Sink("intentional test failure".into()))
@@ -401,7 +419,7 @@ mod tests {
     fn sample_payload(seq: u64) -> EventPayload {
         EventPayload::Custom {
             category: "test".into(),
-            message:  format!("event-{seq}"),
+            message: format!("event-{seq}"),
         }
     }
 
@@ -457,7 +475,10 @@ mod tests {
         let mut events = sink.events();
         // Tamper with the middle event's payload (without
         // recomputing the hash).
-        if let EventPayload::Custom { ref mut message, .. } = events[1].payload {
+        if let EventPayload::Custom {
+            ref mut message, ..
+        } = events[1].payload
+        {
             *message = "tampered".to_string();
         }
         // Verification should flag event index 1.
@@ -495,14 +516,13 @@ mod tests {
     async fn failing_sink_does_not_block_other_sinks() {
         let mut s = PlanStream::new();
         let good = Arc::new(InMemorySink::new("good"));
-        let bad  = Arc::new(FailingSink::new("bad"));
+        let bad = Arc::new(FailingSink::new("bad"));
         s.register(good.clone()).register(bad.clone());
 
         let results = s.emit(sample_payload(0)).await;
         assert_eq!(results.len(), 2);
         // good succeeds, bad fails — both surfaced in the result vec.
-        let by_name: std::collections::HashMap<_, _> = results
-            .into_iter().collect();
+        let by_name: std::collections::HashMap<_, _> = results.into_iter().collect();
         assert!(by_name["good"].is_ok());
         assert!(by_name["bad"].is_err());
         // The good sink received the event despite the bad sink failing.
@@ -530,18 +550,28 @@ mod tests {
 
     #[tokio::test]
     async fn typed_helpers_emit_correct_payloads() {
-        use magma_converge::{change, Action, Plan};
+        use magma_converge::{Action, Plan, change};
         let mut s = PlanStream::new();
         let sink = Arc::new(InMemorySink::new("test"));
         s.register(sink.clone());
 
-        let plan = Plan::new("inmemory_kv", vec![
-            change("kv.a", Action::Create, None, Some(serde_json::json!(1))),
-        ]);
+        let plan = Plan::new(
+            "inmemory_kv",
+            vec![change(
+                "kv.a",
+                Action::Create,
+                None,
+                Some(serde_json::json!(1)),
+            )],
+        );
         s.emit_plan("inmemory_kv", &plan).await;
         let event = &sink.events()[0];
         match &event.payload {
-            EventPayload::PlanComputed { reconciler, changes, .. } => {
+            EventPayload::PlanComputed {
+                reconciler,
+                changes,
+                ..
+            } => {
                 assert_eq!(reconciler, "inmemory_kv");
                 assert_eq!(*changes, 1);
             }

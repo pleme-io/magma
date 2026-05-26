@@ -29,10 +29,10 @@ use std::path::PathBuf;
 
 use magma_state::write_state;
 use magma_types::{
-    InstanceStatus, ModulePath, ProviderReference, ResourceAddress, ResourceKind,
-    ResourceTypeId, State, StateInstance, StateResource,
+    InstanceStatus, ModulePath, ProviderReference, ResourceAddress, ResourceKind, ResourceTypeId,
+    State, StateInstance, StateResource,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 // ── Pangea-shaped .tf.json builder ────────────────────────────────
 
@@ -42,9 +42,9 @@ use serde_json::{json, Map, Value};
 /// blocks.
 #[derive(Debug, Default, Clone)]
 pub struct TfJsonBuilder {
-    provider:  Map<String, Value>,
+    provider: Map<String, Value>,
     resources: Vec<(String, String, Value)>,
-    outputs:   Vec<(String, Value)>,
+    outputs: Vec<(String, Value)>,
 }
 
 impl TfJsonBuilder {
@@ -52,7 +52,8 @@ impl TfJsonBuilder {
     #[must_use]
     pub fn new() -> Self {
         let mut me = Self::default();
-        me.provider.insert("aws".into(), json!({ "region": "us-east-1" }));
+        me.provider
+            .insert("aws".into(), json!({ "region": "us-east-1" }));
         me
     }
 
@@ -170,18 +171,18 @@ impl TfJsonWorkspace {
 #[derive(Debug, Clone)]
 pub struct StateBuilder {
     terraform_version: String,
-    serial:            u64,
-    lineage:           uuid::Uuid,
-    resources:         Vec<StateResource>,
+    serial: u64,
+    lineage: uuid::Uuid,
+    resources: Vec<StateResource>,
 }
 
 impl Default for StateBuilder {
     fn default() -> Self {
         Self {
             terraform_version: "1.7.0".into(),
-            serial:            1,
-            lineage:           uuid::Uuid::new_v4(),
-            resources:         Vec::new(),
+            serial: 1,
+            lineage: uuid::Uuid::new_v4(),
+            resources: Vec::new(),
         }
     }
 }
@@ -226,23 +227,23 @@ impl StateBuilder {
     ) -> Self {
         self.resources.push(StateResource {
             address: ResourceAddress {
-                module:  ModulePath::default(),
-                kind:    ResourceKind::Managed,
+                module: ModulePath::default(),
+                kind: ResourceKind::Managed,
                 type_id: ResourceTypeId(type_id.into()),
-                name:    name.into(),
-                key:     None,
+                name: name.into(),
+                key: None,
             },
             provider: ProviderReference {
                 source: provider_source.into(),
-                name:   provider_name.into(),
-                alias:  None,
+                name: provider_name.into(),
+                alias: None,
             },
             instances: vec![StateInstance {
                 schema_version: 0,
                 attributes,
-                private:        vec![],
-                dependencies:   vec![],
-                status:         InstanceStatus::Ready,
+                private: vec![],
+                dependencies: vec![],
+                status: InstanceStatus::Ready,
             }],
         });
         self
@@ -252,12 +253,12 @@ impl StateBuilder {
     #[must_use]
     pub fn build(self) -> State {
         State {
-            version:           4,
+            version: 4,
             terraform_version: self.terraform_version,
-            serial:            self.serial,
-            lineage:           self.lineage,
-            outputs:           Default::default(),
-            resources:         self.resources,
+            serial: self.serial,
+            lineage: self.lineage,
+            outputs: Default::default(),
+            resources: self.resources,
         }
     }
 

@@ -14,18 +14,20 @@
 
 use std::path::PathBuf;
 
-use crate::{config, workspace, DiscoveredRepo, DiscoveredWorkspace, RepoError, Result};
+use crate::{DiscoveredRepo, DiscoveredWorkspace, RepoError, Result, config, workspace};
 
 /// Scan `root` + return a typed `DiscoveredRepo`.
 pub fn discover(root: PathBuf) -> Result<DiscoveredRepo> {
     if !root.exists() {
         return Err(RepoError::Discovery(format!(
-            "root path does not exist: {}", root.display(),
+            "root path does not exist: {}",
+            root.display(),
         )));
     }
     if !root.is_dir() {
         return Err(RepoError::Discovery(format!(
-            "root path is not a directory: {}", root.display(),
+            "root path is not a directory: {}",
+            root.display(),
         )));
     }
 
@@ -33,9 +35,7 @@ pub fn discover(root: PathBuf) -> Result<DiscoveredRepo> {
     // on it. Missing -> error.
     let root_yml = root.join("pangea.yml");
     if !root_yml.exists() {
-        return Err(RepoError::MissingFile(
-            "pangea.yml at repo root".into(),
-        ));
+        return Err(RepoError::MissingFile("pangea.yml at repo root".into()));
     }
     let root_text = std::fs::read_to_string(&root_yml)?;
     let root_config = config::parse(&root_text)?;
@@ -55,9 +55,12 @@ pub fn discover(root: PathBuf) -> Result<DiscoveredRepo> {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .map(String::from)
-                .ok_or_else(|| RepoError::Discovery(format!(
-                    "workspace dir name not utf-8: {}", path.display(),
-                )))?;
+                .ok_or_else(|| {
+                    RepoError::Discovery(format!(
+                        "workspace dir name not utf-8: {}",
+                        path.display(),
+                    ))
+                })?;
             // Workspace pangea.yml is optional; default-construct
             // if missing so the workspace still appears.
             let ws_yml = path.join("pangea.yml");
@@ -79,10 +82,7 @@ pub fn discover(root: PathBuf) -> Result<DiscoveredRepo> {
         workspaces.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
-    let repo_attestation = crate::attestation::attest_discovered(
-        &root_config,
-        &workspaces,
-    );
+    let repo_attestation = crate::attestation::attest_discovered(&root_config, &workspaces);
 
     Ok(DiscoveredRepo {
         root,
@@ -119,14 +119,16 @@ mod tests {
         fs::write(
             tmp.path().join("pangea.yml"),
             "tags: { ManagedBy: pangea }\naccounts: {}\n",
-        ).unwrap();
+        )
+        .unwrap();
         // workspace alpha with pangea.yml + template
         let alpha = tmp.path().join("workspaces/alpha");
         fs::create_dir_all(&alpha).unwrap();
         fs::write(
             alpha.join("pangea.yml"),
             "default_namespace: alpha\naccount: akeyless-development\n",
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(alpha.join("alpha.rb"), "# pangea template\n").unwrap();
         // workspace beta with no pangea.yml (default-construct).
         let beta = tmp.path().join("workspaces/beta");
@@ -164,10 +166,7 @@ mod tests {
     #[test]
     fn discovered_workspaces_are_sorted() {
         let tmp = tempfile::tempdir().unwrap();
-        fs::write(
-            tmp.path().join("pangea.yml"),
-            "accounts: {}\n",
-        ).unwrap();
+        fs::write(tmp.path().join("pangea.yml"), "accounts: {}\n").unwrap();
         // Out-of-order names; discover() must sort them.
         for n in &["zulu", "alpha", "mike"] {
             let d = tmp.path().join("workspaces").join(n);

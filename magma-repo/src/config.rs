@@ -48,17 +48,17 @@ pub struct RootConfig {
 pub struct AccountConfig {
     /// AWS account id (string, preserves leading zeros).
     pub account_id: String,
-    pub region:     String,
+    pub region: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role:       Option<String>,
+    pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purpose:    Option<String>,
+    pub purpose: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SsoConfig {
     pub start_url: String,
-    pub region:    String,
+    pub region: String,
 }
 
 /// Typed state-backend default (root) or override (workspace).
@@ -70,17 +70,17 @@ pub struct StateBackend {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct S3Backend {
-    pub bucket:         String,
-    pub region:         String,
+    pub bucket: String,
+    pub region: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamodb_table: Option<String>,
     #[serde(default)]
-    pub encrypt:        bool,
+    pub encrypt: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aws_profile:    Option<String>,
+    pub aws_profile: Option<String>,
     /// State key (workspace-side override; absent at root level).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key:            Option<String>,
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,7 +93,7 @@ pub struct NamespaceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state:       Option<NamespaceState>,
+    pub state: Option<NamespaceState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,10 +154,19 @@ cascade:
     #[test]
     fn parses_minimal_root_config() {
         let cfg = parse(MINIMAL).unwrap();
-        assert_eq!(cfg.tags.get("ManagedBy").map(String::as_str), Some("pangea"));
-        assert_eq!(cfg.accounts.get("akeyless-development").unwrap().account_id, "376129857990");
+        assert_eq!(
+            cfg.tags.get("ManagedBy").map(String::as_str),
+            Some("pangea")
+        );
+        assert_eq!(
+            cfg.accounts.get("akeyless-development").unwrap().account_id,
+            "376129857990"
+        );
         assert!(cfg.sso.is_some());
-        assert_eq!(cfg.state.as_ref().unwrap().s3.as_ref().unwrap().bucket, "pleme-dev-terraform-state");
+        assert_eq!(
+            cfg.state.as_ref().unwrap().s3.as_ref().unwrap().bucket,
+            "pleme-dev-terraform-state"
+        );
         assert_eq!(cfg.cascade.as_ref().unwrap().default_depth, 0);
     }
 

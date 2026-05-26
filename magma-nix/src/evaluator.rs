@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ast::Expr, NixError, Result};
+use crate::{NixError, Result, ast::Expr};
 
 /// Result of evaluating a Nix expression. Lazy values are
 /// expanded at projection time; the typed surface here is the
@@ -20,11 +20,16 @@ pub enum Value {
     AttrSet(std::collections::BTreeMap<String, Value>),
     /// A function — un-applied. Materialized into a real value
     /// when applied with an argument.
-    Lambda { display_name: String },
+    Lambda {
+        display_name: String,
+    },
     /// A derivation reference — the output of fetcher /
     /// callPackage etc. Carries the BLAKE3 attestation of the
     /// content.
-    Derivation { name: String, attestation: String },
+    Derivation {
+        name: String,
+        attestation: String,
+    },
 }
 
 pub fn evaluate(_expr: &Expr) -> Result<Value> {

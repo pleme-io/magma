@@ -75,10 +75,11 @@ async fn inmemory_pangea_pipeline_create() {
 
     // 4. Assert: two Create actions, deterministic plan_id.
     assert_eq!(plan.resource_changes.len(), 2);
-    assert!(plan
-        .resource_changes
-        .iter()
-        .all(|c| c.action == Action::Create));
+    assert!(
+        plan.resource_changes
+            .iter()
+            .all(|c| c.action == Action::Create)
+    );
     let addrs: HashSet<&str> = plan
         .resource_changes
         .iter()
@@ -160,23 +161,23 @@ async fn inmemory_plan_partial_state() {
     let mut state: State = empty_state();
     state.resources.push(StateResource {
         address: Addr {
-            module:  ModulePath::root(),
-            kind:    ResourceKind::Managed,
+            module: ModulePath::root(),
+            kind: ResourceKind::Managed,
             type_id: ResourceTypeId("aws_vpc".into()),
-            name:    "main".into(),
-            key:     None,
+            name: "main".into(),
+            key: None,
         },
         provider: ProviderReference {
             source: "hashicorp/aws".into(),
-            name:   "aws".into(),
-            alias:  None,
+            name: "aws".into(),
+            alias: None,
         },
         instances: vec![StateInstance {
             schema_version: 0,
-            attributes:     json!({ "cidr_block": "10.0.0.0/16", "id": "vpc-existing" }),
-            private:        vec![],
-            dependencies:   vec![],
-            status:         InstanceStatus::Ready,
+            attributes: json!({ "cidr_block": "10.0.0.0/16", "id": "vpc-existing" }),
+            private: vec![],
+            dependencies: vec![],
+            status: InstanceStatus::Ready,
         }],
     });
 
@@ -195,8 +196,8 @@ async fn inmemory_plan_partial_state() {
 // ── Path 2: workspace discovery + in-memory load ──────────────────
 
 fn fixture_pangea_dir() -> PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR set in cargo test");
+    let manifest =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set in cargo test");
     PathBuf::from(manifest).join("fixtures/pangea")
 }
 

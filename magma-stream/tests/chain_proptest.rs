@@ -8,7 +8,7 @@
 //!
 //! Per `theory/CONVERGENCE-SUBSTRATE.md` §IV.2 (tamper evidence).
 
-use magma_stream::{verify_chain, Event, EventPayload, InMemorySink, PlanStream};
+use magma_stream::{Event, EventPayload, InMemorySink, PlanStream, verify_chain};
 use magma_test_laws::strategies::arb_event_payload;
 use proptest::prelude::*;
 use std::sync::Arc;
@@ -57,7 +57,7 @@ fn tamper(events: &mut [Event], idx: usize, mutation: u8) {
             // hashes differently.
             e.payload = EventPayload::Custom {
                 category: "tampered".into(),
-                message:  format!("was-seq-{}", e.seq),
+                message: format!("was-seq-{}", e.seq),
             };
         }
     }

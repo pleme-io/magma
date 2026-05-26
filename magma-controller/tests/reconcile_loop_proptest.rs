@@ -28,7 +28,7 @@ use magma_metrics::Metrics;
 use magma_stream::PlanStream;
 use prometheus::Registry;
 use proptest::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── Random config generator ────────────────────────────────────────
 
@@ -57,13 +57,9 @@ fn fresh_controller(
 ) -> ReconcileController<InMemoryKvReconciler> {
     let inner = match seeded_state {
         Some(s) => InMemoryKvReconciler::with_state(s),
-        None    => InMemoryKvReconciler::new(),
+        None => InMemoryKvReconciler::new(),
     };
-    let budgeted = BudgetedReconciler::new(
-        inner,
-        ConcurrencyLimit::new(4),
-        RetryPolicy::none(),
-    );
+    let budgeted = BudgetedReconciler::new(inner, ConcurrencyLimit::new(4), RetryPolicy::none());
     let registry = Registry::new();
     let metrics = Arc::new(Metrics::register(&registry).unwrap());
     let stream = Arc::new(PlanStream::new());
