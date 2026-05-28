@@ -64,8 +64,8 @@ use crate::inventory::ResourceRef;
 /// to surface the K8s condition message verbatim).
 #[derive(
     Debug, Clone, PartialEq, Eq, Serialize, Deserialize,
-    magma_converge_derive::Discriminant,
-    magma_converge_derive::IsVariant,
+    gen_platform::Discriminant,
+    gen_platform::IsVariant,
 )]
 #[discriminant(method = "state", case = "kebab")]
 #[serde(tag = "state", rename_all = "kebab-case")]

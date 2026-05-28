@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 
 /// K8s set-based operator. Wire format matches K8s exactly: `"In"` /
 /// `"NotIn"` / `"Exists"` / `"DoesNotExist"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, gen_platform::Discriminant)]
 #[discriminant(method = "name", case = "title")]
 pub enum LabelSelectorOperator {
     /// Label exists AND its value is in `values`.

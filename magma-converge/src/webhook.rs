@@ -61,7 +61,7 @@ use serde::{Deserialize, Serialize};
 /// `Generic*` variants are wire-format generics (the substrate's own
 /// validators); the named variants (`Github`, `Gitlab`, etc) carry
 /// vendor-specific signature schemes that adapter crates implement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, gen_platform::Discriminant)]
 #[discriminant(method = "name", case = "kebab")]
 #[serde(rename_all = "kebab-case")]
 pub enum WebhookKind {
@@ -163,7 +163,7 @@ pub struct WebhookEvent<P = serde_json::Value> {
 /// Errors a `WebhookValidator` can return. Mirrors the
 /// `BlobStoreError` Transient/Permanent shape so calling code can
 /// route retries uniformly.
-#[derive(Debug, thiserror::Error, magma_converge_derive::Discriminant)]
+#[derive(Debug, thiserror::Error, gen_platform::Discriminant)]
 #[discriminant(method = "discriminant", case = "snake")]
 pub enum WebhookError {
     /// Required signature/token header missing.

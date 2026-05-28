@@ -73,7 +73,7 @@ impl ApplyDiff {
 /// the success variants (commonly `ResourceRef` for apply pipelines
 /// that track refs, but consumers may carry `Manifest<S>` to preserve
 /// the full applied object).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, gen_platform::Discriminant)]
 #[discriminant(method = "kind", case = "lower")]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ApplyOutcome<T> {
@@ -199,7 +199,7 @@ impl ApplyCounts {
 /// advance after a typed apply cycle. Mirrors the
 /// `HealthReport::overall` shape (worst-severity-wins) for apply
 /// outcomes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, gen_platform::Discriminant)]
 #[discriminant(method = "name", case = "kebab")]
 #[serde(rename_all = "kebab-case")]
 pub enum ApplyStatus {

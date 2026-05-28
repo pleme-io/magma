@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 /// Typed reference into a git repo, OCI registry, or content-addressed
 /// store. Carries both the variant (intent) and the payload (value).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, gen_platform::Discriminant)]
 #[discriminant(method = "kind", case = "lower")]
 #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
 pub enum RefSpec {

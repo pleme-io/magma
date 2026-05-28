@@ -72,8 +72,8 @@ pub const AVAILABLE: &str = "Available";
 /// auto-generated via `#[derive(IsVariant)]`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
-    magma_converge_derive::Discriminant,
-    magma_converge_derive::IsVariant,
+    gen_platform::Discriminant,
+    gen_platform::IsVariant,
 )]
 #[discriminant(method = "name", case = "title")]
 pub enum ConditionStatus {

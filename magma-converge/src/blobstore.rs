@@ -100,7 +100,7 @@ impl BlobMetadata {
 /// Errors any `BlobStoreBackend` impl can return. Backends MUST
 /// normalize their native errors into one of these variants so
 /// callers can match without per-backend conditionals.
-#[derive(Debug, thiserror::Error, magma_converge_derive::Discriminant)]
+#[derive(Debug, thiserror::Error, gen_platform::Discriminant)]
 #[discriminant(method = "discriminant", case = "snake")]
 pub enum BlobStoreError {
     /// Object at `path` doesn't exist.
