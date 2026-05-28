@@ -27,6 +27,7 @@ pub mod dns;
 pub mod engine;
 pub mod artifact;
 pub mod blobstore;
+pub mod condition;
 pub mod decision;
 pub mod drift;
 pub mod github;
@@ -42,6 +43,7 @@ pub mod webhook;
 
 pub use artifact::{Artifact, ArtifactDigest, DigestAlgo, DigestError, Provenance};
 pub use blobstore::{BlobMetadata, BlobStoreBackend, BlobStoreError, InMemoryBlobStore};
+pub use condition::{Condition, ConditionSet, ConditionStatus};
 pub use decision::Decision;
 pub use drift::DriftPolicy;
 pub use engine::ConvergeEngine;
