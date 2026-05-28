@@ -1442,6 +1442,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "chrono",
+ "gen-platform",
  "hex",
  "magma-apply",
  "magma-backend",
