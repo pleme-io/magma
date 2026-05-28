@@ -30,6 +30,7 @@ pub mod blobstore;
 pub mod decision;
 pub mod drift;
 pub mod github;
+pub mod health;
 pub mod helm;
 pub mod inmemory;
 pub mod inventory;
@@ -44,6 +45,10 @@ pub use blobstore::{BlobMetadata, BlobStoreBackend, BlobStoreError, InMemoryBlob
 pub use decision::Decision;
 pub use drift::DriftPolicy;
 pub use engine::ConvergeEngine;
+pub use health::{
+    AlwaysReady, ChainedHealthCheck, ClosureCheck, HealthCheck, HealthCounts, HealthReport,
+    NeverReady, ReadyState,
+};
 pub use inventory::{Inventory, InventoryDiff, ResourceRef};
 pub use policy::CascadePolicy;
 pub use refspec::{RefSpec, RefSpecParseError};
