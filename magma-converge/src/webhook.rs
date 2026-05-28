@@ -212,25 +212,19 @@ pub enum WebhookError {
     Permanent { detail: String },
 }
 
-impl WebhookError {
-    /// `true` for `Transient` — caller may retry. Other variants
-    /// are deterministic on this request and shouldn't retry.
-    pub fn is_retryable(&self) -> bool {
+impl crate::backend_error::BackendError for WebhookError {
+    fn is_retryable(&self) -> bool {
         matches!(self, WebhookError::Transient { .. })
     }
 
-    /// `true` for failures that map to HTTP 401 (signature/token
-    /// problems). All others map to 400 (bad request) or 503
-    /// (transient backend).
-    pub fn is_auth_failure(&self) -> bool {
+    fn is_auth_failure(&self) -> bool {
         matches!(
             self,
             WebhookError::MissingHeader { .. } | WebhookError::InvalidSignature { .. }
         )
     }
 
-    /// Variant discriminant string for metrics labels.
-    pub fn kind(&self) -> &'static str {
+    fn kind(&self) -> &'static str {
         match self {
             WebhookError::MissingHeader { .. } => "missing_header",
             WebhookError::InvalidSignature { .. } => "invalid_signature",
@@ -345,6 +339,7 @@ impl WebhookValidator for HeaderTokenValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_error::BackendError;
 
     // ── WebhookKind ────────────────────────────────────────────────
 

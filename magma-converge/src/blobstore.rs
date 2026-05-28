@@ -133,20 +133,22 @@ pub enum BlobStoreError {
     },
 }
 
-impl BlobStoreError {
-    /// `true` for `Transient` errors — caller may retry.
-    pub fn is_retryable(&self) -> bool {
+impl crate::backend_error::BackendError for BlobStoreError {
+    fn is_retryable(&self) -> bool {
         matches!(self, BlobStoreError::Transient { .. })
     }
 
-    /// Variant discriminant string for metrics labels.
-    pub fn kind(&self) -> &'static str {
+    fn kind(&self) -> &'static str {
         match self {
             BlobStoreError::NotFound { .. } => "not_found",
             BlobStoreError::PermissionDenied { .. } => "permission_denied",
             BlobStoreError::Transient { .. } => "transient",
             BlobStoreError::Permanent { .. } => "permanent",
         }
+    }
+
+    fn is_auth_failure(&self) -> bool {
+        matches!(self, BlobStoreError::PermissionDenied { .. })
     }
 }
 
@@ -298,6 +300,7 @@ impl BlobStoreBackend for InMemoryBlobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_error::BackendError;
     use std::sync::Arc;
 
     fn store() -> InMemoryBlobStore {
