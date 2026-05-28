@@ -133,8 +133,30 @@ impl LabelSelectorRequirement {
     /// `true` if this requirement carries values when the operator
     /// requires empty values (i.e. `Exists`/`DoesNotExist` with
     /// non-empty `values`). Useful for validation at construction.
+    ///
+    /// Delegates to [`Validate`] for the canonical multi-violation
+    /// report; this boolean predicate is kept for backwards
+    /// compatibility with existing call sites.
     pub fn has_invalid_values(&self) -> bool {
-        self.operator.ignores_values() && !self.values.is_empty()
+        !crate::validate::Validate::validate(self).is_empty()
+    }
+}
+
+impl crate::validate::Validate for LabelSelectorRequirement {
+    fn validate(&self) -> Vec<crate::validate::Violation> {
+        let mut violations = Vec::new();
+        if self.operator.ignores_values() && !self.values.is_empty() {
+            violations.push(crate::validate::Violation::new(
+                "values",
+                "non_empty_values_for_value_ignoring_op",
+                format!(
+                    "operator {:?} ignores `values` but {} were supplied",
+                    self.operator,
+                    self.values.len(),
+                ),
+            ));
+        }
+        violations
     }
 }
 
@@ -215,8 +237,28 @@ impl LabelSelector {
     /// carrying values). Returns first-fail; iterates expressions
     /// only. Use at construction time to validate operator-supplied
     /// selectors.
+    ///
+    /// Delegates to [`Validate`] for the canonical multi-violation
+    /// report; this boolean predicate is kept for backwards
+    /// compatibility with existing call sites.
     pub fn has_invalid_requirements(&self) -> bool {
-        self.match_expressions.iter().any(|r| r.has_invalid_values())
+        !crate::validate::Validate::validate(self).is_empty()
+    }
+}
+
+impl crate::validate::Validate for LabelSelector {
+    fn validate(&self) -> Vec<crate::validate::Violation> {
+        let mut violations = Vec::new();
+        for (idx, req) in self.match_expressions.iter().enumerate() {
+            for v in req.validate() {
+                violations.push(crate::validate::Violation::new(
+                    format!("matchExpressions[{}].{}", idx, v.path),
+                    v.kind,
+                    v.message,
+                ));
+            }
+        }
+        violations
     }
 }
 
