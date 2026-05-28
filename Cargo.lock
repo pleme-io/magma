@@ -1403,6 +1403,7 @@ dependencies = [
  "magma-apply",
  "magma-backend",
  "magma-config",
+ "magma-converge-derive",
  "magma-plan",
  "magma-state",
  "magma-types",
@@ -1412,6 +1413,15 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "magma-converge-derive"
+version = "0.1.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

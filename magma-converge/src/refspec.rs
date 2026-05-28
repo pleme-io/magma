@@ -34,7 +34,8 @@ use serde::{Deserialize, Serialize};
 
 /// Typed reference into a git repo, OCI registry, or content-addressed
 /// store. Carries both the variant (intent) and the payload (value).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[discriminant(method = "kind", case = "lower")]
 #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
 pub enum RefSpec {
     /// Track HEAD of a named branch. Reconciler re-fetches every cycle.
@@ -80,18 +81,6 @@ impl RefSpec {
         }
     }
 
-    /// Variant discriminant as a stable string. Useful for metrics
-    /// labels and audit logs that want to count refs by kind.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            RefSpec::Branch(_) => "branch",
-            RefSpec::Tag(_) => "tag",
-            RefSpec::Semver(_) => "semver",
-            RefSpec::Commit(_) => "commit",
-            RefSpec::Name(_) => "name",
-            RefSpec::Digest(_) => "digest",
-        }
-    }
 }
 
 impl fmt::Display for RefSpec {

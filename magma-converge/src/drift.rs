@@ -32,7 +32,8 @@ use serde::{Deserialize, Serialize};
 
 /// What to do when the reconciler detects the live cluster has
 /// diverged from the declared manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[discriminant(method = "mode", case = "lower")]
 #[serde(tag = "mode")]
 pub enum DriftPolicy {
     /// Don't check for drift at all. The reconciler reacts only to
@@ -95,15 +96,6 @@ impl DriftPolicy {
         }
     }
 
-    /// Variant discriminant as a stable string. For metrics +
-    /// audit logs.
-    pub fn mode(&self) -> &'static str {
-        match self {
-            DriftPolicy::Disabled => "disabled",
-            DriftPolicy::Warn => "warn",
-            DriftPolicy::Enabled { .. } => "enabled",
-        }
-    }
 }
 
 #[cfg(test)]

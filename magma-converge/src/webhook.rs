@@ -182,7 +182,8 @@ pub struct WebhookEvent<P = serde_json::Value> {
 /// Errors a `WebhookValidator` can return. Mirrors the
 /// `BlobStoreError` Transient/Permanent shape so calling code can
 /// route retries uniformly.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, magma_converge_derive::Discriminant)]
+#[discriminant(method = "discriminant", case = "snake")]
 pub enum WebhookError {
     /// Required signature/token header missing.
     #[error("webhook missing expected header {header:?}")]
@@ -225,14 +226,7 @@ impl crate::backend_error::BackendError for WebhookError {
     }
 
     fn kind(&self) -> &'static str {
-        match self {
-            WebhookError::MissingHeader { .. } => "missing_header",
-            WebhookError::InvalidSignature { .. } => "invalid_signature",
-            WebhookError::PayloadDecode { .. } => "payload_decode",
-            WebhookError::UnknownEventType { .. } => "unknown_event_type",
-            WebhookError::Transient { .. } => "transient",
-            WebhookError::Permanent { .. } => "permanent",
-        }
+        self.discriminant()
     }
 }
 

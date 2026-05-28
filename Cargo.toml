@@ -39,6 +39,7 @@ members = [
     "magma-nix",
     "magma-tfmod",
     "magma-repo",
+    "magma-converge-derive",
 ]
 
 [workspace.package]
@@ -96,6 +97,7 @@ magma-rubygems  = { path = "magma-rubygems" }
 magma-nix       = { path = "magma-nix" }
 magma-tfmod     = { path = "magma-tfmod" }
 magma-repo      = { path = "magma-repo" }
+magma-converge-derive = { path = "magma-converge-derive" }
 
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──
 shikumi          = { git = "https://github.com/pleme-io/shikumi" }
@@ -116,6 +118,11 @@ schemars      = { version = "0.8", features = ["derive"] }
 # ── Error handling ───────────────────────────────────────────
 thiserror = "2"
 anyhow    = "1"
+
+# ── Proc-macro deps ──────────────────────────────────────────
+syn          = { version = "2", features = ["full", "extra-traits"] }
+quote        = "1"
+proc-macro2  = "1"
 
 # ── Async ────────────────────────────────────────────────────
 tokio        = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net", "signal", "fs"] }

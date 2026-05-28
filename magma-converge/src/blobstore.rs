@@ -100,7 +100,8 @@ impl BlobMetadata {
 /// Errors any `BlobStoreBackend` impl can return. Backends MUST
 /// normalize their native errors into one of these variants so
 /// callers can match without per-backend conditionals.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, magma_converge_derive::Discriminant)]
+#[discriminant(method = "discriminant", case = "snake")]
 pub enum BlobStoreError {
     /// Object at `path` doesn't exist.
     #[error("blob not found at {path:?}")]
@@ -139,12 +140,7 @@ impl crate::backend_error::BackendError for BlobStoreError {
     }
 
     fn kind(&self) -> &'static str {
-        match self {
-            BlobStoreError::NotFound { .. } => "not_found",
-            BlobStoreError::PermissionDenied { .. } => "permission_denied",
-            BlobStoreError::Transient { .. } => "transient",
-            BlobStoreError::Permanent { .. } => "permanent",
-        }
+        self.discriminant()
     }
 
     fn is_auth_failure(&self) -> bool {

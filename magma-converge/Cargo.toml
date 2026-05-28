@@ -23,6 +23,7 @@ magma-backend = { workspace = true }
 magma-plan    = { workspace = true }
 magma-apply   = { workspace = true }
 magma-state   = { workspace = true }
+magma-converge-derive = { workspace = true }
 
 async-trait = { workspace = true }
 serde       = { workspace = true }
