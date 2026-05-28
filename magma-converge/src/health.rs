@@ -110,16 +110,6 @@ impl ReadyState {
         }
     }
 
-    /// Severity for cross-state aggregation in `HealthReport::overall`:
-    /// `Failed > InProgress > Unknown > Ready`. Aggregates take the max.
-    fn severity(&self) -> u8 {
-        match self {
-            ReadyState::Ready => 0,
-            ReadyState::Unknown => 1,
-            ReadyState::InProgress { .. } => 2,
-            ReadyState::Failed { .. } => 3,
-        }
-    }
 }
 
 /// The canonical resource-readiness predicate. Generic over resource
@@ -341,15 +331,7 @@ impl HealthReport {
     /// encountered (in canonical ResourceRef order) supplies the
     /// reason string.
     pub fn overall(&self) -> ReadyState {
-        let mut worst: ReadyState = ReadyState::Ready;
-        let mut worst_sev = worst.severity();
-        for (_, state) in &self.entries {
-            if state.severity() > worst_sev {
-                worst_sev = state.severity();
-                worst = state.clone();
-            }
-        }
-        worst
+        crate::outcome::worst_of(self.entries.iter().map(|(_, s)| s.clone()))
     }
 }
 
@@ -371,6 +353,7 @@ impl HealthCounts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outcome::OutcomeLattice;
 
     fn dep(ns: &str, name: &str) -> ResourceRef {
         ResourceRef::namespaced("apps", "v1", "Deployment", ns, name)
