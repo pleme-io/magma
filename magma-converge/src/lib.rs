@@ -35,6 +35,7 @@ pub mod health;
 pub mod helm;
 pub mod inmemory;
 pub mod inventory;
+pub mod meta;
 pub mod policy;
 pub mod refspec;
 pub mod selector;
@@ -53,6 +54,7 @@ pub use health::{
     NeverReady, ReadyState,
 };
 pub use inventory::{Inventory, InventoryDiff, ResourceRef};
+pub use meta::{ObjectMeta, OwnerReference};
 pub use policy::CascadePolicy;
 pub use refspec::{RefSpec, RefSpecParseError};
 pub use selector::{LabelSelector, LabelSelectorOperator, LabelSelectorRequirement};
