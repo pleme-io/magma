@@ -199,28 +199,38 @@ impl ApplyCounts {
 /// advance after a typed apply cycle. Mirrors the
 /// `HealthReport::overall` shape (worst-severity-wins) for apply
 /// outcomes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, gen_platform::Discriminant)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize,
+    gen_platform::Discriminant,
+    gen_platform::OutcomeLattice,
+)]
 #[discriminant(method = "name", case = "kebab")]
+#[outcome_lattice(trait_path = "crate::outcome::OutcomeLattice")]
 #[serde(rename_all = "kebab-case")]
 pub enum ApplyStatus {
     /// Empty report or every outcome `Skipped` — nothing was attempted
     /// or accomplished. Reconciler should advance per its empty-cycle
     /// policy (often: retry, possibly with shorter interval).
+    #[outcome(severity = 0, baseline)]
     Empty,
     /// Every outcome was a success (Created/Updated/Unchanged/Deleted).
     /// Reconciler can advance to its "ready" phase.
+    #[outcome(severity = 0)]
     AllSucceeded,
     /// Some success, some skipped, no failures. Reconciler may advance
     /// or requeue depending on whether Skipped is acceptable for this
     /// cycle.
+    #[outcome(severity = 1)]
     SucceededWithSkipped,
     /// At least one Failed outcome (no Conflict). Reconciler should
     /// route per retry policy.
+    #[outcome(severity = 2)]
     Failed,
     /// At least one Conflict outcome. Conflict takes precedence over
     /// Failed because it usually requires operator intervention
     /// (takeover, narrowing scope, coordination) — never a simple
     /// retry.
+    #[outcome(severity = 3)]
     Conflict,
 }
 

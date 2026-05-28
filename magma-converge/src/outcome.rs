@@ -143,68 +143,21 @@ pub fn best_of<O: OutcomeLattice>(iter: impl IntoIterator<Item = O>) -> Option<O
 
 // ── Outcome impls for the typed substrate's existing outcome enums ──
 
-/// `ReadyState` lattice ordering:
-///   `Ready` (0) → `Unknown` (1) → `InProgress` (2) → `Failed` (3)
-impl OutcomeLattice for ReadyState {
-    fn severity(&self) -> u32 {
-        match self {
-            ReadyState::Ready => 0,
-            ReadyState::Unknown => 1,
-            ReadyState::InProgress { .. } => 2,
-            ReadyState::Failed { .. } => 3,
-        }
-    }
+// ReadyState's OutcomeLattice impl is auto-generated via
+// gen_platform::OutcomeLattice — see crate::health.
 
-    fn baseline() -> Self {
-        ReadyState::Ready
-    }
-}
-
-/// `ApplyStatus` lattice ordering:
-///   `Empty` (0) → `AllSucceeded` (0 — tied with Empty as "best") →
-///   `SucceededWithSkipped` (1) → `Failed` (2) → `Conflict` (3)
+// ApplyStatus's OutcomeLattice impl is auto-generated via
+// gen_platform::OutcomeLattice — see crate::apply.
+//
+// `Empty` and `AllSucceeded` share severity 0 — both represent
+// "nothing to escalate" states. `Conflict > Failed` because conflict
+// requires operator action (takeover/scope-narrowing), never a
+// simple retry. Tie-break for severity-0 falls to canonical
+// declaration order (Empty wins per the OutcomeLattice tie-break
+// rule "self wins for determinism").
 ///
-/// `Conflict > Failed` because conflict requires operator action
-/// (takeover / scope narrowing) — never a simple retry.
-///
-/// `Empty` and `AllSucceeded` share severity 0 because both are
-/// "nothing to escalate" states; the existing aggregator chose
-/// `Empty` as the empty-iterator default, so we use it as baseline.
-impl OutcomeLattice for ApplyStatus {
-    fn severity(&self) -> u32 {
-        match self {
-            ApplyStatus::Empty => 0,
-            ApplyStatus::AllSucceeded => 0,
-            ApplyStatus::SucceededWithSkipped => 1,
-            ApplyStatus::Failed => 2,
-            ApplyStatus::Conflict => 3,
-        }
-    }
-
-    fn baseline() -> Self {
-        ApplyStatus::Empty
-    }
-}
-
-/// `ConditionStatus` lattice ordering per K8s convention:
-///   `True` (0) → `Unknown` (1) → `False` (2)
-///
-/// In K8s, `Status=True` on a "good" condition like `Ready` is the
-/// best case; `Status=False` is the worst (the condition has a
-/// reason why it isn't true).
-impl OutcomeLattice for ConditionStatus {
-    fn severity(&self) -> u32 {
-        match self {
-            ConditionStatus::True => 0,
-            ConditionStatus::Unknown => 1,
-            ConditionStatus::False => 2,
-        }
-    }
-
-    fn baseline() -> Self {
-        ConditionStatus::True
-    }
-}
+// ConditionStatus's OutcomeLattice impl is auto-generated via
+// gen_platform::OutcomeLattice — see crate::condition.
 
 #[cfg(test)]
 mod tests {

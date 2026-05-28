@@ -66,20 +66,26 @@ use crate::inventory::ResourceRef;
     Debug, Clone, PartialEq, Eq, Serialize, Deserialize,
     gen_platform::Discriminant,
     gen_platform::IsVariant,
+    gen_platform::OutcomeLattice,
 )]
 #[discriminant(method = "state", case = "kebab")]
+#[outcome_lattice(trait_path = "crate::outcome::OutcomeLattice")]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum ReadyState {
     /// Resource has reached its declared desired state.
+    #[outcome(severity = 0, baseline)]
     Ready,
     /// Resource is converging but not yet ready (Deployment rolling
     /// out, Job running, etc).
+    #[outcome(severity = 2)]
     InProgress { reason: String },
     /// Resource has reached a terminal failure (Pod CrashLoopBackOff,
     /// Helm release `failed`, etc).
+    #[outcome(severity = 3)]
     Failed { reason: String },
     /// State can't be classified — no `.status` populated, custom
     /// resource without kstatus support, etc.
+    #[outcome(severity = 1)]
     Unknown,
 }
 

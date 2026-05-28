@@ -69,21 +69,28 @@ pub const AVAILABLE: &str = "Available";
 /// JSON exactly: `"True"`, `"False"`, `"Unknown"`.
 ///
 /// Variant predicates (`is_true`, `is_false`, `is_unknown`),
-/// `.name()` (the wire string), and `FromStr` (parsing K8s annotations
-/// + ENV-supplied values) are all auto-generated via gen-platform
-/// derives. The round-trip is typed: `s.parse::<ConditionStatus>()
-/// .unwrap().name() == s` for every valid wire string.
+/// `.name()` (the wire string), `FromStr` (parsing K8s annotations +
+/// ENV-supplied values), and `OutcomeLattice` (severity ordering for
+/// `worst_of`/`best_of` aggregation per K8s convention `True > Unknown > False`)
+/// are all auto-generated via gen-platform derives. The round-trip
+/// is typed: `s.parse::<ConditionStatus>().unwrap().name() == s` for
+/// every valid wire string.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
     gen_platform::Discriminant,
     gen_platform::IsVariant,
     gen_platform::FromStrKind,
+    gen_platform::OutcomeLattice,
 )]
 #[discriminant(method = "name", case = "title")]
 #[from_str_kind(case = "title")]
+#[outcome_lattice(trait_path = "crate::outcome::OutcomeLattice")]
 pub enum ConditionStatus {
+    #[outcome(severity = 0, baseline)]
     True,
+    #[outcome(severity = 2)]
     False,
+    #[outcome(severity = 1)]
     Unknown,
 }
 
