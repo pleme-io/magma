@@ -30874,11 +30874,11 @@
     },
     "nixpkgs_3": {
       "locked": {
-        "lastModified": 1779467186,
-        "narHash": "sha256-nOesoDCiXcUftqbRBMz9tt4blI5PvljMWbm3kuCA+0s=",
+        "lastModified": 1779796641,
+        "narHash": "sha256-ZsIrKmhp4vbBXoXXmR/tBXA/UCsAQiJL9vsgZEduhVY=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "b77b3de8775677f84492abe84635f87b0e153f0f",
+        "rev": "25f538306313eae3927264466c70d7001dcea1df",
         "type": "github"
       },
       "original": {
@@ -36122,11 +36122,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1779974823,
-        "narHash": "sha256-+FGNdLS+CdG9FjHSHa/KlPPQTQub6RzfCxZh+74QAJE=",
+        "lastModified": 1779983881,
+        "narHash": "sha256-rexIzyWSGe+OagLUiOw7xXMrIDAzQg4Bvwuyd84cqjk=",
         "owner": "pleme-io",
         "repo": "substrate",
-        "rev": "35dbbe4ec436b5ff02fa95b9f3d868838daaf3b1",
+        "rev": "ab6d1afd70e1ab53701f243b9af711f5a8cade4d",
         "type": "github"
       },
       "original": {
