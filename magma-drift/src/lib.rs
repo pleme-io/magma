@@ -20,7 +20,12 @@ use serde_json::Value;
 // ── Decisions a policy produces ───────────────────────────────────
 
 /// What the policy engine wants done with a Change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    gen_platform::Discriminant,
+    gen_platform::IsVariant,
+)]
+#[discriminant(method = "kind", case = "snake")]
 #[serde(rename_all = "snake_case")]
 pub enum DriftDecision {
     /// Apply the change immediately without human approval.
