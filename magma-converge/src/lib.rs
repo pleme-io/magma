@@ -25,6 +25,7 @@ use thiserror::Error;
 
 pub mod dns;
 pub mod engine;
+pub mod apply;
 pub mod artifact;
 pub mod blobstore;
 pub mod condition;
@@ -44,6 +45,7 @@ pub mod terraform;
 pub mod vault;
 pub mod webhook;
 
+pub use apply::{ApplyCounts, ApplyDiff, ApplyOutcome, ApplyReport, ApplyStatus};
 pub use artifact::{Artifact, ArtifactDigest, DigestAlgo, DigestError, Provenance};
 pub use blobstore::{BlobMetadata, BlobStoreBackend, BlobStoreError, InMemoryBlobStore};
 pub use condition::{Condition, ConditionSet, ConditionStatus};
