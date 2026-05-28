@@ -44,8 +44,14 @@ impl ModulePath {
 }
 
 /// The kind of resource a `ResourceAddress` identifies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, gen_platform::TypedDispatcher)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+         gen_platform::TypedDispatcher,
+         gen_platform::Discriminant,
+         gen_platform::IsVariant,
+         gen_platform::FromStrKind)]
 #[serde(rename_all = "snake_case")]
+#[discriminant(case = "snake", also_display)]
+#[from_str_kind(case = "snake")]
 pub enum ResourceKind {
     Managed,
     Data,
@@ -185,8 +191,14 @@ pub struct OutputChange {
     pub sensitive: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, gen_platform::TypedDispatcher)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+         gen_platform::TypedDispatcher,
+         gen_platform::Discriminant,
+         gen_platform::IsVariant,
+         gen_platform::FromStrKind)]
 #[serde(rename_all = "snake_case")]
+#[discriminant(case = "snake", also_display)]
+#[from_str_kind(case = "snake")]
 pub enum Action {
     NoOp,
     Create,
