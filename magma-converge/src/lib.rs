@@ -38,6 +38,7 @@ pub mod inmemory;
 pub mod inventory;
 pub mod manifest;
 pub mod meta;
+pub mod outcome;
 pub mod policy;
 pub mod refspec;
 pub mod selector;
@@ -46,6 +47,7 @@ pub mod vault;
 pub mod webhook;
 
 pub use apply::{ApplyCounts, ApplyDiff, ApplyOutcome, ApplyReport, ApplyStatus};
+pub use outcome::{best_of, worst_of, OutcomeLattice};
 pub use artifact::{Artifact, ArtifactDigest, DigestAlgo, DigestError, Provenance};
 pub use blobstore::{BlobMetadata, BlobStoreBackend, BlobStoreError, InMemoryBlobStore};
 pub use condition::{Condition, ConditionSet, ConditionStatus};
