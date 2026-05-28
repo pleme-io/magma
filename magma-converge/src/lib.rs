@@ -26,16 +26,20 @@ use thiserror::Error;
 pub mod dns;
 pub mod engine;
 pub mod decision;
+pub mod drift;
 pub mod github;
 pub mod helm;
 pub mod inmemory;
 pub mod policy;
+pub mod refspec;
 pub mod terraform;
 pub mod vault;
 
 pub use decision::Decision;
+pub use drift::DriftPolicy;
 pub use engine::ConvergeEngine;
 pub use policy::CascadePolicy;
+pub use refspec::{RefSpec, RefSpecParseError};
 
 // ── Errors ─────────────────────────────────────────────────────────
 
