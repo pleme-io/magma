@@ -263,53 +263,35 @@ impl<R: ?Sized> HealthCheck<R> for ChainedHealthCheck<R> {
 /// typical inventory size is small (tens to low-hundreds per
 /// Kustomization), and the sorted invariant keeps iteration in
 /// canonical order without per-cycle re-sorting.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct HealthReport {
-    entries: Vec<(ResourceRef, ReadyState)>,
+/// Canonical readiness report — `Aggregator<ResourceRef, ReadyState>`.
+///
+/// As of the Aggregator extraction (PATTERN-EXTRACTION.md Pattern 4),
+/// HealthReport is a typed alias over the generic per-key outcome
+/// aggregator. Existing API (set/get/len/is_empty/iter/overall) flows
+/// through the generic; the only HealthReport-specific surface is
+/// `counts()` (per-`ReadyState`-variant counter) which lives on
+/// [`HealthReportExt`].
+///
+/// ```ignore
+/// use magma_converge::{HealthReport, HealthReportExt, ReadyState};
+/// let mut r = HealthReport::new();
+/// r.set(some_ref, ReadyState::Ready);
+/// let _counts = r.counts();        // via HealthReportExt
+/// let _overall = r.overall();      // via Aggregator
+/// ```
+pub type HealthReport = crate::aggregator::Aggregator<ResourceRef, ReadyState>;
+
+/// Extension methods specific to `HealthReport` (i.e. specialized to
+/// `ReadyState`'s four variants).
+pub trait HealthReportExt {
+    /// Per-state count (`(ready, in_progress, failed, unknown)`).
+    fn counts(&self) -> HealthCounts;
 }
 
-impl HealthReport {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Record a single resource's readiness state. If the ref is
-    /// already present, its state is overwritten.
-    pub fn set(&mut self, r: ResourceRef, state: ReadyState) {
-        match self.entries.binary_search_by(|(rr, _)| rr.cmp(&r)) {
-            Ok(idx) => self.entries[idx].1 = state,
-            Err(idx) => self.entries.insert(idx, (r, state)),
-        }
-    }
-
-    /// Lookup a single resource's recorded state. O(log n).
-    pub fn get(&self, r: &ResourceRef) -> Option<&ReadyState> {
-        self.entries
-            .binary_search_by(|(rr, _)| rr.cmp(r))
-            .ok()
-            .map(|idx| &self.entries[idx].1)
-    }
-
-    /// Number of recorded entries.
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Iterate `(ResourceRef, ReadyState)` pairs in canonical
-    /// (sorted) `ResourceRef` order.
-    pub fn iter(&self) -> impl Iterator<Item = (&ResourceRef, &ReadyState)> {
-        self.entries.iter().map(|(r, s)| (r, s))
-    }
-
-    /// Per-state count (`(ready, in_progress, failed, unknown)`).
-    pub fn counts(&self) -> HealthCounts {
+impl HealthReportExt for HealthReport {
+    fn counts(&self) -> HealthCounts {
         let mut c = HealthCounts::default();
-        for (_, state) in &self.entries {
+        for (_, state) in self.iter() {
             match state {
                 ReadyState::Ready => c.ready += 1,
                 ReadyState::InProgress { .. } => c.in_progress += 1,
@@ -318,20 +300,6 @@ impl HealthReport {
             }
         }
         c
-    }
-
-    /// The aggregate readiness of the report — the worst-severity
-    /// state across all entries.
-    ///
-    /// Order: `Failed > InProgress > Unknown > Ready`. An empty
-    /// report returns `Ready` (vacuous truth — no resources, nothing
-    /// to fail).
-    ///
-    /// When multiple entries share the worst severity, the first one
-    /// encountered (in canonical ResourceRef order) supplies the
-    /// reason string.
-    pub fn overall(&self) -> ReadyState {
-        crate::outcome::worst_of(self.entries.iter().map(|(_, s)| s.clone()))
     }
 }
 

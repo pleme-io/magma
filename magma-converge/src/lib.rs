@@ -25,6 +25,7 @@ use thiserror::Error;
 
 pub mod dns;
 pub mod engine;
+pub mod aggregator;
 pub mod apply;
 pub mod artifact;
 pub mod backend_error;
@@ -47,6 +48,7 @@ pub mod terraform;
 pub mod vault;
 pub mod webhook;
 
+pub use aggregator::Aggregator;
 pub use apply::{ApplyCounts, ApplyDiff, ApplyOutcome, ApplyReport, ApplyStatus};
 pub use outcome::{best_of, worst_of, OutcomeLattice};
 pub use artifact::{Artifact, ArtifactDigest, DigestAlgo, DigestError, Provenance};
@@ -58,7 +60,7 @@ pub use drift::DriftPolicy;
 pub use engine::ConvergeEngine;
 pub use health::{
     AlwaysReady, ChainedHealthCheck, ClosureCheck, HealthCheck, HealthCounts, HealthReport,
-    NeverReady, ReadyState,
+    HealthReportExt, NeverReady, ReadyState,
 };
 pub use inventory::{Inventory, InventoryDiff, ResourceRef};
 pub use manifest::{Manifest, TypeMeta};
