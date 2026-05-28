@@ -127,7 +127,12 @@ pub struct NestedBlock {
     pub max_items: u64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    gen_platform::Discriminant,
+    gen_platform::IsVariant,
+)]
+#[discriminant(method = "kind", case = "snake")]
 #[serde(rename_all = "snake_case")]
 pub enum NestingMode {
     Single,
@@ -218,7 +223,12 @@ pub enum Action {
 gen_platform::register_dispatcher!("magma.resource-kind", ResourceKind);
 gen_platform::register_dispatcher!("magma.action",        Action);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize,
+    gen_platform::Discriminant,
+    gen_platform::IsVariant,
+)]
+#[discriminant(method = "kind", case = "snake")]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeReason {
     NewResource,
@@ -260,7 +270,12 @@ pub struct StateInstance {
     pub status: InstanceStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    gen_platform::Discriminant,
+    gen_platform::IsVariant,
+)]
+#[discriminant(method = "kind", case = "snake")]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceStatus {
     Ready,
@@ -283,7 +298,12 @@ pub struct Diagnostic {
     pub address: Option<ResourceAddress>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    gen_platform::Discriminant,
+    gen_platform::IsVariant,
+)]
+#[discriminant(method = "kind", case = "snake")]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Error,
