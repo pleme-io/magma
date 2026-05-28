@@ -31,6 +31,7 @@ pub mod drift;
 pub mod github;
 pub mod helm;
 pub mod inmemory;
+pub mod inventory;
 pub mod policy;
 pub mod refspec;
 pub mod terraform;
@@ -40,6 +41,7 @@ pub use artifact::{Artifact, ArtifactDigest, DigestAlgo, DigestError, Provenance
 pub use decision::Decision;
 pub use drift::DriftPolicy;
 pub use engine::ConvergeEngine;
+pub use inventory::{Inventory, InventoryDiff, ResourceRef};
 pub use policy::CascadePolicy;
 pub use refspec::{RefSpec, RefSpecParseError};
 
