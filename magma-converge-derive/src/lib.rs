@@ -180,6 +180,91 @@ fn variant_pattern(v: &Variant) -> TokenStream2 {
     }
 }
 
+/// Per-variant predicate derive — for every variant `V`, generates
+/// `pub const fn is_v(&self) -> bool` returning `true` iff `self` is
+/// the `V` variant.
+///
+/// # Usage
+///
+/// ```ignore
+/// use magma_converge_derive::IsVariant;
+///
+/// #[derive(IsVariant)]
+/// pub enum ConditionStatus { True, False, Unknown }
+///
+/// // Auto-generated:
+/// //   impl ConditionStatus {
+/// //       pub const fn is_true(&self) -> bool { matches!(self, Self::True) }
+/// //       pub const fn is_false(&self) -> bool { matches!(self, Self::False) }
+/// //       pub const fn is_unknown(&self) -> bool { matches!(self, Self::Unknown) }
+/// //   }
+/// ```
+///
+/// Variant names are snake_cased for the method (e.g. `InProgress`
+/// → `is_in_progress`). Use `#[is_variant(name = "explicit")]` on a
+/// variant to override the auto-derived name.
+#[proc_macro_derive(IsVariant, attributes(is_variant))]
+pub fn derive_is_variant(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let enum_name = input.ident.clone();
+
+    let de = match &input.data {
+        Data::Enum(de) => de.clone(),
+        _ => {
+            return syn::Error::new_spanned(
+                &enum_name,
+                "#[derive(IsVariant)] is only valid on enums",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    let methods: Vec<TokenStream2> = de
+        .variants
+        .iter()
+        .map(|v| {
+            let pattern = variant_pattern(v);
+            let method_name = variant_is_method_name(v);
+            quote! {
+                pub const fn #method_name(&self) -> bool {
+                    matches!(self, #pattern)
+                }
+            }
+        })
+        .collect();
+
+    let expanded = quote! {
+        impl #impl_generics #enum_name #ty_generics #where_clause {
+            #(#methods)*
+        }
+    };
+
+    expanded.into()
+}
+
+fn variant_is_method_name(v: &Variant) -> syn::Ident {
+    let explicit = v.attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("is_variant") {
+            return None;
+        }
+        let mut out = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("name") {
+                let value = meta.value()?;
+                let s: syn::LitStr = value.parse()?;
+                out = Some(s.value());
+            }
+            Ok(())
+        });
+        out
+    });
+    let snake = explicit.unwrap_or_else(|| to_snake(&v.ident.to_string()));
+    syn::Ident::new(&format!("is_{snake}"), proc_macro2::Span::call_site())
+}
+
 #[proc_macro_derive(Discriminant, attributes(discriminant))]
 pub fn derive_discriminant(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

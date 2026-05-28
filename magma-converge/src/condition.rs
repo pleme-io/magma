@@ -67,30 +67,19 @@ pub const AVAILABLE: &str = "Available";
 
 /// K8s metav1.ConditionStatus tri-state. Wire format matches K8s
 /// JSON exactly: `"True"`, `"False"`, `"Unknown"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+///
+/// Variant predicates (`is_true`, `is_false`, `is_unknown`) are
+/// auto-generated via `#[derive(IsVariant)]`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    magma_converge_derive::Discriminant,
+    magma_converge_derive::IsVariant,
+)]
 #[discriminant(method = "name", case = "title")]
 pub enum ConditionStatus {
     True,
     False,
     Unknown,
-}
-
-impl ConditionStatus {
-    /// `true` when status is exactly `True`. The most common predicate.
-    pub fn is_true(self) -> bool {
-        matches!(self, ConditionStatus::True)
-    }
-
-    /// `true` when status is exactly `False`.
-    pub fn is_false(self) -> bool {
-        matches!(self, ConditionStatus::False)
-    }
-
-    /// `true` when status is exactly `Unknown`.
-    pub fn is_unknown(self) -> bool {
-        matches!(self, ConditionStatus::Unknown)
-    }
-
 }
 
 /// K8s metav1.Condition shape. Wire format is byte-identical to

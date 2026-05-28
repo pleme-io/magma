@@ -62,7 +62,11 @@ use crate::inventory::ResourceRef;
 /// `InProgress` and `Failed` carry an operator-facing `reason`
 /// string (typed enough for operator display, free-form enough
 /// to surface the K8s condition message verbatim).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize,
+    magma_converge_derive::Discriminant,
+    magma_converge_derive::IsVariant,
+)]
 #[discriminant(method = "state", case = "kebab")]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum ReadyState {
@@ -77,30 +81,6 @@ pub enum ReadyState {
     /// State can't be classified — no `.status` populated, custom
     /// resource without kstatus support, etc.
     Unknown,
-}
-
-impl ReadyState {
-    /// `true` only when `Ready`.
-    pub fn is_ready(&self) -> bool {
-        matches!(self, ReadyState::Ready)
-    }
-
-    /// `true` for `InProgress` — caller should requeue and wait.
-    pub fn is_in_progress(&self) -> bool {
-        matches!(self, ReadyState::InProgress { .. })
-    }
-
-    /// `true` for `Failed` — caller should escalate per the configured
-    /// reactive policy.
-    pub fn is_failed(&self) -> bool {
-        matches!(self, ReadyState::Failed { .. })
-    }
-
-    /// `true` for `Unknown` — caller should emit a warning + continue.
-    pub fn is_unknown(&self) -> bool {
-        matches!(self, ReadyState::Unknown)
-    }
-
 }
 
 /// The canonical resource-readiness predicate. Generic over resource
