@@ -25,6 +25,7 @@ use thiserror::Error;
 
 pub mod dns;
 pub mod engine;
+pub mod artifact;
 pub mod decision;
 pub mod drift;
 pub mod github;
@@ -35,6 +36,7 @@ pub mod refspec;
 pub mod terraform;
 pub mod vault;
 
+pub use artifact::{Artifact, ArtifactDigest, DigestAlgo, DigestError, Provenance};
 pub use decision::Decision;
 pub use drift::DriftPolicy;
 pub use engine::ConvergeEngine;
