@@ -61,7 +61,8 @@ use serde::{Deserialize, Serialize};
 /// `Generic*` variants are wire-format generics (the substrate's own
 /// validators); the named variants (`Github`, `Gitlab`, etc) carry
 /// vendor-specific signature schemes that adapter crates implement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[discriminant(method = "name", case = "kebab")]
 #[serde(rename_all = "kebab-case")]
 pub enum WebhookKind {
     /// No verification — accepts every request. Test/dev only.
@@ -82,6 +83,7 @@ pub enum WebhookKind {
 
     /// Harbor / quay / GCR / ACR / Nexus registry notifications.
     Harbor,
+    #[discriminant(name = "dockerhub")]
     DockerHub,
     Quay,
     Nexus,
@@ -90,27 +92,6 @@ pub enum WebhookKind {
 
     /// CDEvents-shape webhook (vendor-neutral CI/CD event format).
     Cdevents,
-}
-
-impl WebhookKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            WebhookKind::Generic => "generic",
-            WebhookKind::GenericHmac => "generic-hmac",
-            WebhookKind::GenericOidc => "generic-oidc",
-            WebhookKind::HeaderToken => "header-token",
-            WebhookKind::Github => "github",
-            WebhookKind::Gitlab => "gitlab",
-            WebhookKind::Bitbucket => "bitbucket",
-            WebhookKind::Harbor => "harbor",
-            WebhookKind::DockerHub => "dockerhub",
-            WebhookKind::Quay => "quay",
-            WebhookKind::Nexus => "nexus",
-            WebhookKind::Gcr => "gcr",
-            WebhookKind::Acr => "acr",
-            WebhookKind::Cdevents => "cdevents",
-        }
-    }
 }
 
 /// Typed HTTP webhook request. The substrate carries the raw method

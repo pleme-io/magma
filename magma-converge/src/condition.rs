@@ -67,7 +67,8 @@ pub const AVAILABLE: &str = "Available";
 
 /// K8s metav1.ConditionStatus tri-state. Wire format matches K8s
 /// JSON exactly: `"True"`, `"False"`, `"Unknown"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[discriminant(method = "name", case = "title")]
 pub enum ConditionStatus {
     True,
     False,
@@ -90,14 +91,6 @@ impl ConditionStatus {
         matches!(self, ConditionStatus::Unknown)
     }
 
-    /// String form matching K8s wire format.
-    pub fn name(self) -> &'static str {
-        match self {
-            ConditionStatus::True => "True",
-            ConditionStatus::False => "False",
-            ConditionStatus::Unknown => "Unknown",
-        }
-    }
 }
 
 /// K8s metav1.Condition shape. Wire format is byte-identical to

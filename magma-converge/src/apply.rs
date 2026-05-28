@@ -73,7 +73,8 @@ impl ApplyDiff {
 /// the success variants (commonly `ResourceRef` for apply pipelines
 /// that track refs, but consumers may carry `Manifest<S>` to preserve
 /// the full applied object).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[discriminant(method = "kind", case = "lower")]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ApplyOutcome<T> {
     /// Resource didn't exist; reconciler created it. Carries the
@@ -113,19 +114,6 @@ pub enum ApplyOutcome<T> {
 }
 
 impl<T> ApplyOutcome<T> {
-    /// Stable kind discriminant for metrics labels + audit logs.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            ApplyOutcome::Created { .. } => "created",
-            ApplyOutcome::Updated { .. } => "updated",
-            ApplyOutcome::Unchanged { .. } => "unchanged",
-            ApplyOutcome::Deleted { .. } => "deleted",
-            ApplyOutcome::Skipped { .. } => "skipped",
-            ApplyOutcome::Failed { .. } => "failed",
-            ApplyOutcome::Conflict { .. } => "conflict",
-        }
-    }
-
     /// `true` for outcomes that represent a successful apply step —
     /// `Created`, `Updated`, `Unchanged`, `Deleted`. (Skipped is not
     /// a failure but also not "applied".)
@@ -211,7 +199,8 @@ impl ApplyCounts {
 /// advance after a typed apply cycle. Mirrors the
 /// `HealthReport::overall` shape (worst-severity-wins) for apply
 /// outcomes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[discriminant(method = "name", case = "kebab")]
 #[serde(rename_all = "kebab-case")]
 pub enum ApplyStatus {
     /// Empty report or every outcome `Skipped` — nothing was attempted
@@ -236,16 +225,6 @@ pub enum ApplyStatus {
 }
 
 impl ApplyStatus {
-    pub fn name(self) -> &'static str {
-        match self {
-            ApplyStatus::Empty => "empty",
-            ApplyStatus::AllSucceeded => "all-succeeded",
-            ApplyStatus::SucceededWithSkipped => "succeeded-with-skipped",
-            ApplyStatus::Failed => "failed",
-            ApplyStatus::Conflict => "conflict",
-        }
-    }
-
     /// `true` for statuses that signal a typed-apply error
     /// (Failed | Conflict). Controllers route per retry / escalation.
     pub fn is_error(self) -> bool {

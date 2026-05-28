@@ -62,7 +62,8 @@ use crate::inventory::ResourceRef;
 /// `InProgress` and `Failed` carry an operator-facing `reason`
 /// string (typed enough for operator display, free-form enough
 /// to surface the K8s condition message verbatim).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, magma_converge_derive::Discriminant)]
+#[discriminant(method = "state", case = "kebab")]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum ReadyState {
     /// Resource has reached its declared desired state.
@@ -98,16 +99,6 @@ impl ReadyState {
     /// `true` for `Unknown` — caller should emit a warning + continue.
     pub fn is_unknown(&self) -> bool {
         matches!(self, ReadyState::Unknown)
-    }
-
-    /// Variant discriminant string for metrics labels.
-    pub fn state(&self) -> &'static str {
-        match self {
-            ReadyState::Ready => "ready",
-            ReadyState::InProgress { .. } => "in-progress",
-            ReadyState::Failed { .. } => "failed",
-            ReadyState::Unknown => "unknown",
-        }
     }
 
 }
