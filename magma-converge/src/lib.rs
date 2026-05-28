@@ -37,6 +37,7 @@ pub mod inmemory;
 pub mod inventory;
 pub mod policy;
 pub mod refspec;
+pub mod selector;
 pub mod terraform;
 pub mod vault;
 pub mod webhook;
@@ -54,6 +55,7 @@ pub use health::{
 pub use inventory::{Inventory, InventoryDiff, ResourceRef};
 pub use policy::CascadePolicy;
 pub use refspec::{RefSpec, RefSpecParseError};
+pub use selector::{LabelSelector, LabelSelectorOperator, LabelSelectorRequirement};
 pub use webhook::{
     HeaderTokenValidator, NoOpValidator, WebhookError, WebhookEvent, WebhookKind,
     WebhookRequest, WebhookValidator,
