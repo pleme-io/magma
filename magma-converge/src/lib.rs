@@ -25,6 +25,7 @@ use thiserror::Error;
 
 pub mod dns;
 pub mod engine;
+pub mod decision;
 pub mod github;
 pub mod helm;
 pub mod inmemory;
@@ -32,6 +33,7 @@ pub mod policy;
 pub mod terraform;
 pub mod vault;
 
+pub use decision::Decision;
 pub use engine::ConvergeEngine;
 pub use policy::CascadePolicy;
 
