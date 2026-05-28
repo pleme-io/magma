@@ -37,6 +37,7 @@ pub mod policy;
 pub mod refspec;
 pub mod terraform;
 pub mod vault;
+pub mod webhook;
 
 pub use artifact::{Artifact, ArtifactDigest, DigestAlgo, DigestError, Provenance};
 pub use blobstore::{BlobMetadata, BlobStoreBackend, BlobStoreError, InMemoryBlobStore};
@@ -46,6 +47,10 @@ pub use engine::ConvergeEngine;
 pub use inventory::{Inventory, InventoryDiff, ResourceRef};
 pub use policy::CascadePolicy;
 pub use refspec::{RefSpec, RefSpecParseError};
+pub use webhook::{
+    HeaderTokenValidator, NoOpValidator, WebhookError, WebhookEvent, WebhookKind,
+    WebhookRequest, WebhookValidator,
+};
 
 // ── Errors ─────────────────────────────────────────────────────────
 
