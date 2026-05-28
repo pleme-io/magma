@@ -44,7 +44,7 @@ impl ModulePath {
 }
 
 /// The kind of resource a `ResourceAddress` identifies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, gen_platform::TypedDispatcher)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     Managed,
@@ -185,7 +185,7 @@ pub struct OutputChange {
     pub sensitive: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, gen_platform::TypedDispatcher)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     NoOp,
@@ -198,6 +198,13 @@ pub enum Action {
     CreateThenDelete,
     DeleteThenCreate,
 }
+
+// Fleet-wide dispatcher-catalog registrations for magma's IaC
+// executor surface. Seventh consumer class adopting gen-platform's
+// typed-dispatcher catamorphism. See
+// theory/UNIFIED-COMPUTING-MODEL.md §VI.
+gen_platform::register_dispatcher!("magma.resource-kind", ResourceKind);
+gen_platform::register_dispatcher!("magma.action",        Action);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

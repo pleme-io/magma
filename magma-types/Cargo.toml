@@ -19,3 +19,5 @@ schemars     = { workspace = true }
 thiserror    = { workspace = true }
 chrono       = { workspace = true }
 uuid         = { workspace = true }
+gen-platform = { workspace = true }
+gen-types    = { workspace = true }
