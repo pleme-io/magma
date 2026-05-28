@@ -28,10 +28,12 @@ pub mod engine;
 pub mod github;
 pub mod helm;
 pub mod inmemory;
+pub mod policy;
 pub mod terraform;
 pub mod vault;
 
 pub use engine::ConvergeEngine;
+pub use policy::CascadePolicy;
 
 // ── Errors ─────────────────────────────────────────────────────────
 
