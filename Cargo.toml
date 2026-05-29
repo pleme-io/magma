@@ -64,8 +64,8 @@ magma-types     = { path = "magma-types" }
 
 # Gen-platform — typed-dispatcher catalog integration
 # (theory/UNIFIED-COMPUTING-MODEL.md §VI).
-gen-platform = { path = "../gen/crates/gen-platform" }
-gen-types = { path = "../gen/crates/gen-types" }
+gen-platform = { git = "https://github.com/pleme-io/gen" }
+gen-types = { git = "https://github.com/pleme-io/gen" }
 magma-config    = { path = "magma-config" }
 magma-pangea    = { path = "magma-pangea" }
 magma-protocol  = { path = "magma-protocol" }
