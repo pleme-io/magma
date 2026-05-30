@@ -2,3 +2,4 @@
 /result
 result-*
 .direnv
+Cargo.build-spec.json
