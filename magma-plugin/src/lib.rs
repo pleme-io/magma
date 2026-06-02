@@ -75,6 +75,58 @@ fn err_chain(e: &dyn std::error::Error) -> String {
     s
 }
 
+/// Wraps an IO to **disable vectored writes**.
+///
+/// `tokio_rustls::client::TlsStream` advertises `is_write_vectored() ==
+/// true` but does not gather all buffers — under a vectored write it
+/// effectively pushes only the first slice. h2 batches a request's
+/// HEADERS + DATA + END_STREAM into one vectored write, so the HEADERS
+/// reach the provider (enough for it to reject an unknown service with
+/// `Unimplemented`) while the DATA + END_STREAM are dropped — a real
+/// RPC handler then blocks forever waiting for the request body, and the
+/// connection stalls while the provider keeps sending keep-alive PINGs.
+///
+/// By NOT forwarding `is_write_vectored`/`poll_write_vectored`, this
+/// wrapper takes the `AsyncWrite` default (vectored == false; the
+/// default `poll_write_vectored` writes the first non-empty slice via
+/// `poll_write`), forcing h2 to write each frame sequentially so the
+/// whole request reaches the provider.
+struct SequentialWrite<S>(S);
+
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for SequentialWrite<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for SequentialWrite<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+    // is_write_vectored() / poll_write_vectored() intentionally NOT
+    // forwarded — the trait defaults are non-vectored.
+}
+
 fn ensure_crypto_provider() {
     use std::sync::Once;
     static INIT: Once = Once::new();
@@ -546,7 +598,7 @@ impl Plugin {
                             let server_name = ServerName::try_from("localhost")
                                 .map_err(|e| std::io::Error::other(format!("server_name: {e}")))?;
                             let tls = connector.connect(server_name, stream).await?;
-                            Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(tls))
+                            Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(SequentialWrite(tls)))
                         }
                     }))
                     .await
@@ -569,7 +621,7 @@ impl Plugin {
                             let server_name = ServerName::try_from("localhost")
                                 .map_err(|e| std::io::Error::other(format!("server_name: {e}")))?;
                             let tls = connector.connect(server_name, stream).await?;
-                            Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(tls))
+                            Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(SequentialWrite(tls)))
                         }
                     }))
                     .await
