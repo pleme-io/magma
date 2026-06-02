@@ -145,84 +145,34 @@ mod tests {
     }
 
     #[test]
-    fn resolve_with_no_layers_returns_default() {
-        let result = ReactivePolicy::resolve(&[], default_policy());
-        assert_eq!(result, default_policy());
-    }
-
-    #[test]
-    fn resolve_with_empty_layer_returns_default() {
-        // An empty layer (all None) shouldn't change the default.
-        let layer = ReactivePolicy::default();
-        let result = ReactivePolicy::resolve(&[Some(&layer)], default_policy());
-        assert_eq!(result, default_policy());
-    }
-
-    #[test]
-    fn single_layer_overrides_per_field() {
-        // Layer sets only failure_escalation — phase_timeout +
-        // verified_blocked must keep default values.
-        let layer = ReactivePolicy {
-            failure_escalation: Some(fe(99, "Page")),
-            ..Default::default()
-        };
-        let result = ReactivePolicy::resolve(&[Some(&layer)], default_policy());
-
-        assert_eq!(result.failure_escalation, Some(fe(99, "Page")));
-        // Other fields unchanged.
-        assert_eq!(result.phase_timeout, default_policy().phase_timeout);
-        assert_eq!(result.verified_blocked, default_policy().verified_blocked);
-    }
-
-    #[test]
-    fn innermost_wins_per_field() {
-        // Three layers — outermost (gem) sets one field, middle sets
-        // another, innermost sets yet another. Result has each field
-        // from its respective layer.
-        let outer = ReactivePolicy {
-            failure_escalation: Some(fe(10, "Alert")),
-            ..Default::default()
-        };
-        let middle = ReactivePolicy {
-            phase_timeout: Some(pt("1m", "2m", "3m", "Suspend")),
-            ..Default::default()
-        };
-        let inner = ReactivePolicy {
-            verified_blocked: Some(vb("1m", "Page")),
-            ..Default::default()
-        };
-
-        let result = ReactivePolicy::resolve(
-            &[Some(&outer), Some(&middle), Some(&inner)],
-            ReactivePolicy::default(),
-        );
-
-        assert_eq!(result.failure_escalation, Some(fe(10, "Alert")));
-        assert_eq!(result.phase_timeout, Some(pt("1m", "2m", "3m", "Suspend")));
-        assert_eq!(result.verified_blocked, Some(vb("1m", "Page")));
-    }
-
-    #[test]
-    fn innermost_field_overrides_outer_field() {
-        // Two layers set the SAME field — innermost wins.
-        let outer = ReactivePolicy {
-            failure_escalation: Some(fe(10, "Alert")),
-            ..Default::default()
-        };
-        let inner = ReactivePolicy {
-            failure_escalation: Some(fe(50, "Page")),
-            ..Default::default()
-        };
-
-        let result = ReactivePolicy::resolve(
-            &[Some(&outer), Some(&inner)],
-            ReactivePolicy::default(),
-        );
-
-        assert_eq!(
-            result.failure_escalation,
-            Some(fe(50, "Page")),
-            "innermost layer wins for the same field"
+    fn reactive_policy_obeys_the_cascade_law_harness() {
+        // The cascade laws (resolve-identity, empty-layer, idempotence,
+        // merge-self-identity, innermost-wins fold-order, determinism)
+        // are proven generically by the canonical harness in
+        // shigoto-types::testing — they live with the trait, not
+        // re-spelled per domain impl. Samples exercise each field plus an
+        // overlapping field so the per-field + innermost-wins laws
+        // actually witness on this 3-field reference policy.
+        shigoto_types::testing::assert_cascade_laws_with_default(
+            default_policy(),
+            &[
+                ReactivePolicy {
+                    failure_escalation: Some(fe(10, "Alert")),
+                    ..Default::default()
+                },
+                ReactivePolicy {
+                    phase_timeout: Some(pt("1m", "2m", "3m", "Suspend")),
+                    ..Default::default()
+                },
+                ReactivePolicy {
+                    verified_blocked: Some(vb("1m", "Page")),
+                    ..Default::default()
+                },
+                ReactivePolicy {
+                    failure_escalation: Some(fe(99, "Page")),
+                    ..Default::default()
+                },
+            ],
         );
     }
 
@@ -239,96 +189,6 @@ mod tests {
             ReactivePolicy::resolve(&[None, Some(&inner), None], ReactivePolicy::default());
 
         assert_eq!(result.failure_escalation, Some(fe(5, "Page")));
-    }
-
-    #[test]
-    fn merge_is_idempotent() {
-        // self.merge(layer); self.merge(layer) == self.merge(layer)
-        let mut once = default_policy();
-        let mut twice = default_policy();
-        let layer = ReactivePolicy {
-            failure_escalation: Some(fe(99, "Page")),
-            ..Default::default()
-        };
-
-        once.merge(&layer);
-        twice.merge(&layer);
-        twice.merge(&layer);
-
-        assert_eq!(
-            once, twice,
-            "merge must be idempotent — re-applying the same layer is a no-op"
-        );
-    }
-
-    #[test]
-    fn merge_per_field() {
-        // Merging a layer with one field set should only touch that
-        // field — other fields unchanged.
-        let mut policy = default_policy();
-        let original_phase = policy.phase_timeout.clone();
-        let original_blocked = policy.verified_blocked.clone();
-
-        let layer = ReactivePolicy {
-            failure_escalation: Some(fe(42, "Suspend")),
-            ..Default::default()
-        };
-        policy.merge(&layer);
-
-        assert_eq!(policy.failure_escalation, Some(fe(42, "Suspend")));
-        assert_eq!(policy.phase_timeout, original_phase, "phase_timeout untouched");
-        assert_eq!(policy.verified_blocked, original_blocked, "verified_blocked untouched");
-    }
-
-    #[test]
-    fn resolve_associativity_when_same_field() {
-        // When all layers touch the same field, resolve is independent
-        // of how the operation is grouped (the cascade is left-fold
-        // associative across the layer slice).
-        let outer = ReactivePolicy {
-            failure_escalation: Some(fe(1, "A")),
-            ..Default::default()
-        };
-        let middle = ReactivePolicy {
-            failure_escalation: Some(fe(2, "B")),
-            ..Default::default()
-        };
-        let inner = ReactivePolicy {
-            failure_escalation: Some(fe(3, "C")),
-            ..Default::default()
-        };
-
-        let result = ReactivePolicy::resolve(
-            &[Some(&outer), Some(&middle), Some(&inner)],
-            ReactivePolicy::default(),
-        );
-
-        assert_eq!(
-            result.failure_escalation,
-            Some(fe(3, "C")),
-            "innermost (rightmost) wins"
-        );
-    }
-
-    #[test]
-    fn determinism_law() {
-        // Same input layers → same output, every time.
-        let layers = vec![
-            ReactivePolicy {
-                failure_escalation: Some(fe(1, "A")),
-                ..Default::default()
-            },
-            ReactivePolicy {
-                phase_timeout: Some(pt("1m", "2m", "3m", "Page")),
-                ..Default::default()
-            },
-        ];
-        let refs: Vec<Option<&ReactivePolicy>> = layers.iter().map(Some).collect();
-
-        let a = ReactivePolicy::resolve(&refs, default_policy());
-        let b = ReactivePolicy::resolve(&refs, default_policy());
-
-        assert_eq!(a, b, "resolve must be deterministic for the same layer set");
     }
 
     #[test]
