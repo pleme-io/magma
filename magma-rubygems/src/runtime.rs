@@ -10,7 +10,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::load_path::{GemLocator, LoadPathError, resolve_load_path};
+use crate::load_path::{
+    GemLocator, LoadPathError, resolve_load_path, resolve_load_path_for_roots,
+};
 use crate::lockfile::Lockfile;
 use crate::tree::VirtualGemTree;
 
@@ -67,6 +69,27 @@ pub fn resolve_ruby_env(
     ruby_version: impl Into<String>,
 ) -> Result<RubyEnvironment, LoadPathError> {
     let plan = resolve_load_path(lock, locator)?;
+    Ok(RubyEnvironment {
+        gem_path: std::path::PathBuf::new(),
+        ruby_lib: plan.load_path,
+        ruby_version: ruby_version.into(),
+        gem_tree_attestation: plan.attestation,
+    })
+}
+
+/// Like [`resolve_ruby_env`] but resolves only the transitive closure
+/// of `roots` (the declared required gems) — see
+/// [`resolve_load_path_for_roots`]. This is the entry point the
+/// operator uses, so a workspace's dev/test-group gems (rspec,
+/// simplecov, …) that the image doesn't bundle never trigger a
+/// spurious missing-gem failure.
+pub fn resolve_ruby_env_for_roots(
+    lock: &Lockfile,
+    locator: &dyn GemLocator,
+    roots: &[String],
+    ruby_version: impl Into<String>,
+) -> Result<RubyEnvironment, LoadPathError> {
+    let plan = resolve_load_path_for_roots(lock, locator, roots)?;
     Ok(RubyEnvironment {
         gem_path: std::path::PathBuf::new(),
         ruby_lib: plan.load_path,

@@ -124,15 +124,51 @@ pub fn resolve_load_path(
     lock: &Lockfile,
     locator: &dyn GemLocator,
 ) -> Result<LoadPathPlan, LoadPathError> {
-    let ordered = dependency_order(&lock.gems);
+    plan_from_ordered(&dependency_order(&lock.gems), locator)
+}
 
+/// Like [`resolve_load_path`] but resolves **only the transitive
+/// closure of `roots`** (gem names) over the lockfile's `depends_on`
+/// edges.
+///
+/// This is the operator's entry point. A workspace `Gemfile.lock`
+/// carries dev/test-group gems (rspec, simplecov, …) that a *compile*
+/// never loads and the operator image never bundles; resolving the
+/// whole lock would return a spurious [`LoadPathError::MissingGems`]
+/// for them. Passing the declared required gems (e.g.
+/// `["pangea-architectures"]` from the WorkspaceCatalog) as `roots`
+/// restricts resolution to exactly what the compile needs — the
+/// composer and its transitive provider/runtime deps — so test gems
+/// are never visited.
+///
+/// `roots` absent from the lockfile are skipped (a declared-required
+/// gem missing from the lock is a workspace bug the resolver can't
+/// speak to). Gems inside the closure that no locator hosts are still
+/// a loud [`LoadPathError::MissingGems`].
+pub fn resolve_load_path_for_roots(
+    lock: &Lockfile,
+    locator: &dyn GemLocator,
+    roots: &[String],
+) -> Result<LoadPathPlan, LoadPathError> {
+    let closure = transitive_closure(&lock.gems, roots);
+    plan_from_ordered(&dependency_order(&closure), locator)
+}
+
+/// Locate every gem in `ordered`, dedup lib dirs (keep first), and
+/// attest — aggregating every gem no locator hosts into a single
+/// [`LoadPathError::MissingGems`]. Shared by the whole-lock and
+/// closure-restricted entry points.
+fn plan_from_ordered(
+    ordered: &[ResolvedGem],
+    locator: &dyn GemLocator,
+) -> Result<LoadPathPlan, LoadPathError> {
     let mut load_path: Vec<PathBuf> = Vec::with_capacity(ordered.len());
     let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
     let mut missing: Vec<MissingGem> = Vec::new();
     // (name, version, lib_path) projection for the attestation.
     let mut projection: Vec<(String, String, String)> = Vec::with_capacity(ordered.len());
 
-    for gem in &ordered {
+    for gem in ordered {
         match locator.locate(gem) {
             Some(lib) => {
                 projection.push((
@@ -164,6 +200,32 @@ pub fn resolve_load_path(
         attestation: attest_projection(&projection),
         load_path,
     })
+}
+
+/// The subset of `gems` reachable from `roots` by following
+/// `depends_on` edges (roots included). Order of the returned Vec is
+/// unspecified — [`dependency_order`] re-sorts it. Edges into gems not
+/// present in `gems` (default/stdlib gems) are simply not followed.
+fn transitive_closure(gems: &[ResolvedGem], roots: &[String]) -> Vec<ResolvedGem> {
+    let by_name: BTreeMap<&str, &ResolvedGem> =
+        gems.iter().map(|g| (g.name.as_str(), g)).collect();
+    let mut keep: BTreeSet<&str> = BTreeSet::new();
+    let mut stack: Vec<&str> = roots
+        .iter()
+        .map(String::as_str)
+        .filter(|r| by_name.contains_key(r))
+        .collect();
+    while let Some(name) = stack.pop() {
+        if !keep.insert(name) {
+            continue;
+        }
+        for dep in &by_name[name].depends_on {
+            if by_name.contains_key(dep.as_str()) && !keep.contains(dep.as_str()) {
+                stack.push(dep.as_str());
+            }
+        }
+    }
+    keep.iter().map(|n| by_name[n].clone()).collect()
 }
 
 /// Order gems deps-before-dependents (Kahn topo sort, alphabetical
@@ -690,5 +752,66 @@ mod tests {
         assert!(pos("dry-types") < pos("dry-struct"));
         assert!(pos("pangea-core") < pos("pangea-gcp"));
         assert!(pos("pangea-gcp") < pos("architectures"));
+    }
+
+    // ── transitive-closure-from-roots (test-gem exclusion) ──
+
+    /// THE operator-shaped test: a workspace lock with test-group gems
+    /// (rspec/simplecov) the operator does NOT bundle. Whole-lock
+    /// resolution would fail MissingGems on them; root-restricted
+    /// resolution to ["pangea-architectures"] visits only the compile
+    /// closure, so the test gems are neither required nor missing.
+    #[test]
+    fn roots_closure_excludes_unbundled_test_gems() {
+        let lock = lock_of(vec![
+            gem("pangea-architectures", &["pangea-core"]),
+            gem("pangea-core", &["dry-struct"]),
+            gem("dry-struct", &[]),
+            // dev/test group — NOT reachable from pangea-architectures:
+            gem("rspec", &["rspec-core"]),
+            gem("rspec-core", &[]),
+            gem("simplecov", &["docile"]),
+            gem("docile", &[]),
+        ]);
+        // Locator hosts ONLY the runtime closure (mirrors the operator,
+        // which doesn't bundle rspec/simplecov).
+        let loc = MapLocator::hosting(&[
+            ("pangea-architectures", "/g/arch/lib"),
+            ("pangea-core", "/g/core/lib"),
+            ("dry-struct", "/g/dry/lib"),
+        ]);
+
+        // Whole-lock resolution FAILS on the unbundled test gems.
+        let whole = resolve_load_path(&lock, &loc);
+        assert!(matches!(whole, Err(LoadPathError::MissingGems(_))), "whole-lock hits test gems");
+
+        // Root-restricted resolution succeeds — test gems never visited.
+        let roots = vec!["pangea-architectures".to_string()];
+        let plan = resolve_load_path_for_roots(&lock, &loc, &roots).expect("closure resolves");
+        let names: Vec<_> = plan.load_path.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["/g/dry/lib", "/g/core/lib", "/g/arch/lib"], "closure, dep-ordered");
+    }
+
+    #[test]
+    fn roots_absent_from_lockfile_are_skipped() {
+        let lock = lock_of(vec![gem("present", &[])]);
+        let loc = MapLocator::hosting(&[("present", "/g/p/lib")]);
+        // "ghost" isn't in the lock → skipped, not an error; "present"
+        // also isn't reachable from "ghost", so the closure is empty.
+        let plan = resolve_load_path_for_roots(&lock, &loc, &["ghost".into()]).expect("empty closure ok");
+        assert!(plan.load_path.is_empty());
+    }
+
+    #[test]
+    fn roots_closure_still_loud_on_missing_runtime_gem() {
+        // A gem INSIDE the closure that no locator hosts is still loud.
+        let lock = lock_of(vec![
+            gem("pangea-architectures", &["pangea-core"]),
+            gem("pangea-core", &[]),
+        ]);
+        let loc = MapLocator::hosting(&[("pangea-architectures", "/g/arch/lib")]); // core absent
+        let err = resolve_load_path_for_roots(&lock, &loc, &["pangea-architectures".into()]).unwrap_err();
+        let LoadPathError::MissingGems(m) = err;
+        assert_eq!(m.iter().map(|x| x.name.clone()).collect::<Vec<_>>(), vec!["pangea-core"]);
     }
 }

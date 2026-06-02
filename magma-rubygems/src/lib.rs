@@ -82,7 +82,7 @@ pub type Result<T> = std::result::Result<T, RubygemsError>;
 
 pub use load_path::{
     CompositeLocator, GemLocator, GemRootsLocator, LoadPathError, LoadPathPlan, ManifestLocator,
-    MissingGem, resolve_load_path,
+    MissingGem, resolve_load_path, resolve_load_path_for_roots,
 };
 pub use lockfile::{Lockfile, ResolvedGem};
 pub use manifest::{Dependency, Manifest, RubyVersion};
