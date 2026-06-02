@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "magma",
     "magma-types",
+    "magma-cty",
     "magma-config",
     "magma-pangea",
     "magma-protocol",
@@ -118,6 +119,9 @@ serde_json    = { version = "1" }
 serde_yaml_ng = "0.10"
 toml          = "0.8"
 schemars      = { version = "0.8", features = ["derive"] }
+# msgpack Value (with ext-type support) — the cty DynamicValue codec
+# in magma-cty needs the unknown-value extension (ext type 0).
+rmpv          = "1"
 
 # ── Error handling ───────────────────────────────────────────
 thiserror = "2"
