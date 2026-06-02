@@ -75,69 +75,14 @@ fn err_chain(e: &dyn std::error::Error) -> String {
     s
 }
 
-/// Wraps an IO to **disable vectored writes**.
-///
-/// `tokio_rustls::client::TlsStream` advertises `is_write_vectored() ==
-/// true` but does not gather all buffers — under a vectored write it
-/// effectively pushes only the first slice. h2 batches a request's
-/// HEADERS + DATA + END_STREAM into one vectored write, so the HEADERS
-/// reach the provider (enough for it to reject an unknown service with
-/// `Unimplemented`) while the DATA + END_STREAM are dropped — a real
-/// RPC handler then blocks forever waiting for the request body, and the
-/// connection stalls while the provider keeps sending keep-alive PINGs.
-///
-/// By NOT forwarding `is_write_vectored`/`poll_write_vectored`, this
-/// wrapper takes the `AsyncWrite` default (vectored == false; the
-/// default `poll_write_vectored` writes the first non-empty slice via
-/// `poll_write`), forcing h2 to write each frame sequentially so the
-/// whole request reaches the provider.
-#[allow(dead_code)]
-struct SequentialWrite<S>(S);
-
-impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for SequentialWrite<S> {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.0).poll_read(cx, buf)
-    }
-}
-
-impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for SequentialWrite<S> {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.0).poll_write(cx, buf)
-    }
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.0).poll_flush(cx)
-    }
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.0).poll_shutdown(cx)
-    }
-    // is_write_vectored() / poll_write_vectored() intentionally NOT
-    // forwarded — the trait defaults are non-vectored.
-}
-
 /// A gRPC transport that drives a `hyper` HTTP/2 connection **directly**.
 ///
-/// We deliberately do NOT route through tonic's `Channel`. `Channel`'s
-/// buffer + reconnect tower layers, fed by a custom (`connect_with_connector`)
-/// mTLS connector, intermittently fail to drive the connection: the request
-/// frames don't reliably reach the provider and the connection task parks,
-/// so real-handler RPCs (GetSchema / Configure / Plan / Apply) hang while the
-/// provider sits idle. Instead we run the h2 handshake on the already-dialed
-/// (TLS or plaintext) IO ourselves and `tokio::spawn` the connection driver,
-/// so the socket is polled continuously and every RPC completes.
+/// We run the h2 handshake on the already-dialed (TLS or plaintext) IO
+/// ourselves and `tokio::spawn` the connection driver, rather than routing
+/// through tonic's `Channel` (whose buffer/reconnect tower layers add no
+/// value for a single pinned provider socket). `call` also (a) injects the
+/// `:scheme`/`:authority` pseudo-headers tonic's own `Channel` would add and
+/// (b) collects the unary body into one self-terminating `Full` frame.
 ///
 /// `SendRequest` is a cheap clonable handle; cloning shares the one spawned
 /// connection. The generated `ProviderClient<H2Channel>` consumes this via
@@ -147,9 +92,11 @@ pub struct H2Channel {
     inner: hyper::client::conn::http2::SendRequest<tonic::body::BoxBody>,
 }
 
+type BoxErr = Box<dyn std::error::Error + Send + Sync>;
+
 impl tower::Service<http::Request<tonic::body::BoxBody>> for H2Channel {
     type Response = http::Response<hyper::body::Incoming>;
-    type Error = hyper::Error;
+    type Error = BoxErr;
     type Future = std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
     >;
@@ -158,31 +105,53 @@ impl tower::Service<http::Request<tonic::body::BoxBody>> for H2Channel {
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
+        self.inner.poll_ready(cx).map_err(Into::into)
     }
 
-    fn call(&mut self, mut req: http::Request<tonic::body::BoxBody>) -> Self::Future {
-        // tonic over a raw h2 service builds the request URI from the gRPC
-        // path only (`/tfplugin5.Provider/GetSchema`). HTTP/2 requires the
-        // `:scheme` + `:authority` pseudo-headers, which tonic's own
-        // `Channel` would inject — so fill them in here. The connection is
-        // already pinned to this one provider, so the authority is nominal.
-        if req.uri().authority().is_none() {
-            let pq = req
-                .uri()
-                .path_and_query()
-                .map_or("/", http::uri::PathAndQuery::as_str)
-                .to_string();
-            if let Ok(uri) = http::Uri::builder()
-                .scheme("http")
-                .authority("localhost")
-                .path_and_query(pq)
-                .build()
-            {
-                *req.uri_mut() = uri;
+    fn call(&mut self, req: http::Request<tonic::body::BoxBody>) -> Self::Future {
+        use http_body_util::{BodyExt, Full};
+        let mut sender = self.inner.clone();
+        Box::pin(async move {
+            let (mut parts, body) = req.into_parts();
+            // tonic over a raw h2 service builds the request URI from the gRPC
+            // path only (`/tfplugin5.Provider/GetSchema`). HTTP/2 requires the
+            // `:scheme` + `:authority` pseudo-headers that tonic's own
+            // `Channel` would inject — fill them in (the connection is already
+            // pinned to this one provider, so the authority is nominal).
+            if parts.uri.authority().is_none() {
+                let pq = parts
+                    .uri
+                    .path_and_query()
+                    .map_or("/", http::uri::PathAndQuery::as_str)
+                    .to_string();
+                if let Ok(uri) = http::Uri::builder()
+                    .scheme("http")
+                    .authority("localhost")
+                    .path_and_query(pq)
+                    .build()
+                {
+                    parts.uri = uri;
+                }
             }
-        }
-        Box::pin(self.inner.send_request(req))
+            // Collect the (small, unary) gRPC request body fully, then send it
+            // as ONE `Full` frame so END_STREAM rides on the data frame. A
+            // streaming body makes h2 emit a separate trailing empty
+            // END_STREAM DATA frame, which — against go-plugin providers —
+            // intermittently fails to flush: the provider receives the message
+            // bytes but never the stream-end, so the unary handler blocks
+            // forever and the RPC hangs. One self-terminating frame removes
+            // that failure mode.
+            let bytes = body.collect().await.map_err(Into::<BoxErr>::into)?.to_bytes();
+            let full: tonic::body::BoxBody = Full::new(bytes)
+                .map_err(|never: std::convert::Infallible| match never {})
+                .boxed_unsync();
+            let req = http::Request::from_parts(parts, full);
+            // Ensure the cloned sender handle is ready before sending.
+            std::future::poll_fn(|cx| sender.poll_ready(cx))
+                .await
+                .map_err(Into::<BoxErr>::into)?;
+            sender.send_request(req).await.map_err(Into::<BoxErr>::into)
+        })
     }
 }
 
@@ -573,6 +542,34 @@ impl Plugin {
 
         let handshake = HandshakeLine::parse(&line)?;
         debug!(?handshake, "provider handshake received");
+
+        // ── Drain the provider's stderr + post-handshake stdout for life ──
+        //
+        // A go-plugin provider writes its own logs to stderr (and sometimes
+        // stdout) WHILE serving RPCs. We pipe both, but only read the single
+        // handshake line — so if nothing drains the rest, the OS pipe buffer
+        // (~64KiB) fills and the provider BLOCKS on its next write, MID-RPC.
+        // Every call then hangs: the request is delivered + the provider is
+        // wedged on a stderr write, never sending the response. (This was the
+        // real cause of the long-standing "provider RPC stalls" — NOT the h2
+        // transport.) Forward both streams to tracing so the pipe never fills
+        // and provider diagnostics are still observable.
+        let bin = spec.binary.clone();
+        if let Some(stderr) = child.stderr.take() {
+            let bin = bin.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(l)) = lines.next_line().await {
+                    tracing::trace!(provider = ?bin, "{l}");
+                }
+            });
+        }
+        tokio::spawn(async move {
+            // `reader` owns the rest of stdout after the handshake line.
+            while let Ok(Some(l)) = reader.next_line().await {
+                tracing::trace!(provider = ?bin, stream = "stdout", "{l}");
+            }
+        });
 
         if !spec.accepted_protocols.contains(&handshake.app_protocol) {
             return Err(PluginError::UnsupportedProtocol {

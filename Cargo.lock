@@ -1713,6 +1713,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
+ "http-body-util",
  "hyper",
  "hyper-util",
  "magma-cty",

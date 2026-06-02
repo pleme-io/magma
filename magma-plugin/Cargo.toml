@@ -23,6 +23,7 @@ tower          = { workspace = true, features = ["util"] }
 hyper          = { workspace = true }
 hyper-util     = { workspace = true }
 http           = { workspace = true }
+http-body-util = { workspace = true }
 bytes          = { workspace = true }
 async-trait    = { workspace = true }
 futures        = { workspace = true }
