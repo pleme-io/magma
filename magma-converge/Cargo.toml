@@ -24,6 +24,8 @@ magma-plan    = { workspace = true }
 magma-apply   = { workspace = true }
 magma-state   = { workspace = true }
 gen-platform = { workspace = true }
+# CascadePolicy + Decision re-homed here 2026-06-02 (lightweight, IaC-free).
+shigoto-types = { workspace = true }
 
 async-trait = { workspace = true }
 serde       = { workspace = true }

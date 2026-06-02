@@ -47,35 +47,14 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Innermost-wins per-field policy merge. Implementors define `merge`;
-/// the blanket `resolve` walks a layer slice + hard default.
-pub trait CascadePolicy: Sized + Clone {
-    /// Merge `layer` over `self`, field by field. Fields present in
-    /// `layer` (`Some(v)`) override `self`'s value; fields absent
-    /// (`None`) preserve `self`.
-    ///
-    /// Implementors MUST satisfy:
-    ///
-    /// 1. **Idempotent.** `self.merge(layer); self.merge(layer)` yields
-    ///    the same state as `self.merge(layer)` once. Required so
-    ///    re-resolving the same layer set produces the same result.
-    /// 2. **Per-field.** Each `Option` field in `layer` controls only
-    ///    that field on `self`. Don't read other fields.
-    /// 3. **No I/O.** Pure value transformation; no clock reads, no
-    ///    randomness.
-    fn merge(&mut self, layer: &Self);
-
-    /// Cascade through layers in order (rightmost / innermost wins
-    /// per field), starting from `default`. `None` slots in `layers`
-    /// are skipped — useful when a layer is conditionally present.
-    fn resolve(layers: &[Option<&Self>], default: Self) -> Self {
-        let mut result = default;
-        for layer in layers.iter().flatten() {
-            result.merge(layer);
-        }
-        result
-    }
-}
+// The `CascadePolicy` trait was RE-HOMED to lightweight
+// `shigoto-types::policy` (2026-06-02, theory/CONVERGENCE-ADOPTION.md): it
+// is a pure, general per-field merge primitive with no IaC coupling, and
+// keeping it here forced lightweight controllers (pangea/lava) to take
+// magma's whole executor closure to adopt it. Re-exported for back-compat;
+// the pangea-shaped `ReactivePolicy` reference impl below stays as the
+// magma-side example + law-test vehicle.
+pub use shigoto_types::policy::CascadePolicy;
 
 // ── Reference impl: ReactivePolicy (mirrors pangea-operator) ──────
 //
