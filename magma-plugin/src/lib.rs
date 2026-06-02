@@ -468,7 +468,10 @@ impl Plugin {
                     let url = format!("http://{}", self.handshake.address);
                     Endpoint::from_shared(url)
                         .map_err(|e| PluginError::Transport(err_chain(&e)))?
-                        .timeout(Duration::from_secs(30))
+                        .timeout(Duration::from_secs(120))
+                        .initial_stream_window_size(Some(4 * 1024 * 1024))
+                        .initial_connection_window_size(Some(8 * 1024 * 1024))
+                        .http2_adaptive_window(true)
                         .connect()
                         .await
                         .map_err(|e| PluginError::Transport(err_chain(&e)))?
@@ -477,7 +480,10 @@ impl Plugin {
                     let path = self.handshake.address.clone();
                     Endpoint::try_from("http://[::]:50051")
                         .map_err(|e| PluginError::Transport(err_chain(&e)))?
-                        .timeout(Duration::from_secs(30))
+                        .timeout(Duration::from_secs(120))
+                        .initial_stream_window_size(Some(4 * 1024 * 1024))
+                        .initial_connection_window_size(Some(8 * 1024 * 1024))
+                        .http2_adaptive_window(true)
                         .connect_with_connector(tower::service_fn(
                             move |_: tonic::transport::Uri| {
                                 let path = path.clone();
@@ -527,7 +533,10 @@ impl Plugin {
                 let address = self.handshake.address.clone();
                 Endpoint::try_from("http://localhost")
                     .map_err(|e| PluginError::Transport(err_chain(&e)))?
-                    .timeout(Duration::from_secs(30))
+                    .timeout(Duration::from_secs(120))
+                    .initial_stream_window_size(Some(4 * 1024 * 1024))
+                    .initial_connection_window_size(Some(8 * 1024 * 1024))
+                    .http2_adaptive_window(true)
                     .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
                         let address = address.clone();
                         let tls_config = tls_config.clone();
@@ -547,7 +556,10 @@ impl Plugin {
                 let path = self.handshake.address.clone();
                 Endpoint::try_from("http://localhost")
                     .map_err(|e| PluginError::Transport(err_chain(&e)))?
-                    .timeout(Duration::from_secs(30))
+                    .timeout(Duration::from_secs(120))
+                    .initial_stream_window_size(Some(4 * 1024 * 1024))
+                    .initial_connection_window_size(Some(8 * 1024 * 1024))
+                    .http2_adaptive_window(true)
                     .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
                         let path = path.clone();
                         let tls_config = tls_config.clone();

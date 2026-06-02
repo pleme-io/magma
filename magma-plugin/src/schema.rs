@@ -94,6 +94,50 @@ fn nested_block_type(nb: &NestedBlock) -> Result<CtyType, SchemaError> {
     })
 }
 
+// ── tfplugin5 → tfplugin6 schema bridge ──────────────────────────────
+//
+// tfplugin5's `Schema.Block` is a structural subset of tfplugin6's
+// (attributes lack `nested_type`; everything else is identical, and the
+// `NestingMode` enum values match). SDKv2 providers (github, aws, …)
+// speak tfplugin5, so galho's `github_repository` arrives as a v5 schema.
+// Converting v5 → v6 lets the single [`block_implied_type`] parser serve
+// both protocols.
+
+use magma_protocol::tfplugin5;
+
+/// Convert a tfplugin5 `Block` to the tfplugin6 shape, then derive the
+/// implied cty type via [`block_implied_type`].
+pub fn block5_implied_type(block: &tfplugin5::schema::Block) -> Result<CtyType, SchemaError> {
+    block_implied_type(&block5_to_v6(block))
+}
+
+fn block5_to_v6(b: &tfplugin5::schema::Block) -> Block {
+    Block {
+        version: b.version,
+        attributes: b.attributes.iter().map(attr5_to_v6).collect(),
+        block_types: b.block_types.iter().map(nb5_to_v6).collect(),
+        ..Default::default()
+    }
+}
+
+fn attr5_to_v6(a: &tfplugin5::schema::Attribute) -> Attribute {
+    Attribute {
+        name: a.name.clone(),
+        r#type: a.r#type.clone(),
+        nested_type: None, // v5 attributes have no nested_type
+        ..Default::default()
+    }
+}
+
+fn nb5_to_v6(nb: &tfplugin5::schema::NestedBlock) -> NestedBlock {
+    NestedBlock {
+        type_name: nb.type_name.clone(),
+        block: nb.block.as_ref().map(block5_to_v6),
+        nesting: nb.nesting, // NestingMode i32 values match across v5/v6
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

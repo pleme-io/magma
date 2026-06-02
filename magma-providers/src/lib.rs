@@ -51,8 +51,12 @@ pub fn locate_provider(
 }
 
 /// Bounded recursive walk collecting files whose name is exactly `exact`
-/// or starts with `prefix` (the `_v<version>` form). Does not follow
-/// symlinked directories.
+/// or starts with `prefix` (the `_v<version>` form).
+///
+/// Uses `Path::is_dir`/`is_file` (which FOLLOW symlinks) rather than the
+/// dir-entry's own type — tofu's `plugin-cache` symlinks the provider
+/// binary into `.terraform/providers`, and a symlink's `file_type()` is
+/// neither dir nor file, so an entry-type check would silently miss it.
 fn walk_for(
     dir: &Path,
     exact: &str,
@@ -60,12 +64,10 @@ fn walk_for(
     out: &mut Vec<PathBuf>,
 ) -> Result<(), ProviderLocateError> {
     for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
+        let path = entry?.path();
+        if path.is_dir() {
             walk_for(&path, exact, prefix, out)?;
-        } else if file_type.is_file() {
+        } else if path.is_file() {
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
                 if name == exact || name.starts_with(prefix) {
                     out.push(path);

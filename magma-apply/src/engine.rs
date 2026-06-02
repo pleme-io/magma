@@ -107,12 +107,15 @@ impl<'a> Registry<'a> {
         })
         .await
         .map_err(|e| EngineError::Spawn(name.into(), e.to_string()))?;
+        // The handshake's negotiated protocol selects the tfplugin5/6
+        // client (SDKv2 providers like github speak v5; framework v6).
+        let protocol = plugin.handshake().app_protocol;
         let channel = plugin
             .dial()
             .await
             .map_err(|e| EngineError::Spawn(name.into(), e.to_string()))?
             .clone();
-        let mut conn = ProviderConn::new(channel);
+        let mut conn = ProviderConn::new(channel, protocol);
         let schema = conn
             .get_schema()
             .await
