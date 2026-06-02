@@ -25,8 +25,14 @@ fn workspace() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/tmp/magma-gh-probe"))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn github_schema_via_real_provider() {
+    // Frame-level tracing when RUST_LOG is set (h2=debug,tonic=debug) —
+    // pinpoints where a body transfer stalls.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
     let ws = workspace();
     let binary = match magma_providers::locate_provider(&ws, "github") {
         Ok(b) => b,

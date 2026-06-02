@@ -64,7 +64,7 @@ pub mod provider;
 /// the "already installed" error.
 /// Walk an error's `source()` chain into one string. tonic's transport
 /// `Display` is just "transport error"; the cause lives in the chain.
-fn err_chain(e: &(dyn std::error::Error)) -> String {
+fn err_chain(e: &dyn std::error::Error) -> String {
     let mut s = e.to_string();
     let mut src = e.source();
     while let Some(inner) = src {
