@@ -33,7 +33,11 @@ pub fn locate_provider(
     provider_name: &str,
 ) -> Result<PathBuf, ProviderLocateError> {
     let exact = format!("terraform-provider-{provider_name}");
-    let prefix = format!("terraform-provider-{provider_name}_v");
+    // Underscore (not `_v`) so we match BOTH tofu/terraform's
+    // `terraform-provider-github_v6.2.1` AND nixpkgs's
+    // `terraform-provider-github_6.8.3`. The `_` disambiguates from a
+    // longer provider name (`…-github_` won't match `…-githubfoo_`).
+    let prefix = format!("terraform-provider-{provider_name}_");
 
     // Search roots, in priority order:
     //   1. the workspace's own `.terraform/providers` (tofu/terraform init),
@@ -116,6 +120,18 @@ mod tests {
                 ".terraform/providers/registry.terraform.io/integrations/github/6.2.1/linux_amd64",
             )
             .join("terraform-provider-github_v6.2.1");
+        touch(&bin);
+        assert_eq!(locate_provider(ws, "github").unwrap(), bin);
+    }
+
+    #[test]
+    fn locates_nixpkgs_underscore_version_layout() {
+        // nixpkgs terraform-providers ship `terraform-provider-<name>_<ver>`
+        // (no `v`), under libexec/.../<os>_<arch>/. Must locate it too.
+        let td = TempDir::new().unwrap();
+        let ws = td.path();
+        let bin = ws.join(".terraform/providers/registry.terraform.io/integrations/github/6.8.3/linux_amd64")
+            .join("terraform-provider-github_6.8.3");
         touch(&bin);
         assert_eq!(locate_provider(ws, "github").unwrap(), bin);
     }
