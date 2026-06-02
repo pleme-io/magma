@@ -50,6 +50,10 @@ use tracing::{debug, warn};
 
 use magma_protocol::PluginProtocol;
 
+/// Provider schema → cty implied type (terraform's `Block.ImpliedType`).
+/// The bridge from `GetProviderSchema` to the `magma-cty` apply codec.
+pub mod schema;
+
 /// Install the rustls process-default `CryptoProvider`. Required
 /// before any rustls operation in 0.23 — the ring feature flag alone
 /// isn't enough when tonic also pulls in rustls. Idempotent; ignores

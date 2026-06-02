@@ -62,6 +62,7 @@ must_use_candidate = "allow"
 # ── Workspace crates ─────────────────────────────────────────
 magma           = { path = "magma" }
 magma-types     = { path = "magma-types" }
+magma-cty       = { path = "magma-cty" }
 
 # Gen-platform — typed-dispatcher catalog integration
 # (theory/UNIFIED-COMPUTING-MODEL.md §VI).
