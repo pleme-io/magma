@@ -118,14 +118,17 @@ impl<'a> Registry<'a> {
             .await
             .map_err(|e| EngineError::Rpc(name.into(), e.to_string()))?;
 
-        // Configure: the provider-config-typed creds, or an all-null
-        // config (provider falls back to its own env credentials).
+        // Configure: the provider-config-typed creds, or an empty object
+        // (→ a provider-config object with all attributes null, which is
+        // what terraform sends for an absent provider block; the provider
+        // falls back to its own env credentials). NOT a null object —
+        // providers expect a value of the config type, not nil.
         let config_json = self
             .ctx
             .provider_configs
             .get(name)
             .cloned()
-            .unwrap_or(serde_json::Value::Null);
+            .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
         let config_dv = DynamicValue::from_json(&config_json, &schema.provider_config)
             .map_err(|e| EngineError::Cty(e.to_string()))?;
         conn.configure(&config_dv, &self.ctx.terraform_version)

@@ -62,6 +62,19 @@ pub mod provider;
 /// before any rustls operation in 0.23 — the ring feature flag alone
 /// isn't enough when tonic also pulls in rustls. Idempotent; ignores
 /// the "already installed" error.
+/// Walk an error's `source()` chain into one string. tonic's transport
+/// `Display` is just "transport error"; the cause lives in the chain.
+fn err_chain(e: &(dyn std::error::Error)) -> String {
+    let mut s = e.to_string();
+    let mut src = e.source();
+    while let Some(inner) = src {
+        s.push_str(" -> ");
+        s.push_str(&inner.to_string());
+        src = inner.source();
+    }
+    s
+}
+
 fn ensure_crypto_provider() {
     use std::sync::Once;
     static INIT: Once = Once::new();
@@ -383,7 +396,11 @@ impl Plugin {
                     .collect::<Vec<_>>()
                     .join(","),
             )
-            .env("PLUGIN_CLIENT_CERT", &identity.base64_cert)
+            // go-plugin's server does `certPool.AppendCertsFromPEM([]byte(env))`
+            // on PLUGIN_CLIENT_CERT — it expects the RAW PEM (newlines and
+            // all), NOT base64. Sending base64 makes the provider fail to
+            // trust our client cert and drop the mTLS handshake (broken pipe).
+            .env("PLUGIN_CLIENT_CERT", &identity.cert_pem)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -450,16 +467,16 @@ impl Plugin {
                 "tcp" => {
                     let url = format!("http://{}", self.handshake.address);
                     Endpoint::from_shared(url)
-                        .map_err(|e| PluginError::Transport(e.to_string()))?
+                        .map_err(|e| PluginError::Transport(err_chain(&e)))?
                         .timeout(Duration::from_secs(30))
                         .connect()
                         .await
-                        .map_err(|e| PluginError::Transport(e.to_string()))?
+                        .map_err(|e| PluginError::Transport(err_chain(&e)))?
                 }
                 "unix" => {
                     let path = self.handshake.address.clone();
                     Endpoint::try_from("http://[::]:50051")
-                        .map_err(|e| PluginError::Transport(e.to_string()))?
+                        .map_err(|e| PluginError::Transport(err_chain(&e)))?
                         .timeout(Duration::from_secs(30))
                         .connect_with_connector(tower::service_fn(
                             move |_: tonic::transport::Uri| {
@@ -471,7 +488,7 @@ impl Plugin {
                             },
                         ))
                         .await
-                        .map_err(|e| PluginError::Transport(e.to_string()))?
+                        .map_err(|e| PluginError::Transport(err_chain(&e)))?
                 }
                 other => {
                     return Err(PluginError::Transport(format!(
@@ -508,8 +525,8 @@ impl Plugin {
         let channel = match self.handshake.network.as_str() {
             "tcp" => {
                 let address = self.handshake.address.clone();
-                Endpoint::try_from("https://localhost")
-                    .map_err(|e| PluginError::Transport(e.to_string()))?
+                Endpoint::try_from("http://localhost")
+                    .map_err(|e| PluginError::Transport(err_chain(&e)))?
                     .timeout(Duration::from_secs(30))
                     .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
                         let address = address.clone();
@@ -524,12 +541,12 @@ impl Plugin {
                         }
                     }))
                     .await
-                    .map_err(|e| PluginError::Transport(e.to_string()))?
+                    .map_err(|e| PluginError::Transport(err_chain(&e)))?
             }
             "unix" => {
                 let path = self.handshake.address.clone();
-                Endpoint::try_from("https://localhost")
-                    .map_err(|e| PluginError::Transport(e.to_string()))?
+                Endpoint::try_from("http://localhost")
+                    .map_err(|e| PluginError::Transport(err_chain(&e)))?
                     .timeout(Duration::from_secs(30))
                     .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
                         let path = path.clone();
@@ -544,7 +561,7 @@ impl Plugin {
                         }
                     }))
                     .await
-                    .map_err(|e| PluginError::Transport(e.to_string()))?
+                    .map_err(|e| PluginError::Transport(err_chain(&e)))?
             }
             other => {
                 return Err(PluginError::Transport(format!(
