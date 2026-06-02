@@ -32,21 +32,39 @@ pub fn locate_provider(
     workspace: &Path,
     provider_name: &str,
 ) -> Result<PathBuf, ProviderLocateError> {
-    let root = workspace.join(".terraform").join("providers");
-    if !root.is_dir() {
-        return Err(ProviderLocateError::NoProvidersDir(workspace.to_path_buf()));
-    }
     let exact = format!("terraform-provider-{provider_name}");
     let prefix = format!("terraform-provider-{provider_name}_v");
+
+    // Search roots, in priority order:
+    //   1. the workspace's own `.terraform/providers` (tofu/terraform init),
+    //   2. `$MAGMA_PROVIDER_DIR` — a Nix-baked provider mirror in the image.
+    // (2) is the no-tofu path: the operator image ships the provider
+    // binaries (via Nix), so `init` need not download anything and the
+    // workspace tree may be absent. Either layout works — a flat dir of
+    // binaries or the registry `<reg>/<ns>/<name>/<ver>/<os>_<arch>/…` tree.
+    let mut roots: Vec<PathBuf> = vec![workspace.join(".terraform").join("providers")];
+    if let Some(dir) = std::env::var_os("MAGMA_PROVIDER_DIR") {
+        roots.push(PathBuf::from(dir));
+    }
+
     let mut found: Vec<PathBuf> = Vec::new();
-    walk_for(&root, &exact, &prefix, &mut found)?;
+    let mut any_root = false;
+    for root in &roots {
+        if root.is_dir() {
+            any_root = true;
+            walk_for(root, &exact, &prefix, &mut found)?;
+        }
+    }
+    if !any_root {
+        return Err(ProviderLocateError::NoProvidersDir(workspace.to_path_buf()));
+    }
     found.sort();
     found
         .into_iter()
         .next()
         .ok_or_else(|| ProviderLocateError::NotFound {
             name: provider_name.to_string(),
-            root,
+            root: roots.into_iter().next().unwrap_or_default(),
         })
 }
 
