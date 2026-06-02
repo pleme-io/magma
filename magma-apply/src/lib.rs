@@ -10,6 +10,7 @@
 //! The typed shape matches §II.9 — every apply operation surfaces as
 //! a typed `ApplyChange` Job.
 
+pub mod engine;
 pub mod shigoto_jobs;
 
 use chrono::Utc;
@@ -179,7 +180,11 @@ fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange
     }
 }
 
-fn insert_resource(state: &mut State, address: &ResourceAddress, attributes: serde_json::Value) {
+pub(crate) fn insert_resource(
+    state: &mut State,
+    address: &ResourceAddress,
+    attributes: serde_json::Value,
+) {
     // Remove any existing then push the fresh instance.
     state.resources.retain(|r| r.address != *address);
     state.resources.push(StateResource {
@@ -195,11 +200,11 @@ fn insert_resource(state: &mut State, address: &ResourceAddress, attributes: ser
     });
 }
 
-fn remove_resource(state: &mut State, address: &ResourceAddress) {
+pub(crate) fn remove_resource(state: &mut State, address: &ResourceAddress) {
     state.resources.retain(|r| r.address != *address);
 }
 
-fn default_provider_for(address: &ResourceAddress) -> ProviderReference {
+pub(crate) fn default_provider_for(address: &ResourceAddress) -> ProviderReference {
     // Heuristic: resource type `aws_*` → hashicorp/aws, etc. M0.x replaces
     // this with a typed provider lookup from `magma-providers`.
     let type_name = &address.type_id.0;
