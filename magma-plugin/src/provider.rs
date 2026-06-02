@@ -25,12 +25,12 @@ use std::collections::BTreeMap;
 
 use magma_cty::{CtyType, DynamicValue};
 use magma_protocol::{PluginProtocol, tfplugin5, tfplugin6};
-use tonic::transport::Channel;
 
+use crate::H2Channel;
 use crate::schema::{self, SchemaError};
 
-type Client5 = tfplugin5::provider_client::ProviderClient<Channel>;
-type Client6 = tfplugin6::provider_client::ProviderClient<Channel>;
+type Client5 = tfplugin5::provider_client::ProviderClient<H2Channel>;
+type Client6 = tfplugin6::provider_client::ProviderClient<H2Channel>;
 
 enum Client {
     V5(Client5),
@@ -93,7 +93,7 @@ fn fmt_diags(diags: &[Diag]) -> String {
 impl ProviderConn {
     /// Wrap a dialed channel, selecting the client by the handshake's
     /// negotiated protocol (`Plugin::handshake().app_protocol`).
-    pub fn new(channel: Channel, protocol: PluginProtocol) -> Self {
+    pub fn new(channel: H2Channel, protocol: PluginProtocol) -> Self {
         let client = match protocol {
             PluginProtocol::V5 => {
                 Client::V5(Client5::new(channel).max_decoding_message_size(256 * 1024 * 1024))

@@ -45,7 +45,7 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tonic::transport::{Channel, Endpoint};
+use hyper_util::rt::TokioIo;
 use tracing::{debug, warn};
 
 use magma_protocol::PluginProtocol;
@@ -91,6 +91,7 @@ fn err_chain(e: &dyn std::error::Error) -> String {
 /// default `poll_write_vectored` writes the first non-empty slice via
 /// `poll_write`), forcing h2 to write each frame sequentially so the
 /// whole request reaches the provider.
+#[allow(dead_code)]
 struct SequentialWrite<S>(S);
 
 impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for SequentialWrite<S> {
@@ -125,6 +126,96 @@ impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for SequentialWrite
     }
     // is_write_vectored() / poll_write_vectored() intentionally NOT
     // forwarded — the trait defaults are non-vectored.
+}
+
+/// A gRPC transport that drives a `hyper` HTTP/2 connection **directly**.
+///
+/// We deliberately do NOT route through tonic's `Channel`. `Channel`'s
+/// buffer + reconnect tower layers, fed by a custom (`connect_with_connector`)
+/// mTLS connector, intermittently fail to drive the connection: the request
+/// frames don't reliably reach the provider and the connection task parks,
+/// so real-handler RPCs (GetSchema / Configure / Plan / Apply) hang while the
+/// provider sits idle. Instead we run the h2 handshake on the already-dialed
+/// (TLS or plaintext) IO ourselves and `tokio::spawn` the connection driver,
+/// so the socket is polled continuously and every RPC completes.
+///
+/// `SendRequest` is a cheap clonable handle; cloning shares the one spawned
+/// connection. The generated `ProviderClient<H2Channel>` consumes this via
+/// the `GrpcService` blanket impl over `tower::Service`.
+#[derive(Clone)]
+pub struct H2Channel {
+    inner: hyper::client::conn::http2::SendRequest<tonic::body::BoxBody>,
+}
+
+impl tower::Service<http::Request<tonic::body::BoxBody>> for H2Channel {
+    type Response = http::Response<hyper::body::Incoming>;
+    type Error = hyper::Error;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut req: http::Request<tonic::body::BoxBody>) -> Self::Future {
+        // tonic over a raw h2 service builds the request URI from the gRPC
+        // path only (`/tfplugin5.Provider/GetSchema`). HTTP/2 requires the
+        // `:scheme` + `:authority` pseudo-headers, which tonic's own
+        // `Channel` would inject — so fill them in here. The connection is
+        // already pinned to this one provider, so the authority is nominal.
+        if req.uri().authority().is_none() {
+            let pq = req
+                .uri()
+                .path_and_query()
+                .map_or("/", http::uri::PathAndQuery::as_str)
+                .to_string();
+            if let Ok(uri) = http::Uri::builder()
+                .scheme("http")
+                .authority("localhost")
+                .path_and_query(pq)
+                .build()
+            {
+                *req.uri_mut() = uri;
+            }
+        }
+        Box::pin(self.inner.send_request(req))
+    }
+}
+
+/// Run the HTTP/2 client handshake over an already-connected IO, spawn the
+/// connection driver, and return a cloneable [`H2Channel`]. The spawned task
+/// owns the connection for the life of the provider; it ends when the
+/// provider closes the socket (Drop kills the subprocess).
+async fn h2_channel<IO>(io: IO) -> Result<H2Channel, PluginError>
+where
+    IO: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+{
+    use hyper_util::rt::TokioExecutor;
+    // Large FIXED windows (no adaptive). A provider's GetProviderSchema
+    // response is multi-MB; with a small window the server sends one window
+    // then blocks for a WINDOW_UPDATE, and that update only goes out when the
+    // connection task is incidentally re-polled — over the provider's local
+    // socket that re-poll is unreliable, so the response stalls. Sizing the
+    // initial window past the largest response lets the server stream it in
+    // one burst, drained on the first read with zero mid-stream round-trips.
+    const WIN: u32 = 64 * 1024 * 1024;
+    let (send_req, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .initial_stream_window_size(WIN)
+        .initial_connection_window_size(WIN)
+        .max_frame_size(4 * 1024 * 1024)
+        .handshake::<_, tonic::body::BoxBody>(io)
+        .await
+        .map_err(|e| PluginError::Transport(err_chain(&e)))?;
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            debug!("magma-plugin h2 connection closed: {}", err_chain(&e));
+        }
+    });
+    Ok(H2Channel { inner: send_req })
 }
 
 fn ensure_crypto_provider() {
@@ -412,7 +503,7 @@ pub struct Plugin {
     handshake: HandshakeLine,
     spec: PluginSpec,
     identity: ParentIdentity,
-    channel: Option<Channel>,
+    channel: Option<H2Channel>,
 }
 
 impl Plugin {
@@ -514,48 +605,32 @@ impl Plugin {
     ///     self-signed)
     ///
     /// Wraps the underlying stream (UnixStream or TcpStream) in a
-    /// tokio_rustls TlsStream, then hands that to tonic via TokioIo.
-    pub async fn dial(&mut self) -> Result<&Channel, PluginError> {
+    /// tokio_rustls TlsStream, then drives a `hyper` HTTP/2 connection over
+    /// it directly (see [`H2Channel`] for why not tonic `Channel`).
+    pub async fn dial(&mut self) -> Result<&H2Channel, PluginError> {
         if self.channel.is_some() {
             return Ok(self.channel.as_ref().unwrap());
         }
 
+        let network = self.handshake.network.clone();
+        let address = self.handshake.address.clone();
+
         // Insecure path — plain TCP/h2c. Used by offline tests against
-        // mock providers. Production / real-provider paths set
-        // `secure: true` (default) and exercise the mTLS branch below.
+        // mock providers (and providers spawned without PLUGIN_CLIENT_CERT).
+        // Production / real-provider paths set `secure: true` (default).
         if !self.spec.secure {
-            let channel = match self.handshake.network.as_str() {
+            let channel = match network.as_str() {
                 "tcp" => {
-                    let url = format!("http://{}", self.handshake.address);
-                    Endpoint::from_shared(url)
-                        .map_err(|e| PluginError::Transport(err_chain(&e)))?
-                        .timeout(Duration::from_secs(120))
-                        .initial_stream_window_size(Some(4 * 1024 * 1024))
-                        .initial_connection_window_size(Some(8 * 1024 * 1024))
-                        .http2_adaptive_window(true)
-                        .connect()
+                    let stream = tokio::net::TcpStream::connect(&address)
                         .await
-                        .map_err(|e| PluginError::Transport(err_chain(&e)))?
+                        .map_err(|e| PluginError::Transport(err_chain(&e)))?;
+                    h2_channel(TokioIo::new(stream)).await?
                 }
                 "unix" => {
-                    let path = self.handshake.address.clone();
-                    Endpoint::try_from("http://[::]:50051")
-                        .map_err(|e| PluginError::Transport(err_chain(&e)))?
-                        .timeout(Duration::from_secs(120))
-                        .initial_stream_window_size(Some(4 * 1024 * 1024))
-                        .initial_connection_window_size(Some(8 * 1024 * 1024))
-                        .http2_adaptive_window(true)
-                        .connect_with_connector(tower::service_fn(
-                            move |_: tonic::transport::Uri| {
-                                let path = path.clone();
-                                async move {
-                                    let stream = tokio::net::UnixStream::connect(&path).await?;
-                                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
-                                }
-                            },
-                        ))
+                    let stream = tokio::net::UnixStream::connect(&address)
                         .await
-                        .map_err(|e| PluginError::Transport(err_chain(&e)))?
+                        .map_err(|e| PluginError::Transport(err_chain(&e)))?;
+                    h2_channel(TokioIo::new(stream)).await?
                 }
                 other => {
                     return Err(PluginError::Transport(format!(
@@ -567,7 +642,7 @@ impl Plugin {
             return Ok(self.channel.as_ref().unwrap());
         }
 
-        // Build the mTLS ClientConfig once for this Plugin's lifetime.
+        // Build the mTLS ClientConfig once for this dial.
         let provider_cert_der = self.handshake.provider_cert_der().ok_or_else(|| {
             PluginError::Transport("provider handshake omitted cert; mTLS impossible".into())
         })??;
@@ -583,58 +658,34 @@ impl Plugin {
             .with_custom_certificate_verifier(verifier)
             .with_client_auth_cert(vec![parent_cert], parent_key)
             .map_err(|e| PluginError::Tls(format!("client auth cert: {e}")))?;
-        // Match what go-plugin negotiates — ALPN advertising h2 for
-        // gRPC. tonic needs this set; without it the server may
-        // negotiate http/1.1 and tonic fails.
+        // go-plugin negotiates h2 over ALPN for gRPC; without this the
+        // server may pick http/1.1 and the h2 handshake fails.
         tls_config.alpn_protocols = vec![b"h2".to_vec()];
         let tls_config = Arc::new(tls_config);
+        let connector = tokio_rustls::TlsConnector::from(tls_config);
+        let server_name = ServerName::try_from("localhost")
+            .map_err(|e| PluginError::Tls(format!("server_name: {e}")))?;
 
-        let channel = match self.handshake.network.as_str() {
+        let channel = match network.as_str() {
             "tcp" => {
-                let address = self.handshake.address.clone();
-                Endpoint::try_from("http://localhost")
-                    .map_err(|e| PluginError::Transport(err_chain(&e)))?
-                    .timeout(Duration::from_secs(120))
-                    .initial_stream_window_size(Some(4 * 1024 * 1024))
-                    .initial_connection_window_size(Some(8 * 1024 * 1024))
-                    .http2_adaptive_window(true)
-                    .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
-                        let address = address.clone();
-                        let tls_config = tls_config.clone();
-                        async move {
-                            let stream = tokio::net::TcpStream::connect(&address).await?;
-                            let connector = tokio_rustls::TlsConnector::from(tls_config);
-                            let server_name = ServerName::try_from("localhost")
-                                .map_err(|e| std::io::Error::other(format!("server_name: {e}")))?;
-                            let tls = connector.connect(server_name, stream).await?;
-                            Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(SequentialWrite(tls)))
-                        }
-                    }))
+                let stream = tokio::net::TcpStream::connect(&address)
                     .await
-                    .map_err(|e| PluginError::Transport(err_chain(&e)))?
+                    .map_err(|e| PluginError::Transport(err_chain(&e)))?;
+                let tls = connector
+                    .connect(server_name, stream)
+                    .await
+                    .map_err(|e| PluginError::Tls(err_chain(&e)))?;
+                h2_channel(TokioIo::new(tls)).await?
             }
             "unix" => {
-                let path = self.handshake.address.clone();
-                Endpoint::try_from("http://localhost")
-                    .map_err(|e| PluginError::Transport(err_chain(&e)))?
-                    .timeout(Duration::from_secs(120))
-                    .initial_stream_window_size(Some(4 * 1024 * 1024))
-                    .initial_connection_window_size(Some(8 * 1024 * 1024))
-                    .http2_adaptive_window(true)
-                    .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
-                        let path = path.clone();
-                        let tls_config = tls_config.clone();
-                        async move {
-                            let stream = tokio::net::UnixStream::connect(&path).await?;
-                            let connector = tokio_rustls::TlsConnector::from(tls_config);
-                            let server_name = ServerName::try_from("localhost")
-                                .map_err(|e| std::io::Error::other(format!("server_name: {e}")))?;
-                            let tls = connector.connect(server_name, stream).await?;
-                            Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(SequentialWrite(tls)))
-                        }
-                    }))
+                let stream = tokio::net::UnixStream::connect(&address)
                     .await
-                    .map_err(|e| PluginError::Transport(err_chain(&e)))?
+                    .map_err(|e| PluginError::Transport(err_chain(&e)))?;
+                let tls = connector
+                    .connect(server_name, stream)
+                    .await
+                    .map_err(|e| PluginError::Tls(err_chain(&e)))?;
+                h2_channel(TokioIo::new(tls)).await?
             }
             other => {
                 return Err(PluginError::Transport(format!(
@@ -661,7 +712,7 @@ impl Plugin {
 
     /// The dialed gRPC channel, if `dial()` has been called.
     #[must_use]
-    pub fn channel(&self) -> Option<&Channel> {
+    pub fn channel(&self) -> Option<&H2Channel> {
         self.channel.as_ref()
     }
 }

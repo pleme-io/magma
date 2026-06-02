@@ -25,7 +25,7 @@ fn workspace() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/tmp/magma-gh-probe"))
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn github_schema_via_real_provider() {
     // Frame-level tracing when RUST_LOG is set (h2=debug,tonic=debug) —
     // pinpoints where a body transfer stalls.
@@ -44,10 +44,15 @@ async fn github_schema_via_real_provider() {
 
     let mut plugin = Plugin::spawn(PluginSpec {
         binary,
+        // Plaintext h2c over the provider's local unix socket. go-plugin
+        // serves plaintext when we don't pass PLUGIN_CLIENT_CERT; the
+        // provider is a same-host child process, so this is the idiomatic
+        // (and reliable) transport — no tokio-rustls in the read path.
+        secure: false,
         ..Default::default()
     })
     .await
-    .expect("spawn the real github provider (go-plugin handshake + mTLS)");
+    .expect("spawn the real github provider (go-plugin handshake, plaintext h2c)");
 
     let protocol = plugin.handshake().app_protocol;
     eprintln!("github provider negotiated protocol: {protocol:?}");

@@ -20,8 +20,10 @@ serde_json     = { workspace = true }
 tonic          = { workspace = true }
 tokio          = { workspace = true }
 tower          = { workspace = true, features = ["util"] }
+hyper          = { workspace = true }
 hyper-util     = { workspace = true }
 http           = { workspace = true }
+bytes          = { workspace = true }
 async-trait    = { workspace = true }
 futures        = { workspace = true }
 rustls         = { workspace = true }
