@@ -39,6 +39,7 @@ pub mod cache;
 pub mod fetcher;
 pub mod gemfile_parser;
 pub mod gemspec_parser;
+pub mod load_path;
 pub mod lockfile;
 pub mod manifest;
 pub mod native;
@@ -79,8 +80,13 @@ pub type Result<T> = std::result::Result<T, RubygemsError>;
 
 // ── Re-exports for the canonical API surface ──────────────────────
 
+pub use load_path::{
+    CompositeLocator, GemLocator, GemRootsLocator, LoadPathError, LoadPathPlan, ManifestLocator,
+    MissingGem, resolve_load_path, resolve_load_path_for_roots,
+};
 pub use lockfile::{Lockfile, ResolvedGem};
 pub use manifest::{Dependency, Manifest, RubyVersion};
+pub use runtime::RubyEnvironment;
 pub use source::Source;
 pub use tree::VirtualGemTree;
 
