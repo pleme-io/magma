@@ -54,6 +54,10 @@ use magma_protocol::PluginProtocol;
 /// The bridge from `GetProviderSchema` to the `magma-cty` apply codec.
 pub mod schema;
 
+/// Typed provider-RPC wrappers (configure / plan / apply) over a dialed
+/// channel, speaking `magma-cty` values. The layer that makes apply real.
+pub mod provider;
+
 /// Install the rustls process-default `CryptoProvider`. Required
 /// before any rustls operation in 0.23 — the ring feature flag alone
 /// isn't enough when tonic also pulls in rustls. Idempotent; ignores
