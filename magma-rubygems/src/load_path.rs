@@ -290,6 +290,86 @@ impl GemLocator for GemRootsLocator {
     }
 }
 
+/// Concrete [`GemLocator`] backed by an explicit `gem-name -> lib-dir`
+/// map.
+///
+/// This is the locator for a **pre-resolved, flat closure** whose lib
+/// dirs cannot be reverse-mapped to gem names by path inspection — the
+/// canonical case being a Nix-built `RUBYLIB`, where a path-gem's lib
+/// lives at `/nix/store/<hash>-<derivation>/lib` (the dir basename is a
+/// store hash, not the gem name) and bundler gems at
+/// `<env>/gems/<name>-<ver>/lib`. The builder that produced the closure
+/// (e.g. the operator's flake, which keys its inputs by gem name)
+/// already knows the mapping; it emits this map rather than forcing the
+/// resolver to guess from paths.
+#[derive(Debug, Clone, Default)]
+pub struct ManifestLocator {
+    map: BTreeMap<String, PathBuf>,
+}
+
+impl ManifestLocator {
+    pub fn new(map: impl IntoIterator<Item = (String, PathBuf)>) -> Self {
+        Self {
+            map: map.into_iter().collect(),
+        }
+    }
+
+    /// Parse a JSON object `{ "gem-name": "/abs/lib/dir", … }` — the
+    /// shape a build step (the operator's flake) emits next to the
+    /// image. Errors are surfaced as `LockfileParse` for one error
+    /// surface across the crate.
+    pub fn from_json(s: &str) -> crate::Result<Self> {
+        let raw: BTreeMap<String, String> = serde_json::from_str(s)
+            .map_err(|e| crate::RubygemsError::LockfileParse(format!("gem manifest: {e}")))?;
+        Ok(Self {
+            map: raw.into_iter().map(|(k, v)| (k, PathBuf::from(v))).collect(),
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+impl GemLocator for ManifestLocator {
+    fn locate(&self, gem: &ResolvedGem) -> Option<PathBuf> {
+        self.map.get(&gem.name).cloned()
+    }
+}
+
+/// A [`GemLocator`] that consults an ordered list of inner locators,
+/// returning the first hit. The composition the operator uses: a
+/// [`ManifestLocator`] over the baked closure (highest priority) then a
+/// [`GemRootsLocator`] over the per-CR gem-cache (the ArchitectureGem
+/// clones in the `<name>-<ref>/lib` shape). Order is significant — the
+/// first locator to host a gem wins, so place the most-specific /
+/// most-trusted source first.
+pub struct CompositeLocator {
+    inner: Vec<Box<dyn GemLocator + Send + Sync>>,
+}
+
+impl CompositeLocator {
+    pub fn new(inner: Vec<Box<dyn GemLocator + Send + Sync>>) -> Self {
+        Self { inner }
+    }
+
+    /// Push a locator onto the end (lowest priority of those so far).
+    pub fn push(mut self, loc: Box<dyn GemLocator + Send + Sync>) -> Self {
+        self.inner.push(loc);
+        self
+    }
+}
+
+impl GemLocator for CompositeLocator {
+    fn locate(&self, gem: &ResolvedGem) -> Option<PathBuf> {
+        self.inner.iter().find_map(|l| l.locate(gem))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,5 +565,130 @@ mod tests {
         let core = root.join("pangea-core").join("lib");
         let gcp = root.join("pangea-gcp").join("lib");
         assert_eq!(plan.load_path, vec![core, gcp, arch]);
+    }
+
+    // ── ManifestLocator (the flat-closure / baked-RUBYLIB case) ──
+
+    #[test]
+    fn manifest_locator_maps_names_to_lib_dirs() {
+        // Mirrors the Nix RUBYLIB shape: store-hash dir basenames that a
+        // path-scan could never reverse-map to a gem name.
+        let loc = ManifestLocator::new([
+            ("pangea-core".into(), PathBuf::from("/nix/store/abc123-pangea-core-src/lib")),
+            ("dry-struct".into(), PathBuf::from("/nix/store/def-env/gems/dry-struct-1.6.0/lib")),
+        ]);
+        assert_eq!(
+            loc.locate(&gem("pangea-core", &[])),
+            Some(PathBuf::from("/nix/store/abc123-pangea-core-src/lib"))
+        );
+        assert_eq!(loc.locate(&gem("absent", &[])), None);
+    }
+
+    #[test]
+    fn manifest_locator_from_json_roundtrips() {
+        let json = r#"{"pangea-core":"/g/core/lib","pangea-gcp":"/g/gcp/lib"}"#;
+        let loc = ManifestLocator::from_json(json).expect("valid manifest json");
+        assert_eq!(loc.len(), 2);
+        assert_eq!(loc.locate(&gem("pangea-gcp", &[])), Some(PathBuf::from("/g/gcp/lib")));
+    }
+
+    #[test]
+    fn manifest_locator_from_json_rejects_garbage() {
+        assert!(ManifestLocator::from_json("not json").is_err());
+    }
+
+    // ── CompositeLocator (manifest over baked closure + gem cache) ──
+
+    #[test]
+    fn composite_locator_first_hit_wins() {
+        // Baked manifest hosts pangea-core; gem cache hosts the
+        // architectures composer the image doesn't bake.
+        let manifest = ManifestLocator::new([(
+            "pangea-core".into(),
+            PathBuf::from("/baked/pangea-core/lib"),
+        )]);
+
+        let td = TempDir::new().unwrap();
+        let cache = td.path();
+        touch_gem_tree(cache, "pangea-architectures-main");
+        let roots = GemRootsLocator::new([cache.to_path_buf()]);
+
+        let composite = CompositeLocator::new(vec![Box::new(manifest), Box::new(roots)]);
+
+        // pangea-core resolves from the baked manifest…
+        assert_eq!(
+            composite.locate(&gem("pangea-core", &[])),
+            Some(PathBuf::from("/baked/pangea-core/lib"))
+        );
+        // …pangea-architectures from the gem cache (prefix match).
+        assert_eq!(
+            composite.locate(&gem("pangea-architectures", &[])),
+            Some(cache.join("pangea-architectures-main").join("lib"))
+        );
+        assert_eq!(composite.locate(&gem("nowhere", &[])), None);
+    }
+
+    #[test]
+    fn composite_priority_is_order_sensitive() {
+        let a = ManifestLocator::new([("g".into(), PathBuf::from("/from/a"))]);
+        let b = ManifestLocator::new([("g".into(), PathBuf::from("/from/b"))]);
+        let ab = CompositeLocator::new(vec![Box::new(a.clone()), Box::new(b.clone())]);
+        let ba = CompositeLocator::new(vec![Box::new(b), Box::new(a)]);
+        assert_eq!(ab.locate(&gem("g", &[])), Some(PathBuf::from("/from/a")));
+        assert_eq!(ba.locate(&gem("g", &[])), Some(PathBuf::from("/from/b")));
+    }
+
+    /// End-to-end: the operator-shaped composition resolves the real
+    /// pleme-io-opensource gem set (path-gems from the baked manifest,
+    /// the composer from the gem cache) into a complete ordered closure.
+    #[test]
+    fn composite_resolves_pleme_io_opensource_shape() {
+        let td = TempDir::new().unwrap();
+        let cache = td.path();
+        touch_gem_tree(cache, "pangea-architectures-main");
+
+        // Baked manifest = every PATH-sourced pangea-* gem + rubygems deps,
+        // as the operator flake would emit (name -> store lib dir).
+        let baked = ManifestLocator::new(
+            [
+                "pangea-core", "pangea-gcp", "pangea-aws", "pangea-azure",
+                "pangea-cloudflare", "pangea-datadog", "pangea-akeyless",
+                "dry-struct", "dry-types", "terraform-synthesizer", "base64",
+            ]
+            .into_iter()
+            .map(|n| (n.to_string(), PathBuf::from(format!("/baked/{n}/lib")))),
+        );
+        let loc = CompositeLocator::new(vec![
+            Box::new(baked),
+            Box::new(GemRootsLocator::new([cache.to_path_buf()])),
+        ]);
+
+        // architectures depends on the providers, providers depend on core.
+        let lock = lock_of(vec![
+            gem("pangea-architectures", &["pangea-core", "pangea-gcp", "pangea-aws"]),
+            gem("pangea-core", &["dry-struct", "terraform-synthesizer"]),
+            gem("pangea-gcp", &["pangea-core"]),
+            gem("pangea-aws", &["pangea-core"]),
+            gem("dry-struct", &["dry-types"]),
+            gem("dry-types", &[]),
+            gem("terraform-synthesizer", &[]),
+        ]);
+        let plan = resolve_load_path(&lock, &loc).expect("complete closure");
+        assert_eq!(plan.load_path.len(), 7, "all 7 gems located");
+        // architectures (the composer) resolves to the gem-cache clone.
+        assert!(plan
+            .load_path
+            .contains(&cache.join("pangea-architectures-main").join("lib")));
+        // dependency order: core's deps precede core precede the providers
+        // precede architectures.
+        let pos = |needle: &str| {
+            plan.load_path
+                .iter()
+                .position(|p| p.to_string_lossy().contains(needle))
+                .unwrap()
+        };
+        assert!(pos("dry-types") < pos("dry-struct"));
+        assert!(pos("pangea-core") < pos("pangea-gcp"));
+        assert!(pos("pangea-gcp") < pos("architectures"));
     }
 }

@@ -81,7 +81,8 @@ pub type Result<T> = std::result::Result<T, RubygemsError>;
 // ── Re-exports for the canonical API surface ──────────────────────
 
 pub use load_path::{
-    GemLocator, GemRootsLocator, LoadPathError, LoadPathPlan, MissingGem, resolve_load_path,
+    CompositeLocator, GemLocator, GemRootsLocator, LoadPathError, LoadPathPlan, ManifestLocator,
+    MissingGem, resolve_load_path,
 };
 pub use lockfile::{Lockfile, ResolvedGem};
 pub use manifest::{Dependency, Manifest, RubyVersion};
