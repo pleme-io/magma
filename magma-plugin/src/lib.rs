@@ -448,15 +448,24 @@ impl Plugin {
                     .collect::<Vec<_>>()
                     .join(","),
             )
-            // go-plugin's server does `certPool.AppendCertsFromPEM([]byte(env))`
-            // on PLUGIN_CLIENT_CERT — it expects the RAW PEM (newlines and
-            // all), NOT base64. Sending base64 makes the provider fail to
-            // trust our client cert and drop the mTLS handshake (broken pipe).
-            .env("PLUGIN_CLIENT_CERT", &identity.cert_pem)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        // AutoMTLS is opt-in: setting PLUGIN_CLIENT_CERT makes the provider
+        // serve mTLS (and `dial` must do the matching TLS handshake). When
+        // `secure` is false we DON'T set it, so the provider serves plaintext
+        // h2c over its local socket and `dial` uses the standard tonic path
+        // (no custom TLS connector). For a co-located subprocess provider
+        // over localhost/unix this is the pragmatic transport; mTLS is
+        // defense-in-depth, re-enabled once the custom-connector h2 path is
+        // sorted. go-plugin's server does
+        // `certPool.AppendCertsFromPEM([]byte(env))`, so the value must be
+        // the RAW PEM (not base64).
+        if spec.secure {
+            cmd.env("PLUGIN_CLIENT_CERT", &identity.cert_pem);
+        }
 
         debug!(binary = ?spec.binary, "spawning provider plugin");
         let mut child = cmd.spawn()?;

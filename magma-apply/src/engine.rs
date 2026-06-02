@@ -103,6 +103,11 @@ impl<'a> Registry<'a> {
             .map_err(|e| EngineError::Locate(name.into(), e.to_string()))?;
         let mut plugin = Plugin::spawn(PluginSpec {
             binary,
+            // mTLS (go-plugin AutoMTLS) — real providers (github/SDKv2)
+            // serve TLS even without a client cert, so plaintext h2c isn't
+            // an option. `secure=false` remains available for providers
+            // that do serve plaintext.
+            secure: true,
             ..Default::default()
         })
         .await
