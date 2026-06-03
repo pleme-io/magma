@@ -62,6 +62,24 @@ fn ensure_crypto_provider() {
     });
 }
 
+/// Flatten an error + its full source chain into one line. tonic's
+/// `transport::Error` `Display` is just `"transport error"`; the real
+/// cause (e.g. `"Connecting to HTTPS without TLS enabled"`, a
+/// `"Broken pipe"`, a TLS alert) lives only in the `source()` chain.
+/// Without this, every dial failure collapses to an undiagnosable
+/// `"transport error"` (this exact opacity hid the http-vs-https-scheme
+/// + base64-vs-PEM-client-cert bugs for weeks).
+fn err_chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut src = e.source();
+    while let Some(inner) = src {
+        s.push_str("  ->  ");
+        s.push_str(&inner.to_string());
+        src = inner.source();
+    }
+    s
+}
+
 // ── Custom certificate verifier (self-signed peer trust) ──────────
 
 /// rustls custom verifier that trusts only one specific peer cert.
@@ -375,7 +393,14 @@ impl Plugin {
                     .collect::<Vec<_>>()
                     .join(","),
             )
-            .env("PLUGIN_CLIENT_CERT", &identity.base64_cert)
+            // go-plugin's server reads PLUGIN_CLIENT_CERT and feeds it
+            // DIRECTLY to `x509.CertPool.AppendCertsFromPEM([]byte(env))`
+            // — it does NOT base64-decode. So the value must be the raw
+            // PEM string (with its newlines), exactly as the Terraform
+            // CLI passes it. Sending base64(PEM) makes the provider log
+            // "client cert provided but failed to parse" and tear the
+            // connection down right after the TLS handshake (broken pipe).
+            .env("PLUGIN_CLIENT_CERT", &identity.cert_pem)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -383,6 +408,23 @@ impl Plugin {
 
         debug!(binary = ?spec.binary, "spawning provider plugin");
         let mut child = cmd.spawn()?;
+
+        // Drain the provider's stderr in the background. This is a
+        // correctness requirement, not just diagnostics: a piped-but-
+        // unread stderr fills its OS pipe buffer (~64 KiB) and then
+        // BLOCKS the provider on its next stderr write — providers log
+        // verbosely (go-hclog JSON), so a long-running provider would
+        // deadlock. Routing each line to `tracing` also surfaces the
+        // provider's own diagnostics (mTLS errors, panics) which are
+        // otherwise invisible.
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(l)) = lines.next_line().await {
+                    debug!(target: "magma_plugin::provider_stderr", "{l}");
+                }
+            });
+        }
 
         let stdout = child.stdout.take().expect("piped stdout requested above");
         let mut reader = BufReader::new(stdout).lines();
@@ -496,11 +538,25 @@ impl Plugin {
         // negotiate http/1.1 and tonic fails.
         tls_config.alpn_protocols = vec![b"h2".to_vec()];
         let tls_config = Arc::new(tls_config);
+        debug!(
+            network = %self.handshake.network,
+            address = %self.handshake.address,
+            "dialing provider over mTLS (ALPN h2)"
+        );
 
         let channel = match self.handshake.network.as_str() {
             "tcp" => {
                 let address = self.handshake.address.clone();
-                Endpoint::try_from("https://localhost")
+                // `http://` (not `https://`) is deliberate: our custom
+                // connector performs the mTLS handshake itself and hands
+                // tonic an already-encrypted, ALPN-h2-negotiated stream.
+                // With `https://`, tonic's own transport layer rejects the
+                // dial ("Connecting to HTTPS without TLS enabled") because
+                // tonic's tls feature isn't enabling client TLS here — the
+                // scheme is the only thing it inspects. `http://` tells
+                // tonic "no transport-level TLS to add", and it speaks h2
+                // straight over the encrypted stream the connector returns.
+                Endpoint::try_from("http://localhost")
                     .map_err(|e| PluginError::Transport(e.to_string()))?
                     .timeout(Duration::from_secs(30))
                     .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
@@ -516,11 +572,20 @@ impl Plugin {
                         }
                     }))
                     .await
-                    .map_err(|e| PluginError::Transport(e.to_string()))?
+                    .map_err(|e| PluginError::Transport(err_chain(&e)))?
             }
             "unix" => {
                 let path = self.handshake.address.clone();
-                Endpoint::try_from("https://localhost")
+                // `http://` (not `https://`) is deliberate: our custom
+                // connector performs the mTLS handshake itself and hands
+                // tonic an already-encrypted, ALPN-h2-negotiated stream.
+                // With `https://`, tonic's own transport layer rejects the
+                // dial ("Connecting to HTTPS without TLS enabled") because
+                // tonic's tls feature isn't enabling client TLS here — the
+                // scheme is the only thing it inspects. `http://` tells
+                // tonic "no transport-level TLS to add", and it speaks h2
+                // straight over the encrypted stream the connector returns.
+                Endpoint::try_from("http://localhost")
                     .map_err(|e| PluginError::Transport(e.to_string()))?
                     .timeout(Duration::from_secs(30))
                     .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
@@ -536,7 +601,7 @@ impl Plugin {
                         }
                     }))
                     .await
-                    .map_err(|e| PluginError::Transport(e.to_string()))?
+                    .map_err(|e| PluginError::Transport(err_chain(&e)))?
             }
             other => {
                 return Err(PluginError::Transport(format!(

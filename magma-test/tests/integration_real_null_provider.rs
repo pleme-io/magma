@@ -107,18 +107,22 @@ async fn real_null_provider_handshake() {
     drop(plugin);
 }
 
-// The mTLS code path in magma-plugin is fully implemented (rcgen +
-// rustls 0.23 + custom peer verifier + UDS-wrapped TlsStream). Against
-// the real null provider, the TLS handshake currently fails with a
-// generic transport error — likely a rustls-vs-Go-tls interop issue
-// around webpki's strict cert validation (Basic Constraints, Key
-// Usage, AKI/SKI, signing scheme). The cert exchange + handshake
-// parsing + protocol negotiation are all proven correct by the
-// real_null_provider_handshake test above.
+// End-to-end against the REAL null provider: spawn → go-plugin
+// handshake → mTLS → ALPN-h2 → gRPC GetSchema. PASSES.
 //
-// Run these tests once the rustls/Go-tls interop is debugged:
-//   cargo test --test integration_real_null_provider -- --ignored
-#[ignore = "rustls↔Go-tls interop debug needed (cert exchange + TLS scaffold proven)"]
+// History: this was long #[ignore]d under the belief that rustls↔Go-tls
+// interop was broken. It was NOT — the TLS handshake always succeeded.
+// Two unrelated bugs in magma-plugin produced an opaque "transport
+// error" that masqueraded as a TLS failure (2026-06-03):
+//   1. dial() used an `https://` tonic Endpoint while the custom
+//      connector already does TLS → tonic refused with "Connecting to
+//      HTTPS without TLS enabled". Fixed to `http://`.
+//   2. PLUGIN_CLIENT_CERT was sent base64(PEM); go-plugin feeds it
+//      straight to AppendCertsFromPEM → "client cert provided but failed
+//      to parse" → post-handshake broken pipe. Fixed to raw PEM.
+// null v3.2.4 is an SDKv2 provider → it speaks tfplugin5, so this uses
+// the v5 client + GetSchema (a v6 provider would use tfplugin6). Still
+// requires the vendored binary, hence skip_if_missing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_null_provider_schema() {
     let Some(binary) = skip_if_missing() else {
@@ -133,12 +137,13 @@ async fn real_null_provider_schema() {
 
     let mut plugin = Plugin::spawn(spec).await.expect("spawn");
     let channel = plugin.dial().await.expect("dial gRPC").clone();
-    let mut client = ProviderClient::new(channel);
+    // null v3.2.4 speaks tfplugin5 (SDKv2). Use the v5 client + GetSchema.
+    let mut client = magma_protocol::tfplugin5::provider_client::ProviderClient::new(channel);
 
     let resp = client
-        .get_provider_schema(tfplugin6::get_provider_schema::Request {})
+        .get_schema(magma_protocol::tfplugin5::get_provider_schema::Request {})
         .await
-        .expect("GetProviderSchema against real null provider")
+        .expect("GetSchema against real null provider")
         .into_inner();
 
     eprintln!(
