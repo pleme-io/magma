@@ -670,8 +670,8 @@ dependencies = [
 
 [[package]]
 name = "gen-macros"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/gen#b49ca370ff03b21eeb1f5cb27acc9b6750f0288e"
+version = "0.1.4"
+source = "git+https://github.com/pleme-io/gen#aa7a90a4d72ccc77d24e5632911a7e643bdb5d0a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -680,8 +680,8 @@ dependencies = [
 
 [[package]]
 name = "gen-platform"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/gen#b49ca370ff03b21eeb1f5cb27acc9b6750f0288e"
+version = "0.1.4"
+source = "git+https://github.com/pleme-io/gen#aa7a90a4d72ccc77d24e5632911a7e643bdb5d0a"
 dependencies = [
  "gen-macros",
  "gen-types",
@@ -693,8 +693,8 @@ dependencies = [
 
 [[package]]
 name = "gen-types"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/gen#b49ca370ff03b21eeb1f5cb27acc9b6750f0288e"
+version = "0.1.4"
+source = "git+https://github.com/pleme-io/gen#aa7a90a4d72ccc77d24e5632911a7e643bdb5d0a"
 dependencies = [
  "blake3",
  "chrono",
@@ -912,7 +912,7 @@ dependencies = [
  "hyper",
  "libc",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -2911,7 +2911,7 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 [[package]]
 name = "shigoto"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
+source = "git+https://github.com/pleme-io/shigoto?rev=8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
 dependencies = [
  "shigoto-budget",
  "shigoto-dag",
@@ -2925,7 +2925,7 @@ dependencies = [
 [[package]]
 name = "shigoto-budget"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
+source = "git+https://github.com/pleme-io/shigoto?rev=8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
 dependencies = [
  "serde",
  "shigoto-types",
@@ -2935,7 +2935,7 @@ dependencies = [
 [[package]]
 name = "shigoto-dag"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
+source = "git+https://github.com/pleme-io/shigoto?rev=8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
 dependencies = [
  "petgraph 0.6.5",
  "serde",
@@ -2946,7 +2946,7 @@ dependencies = [
 [[package]]
 name = "shigoto-emit"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
+source = "git+https://github.com/pleme-io/shigoto?rev=8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
 dependencies = [
  "async-trait",
  "serde",
@@ -2958,7 +2958,7 @@ dependencies = [
 [[package]]
 name = "shigoto-gate"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
+source = "git+https://github.com/pleme-io/shigoto?rev=8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
 dependencies = [
  "shigoto-dag",
  "shigoto-types",
@@ -2967,7 +2967,7 @@ dependencies = [
 [[package]]
 name = "shigoto-retry"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
+source = "git+https://github.com/pleme-io/shigoto?rev=8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
 dependencies = [
  "serde",
  "shigoto-types",
@@ -2976,7 +2976,7 @@ dependencies = [
 [[package]]
 name = "shigoto-scheduler"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
+source = "git+https://github.com/pleme-io/shigoto?rev=8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2995,7 +2995,7 @@ dependencies = [
 [[package]]
 name = "shigoto-types"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
+source = "git+https://github.com/pleme-io/shigoto?rev=8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2#8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2"
 dependencies = [
  "async-trait",
  "chrono",
