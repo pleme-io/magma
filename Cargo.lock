@@ -520,7 +520,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -670,8 +670,8 @@ dependencies = [
 
 [[package]]
 name = "gen-macros"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/gen#3129915542f610054ef285b653945bcaf8272a5c"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/gen#eea15518fdff36d8b21ed753b6b161fc0d3623f6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -680,8 +680,8 @@ dependencies = [
 
 [[package]]
 name = "gen-platform"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/gen#3129915542f610054ef285b653945bcaf8272a5c"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/gen#eea15518fdff36d8b21ed753b6b161fc0d3623f6"
 dependencies = [
  "gen-macros",
  "gen-types",
@@ -693,8 +693,8 @@ dependencies = [
 
 [[package]]
 name = "gen-types"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/gen#3129915542f610054ef285b653945bcaf8272a5c"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/gen#eea15518fdff36d8b21ed753b6b161fc0d3623f6"
 dependencies = [
  "blake3",
  "chrono",
@@ -1092,7 +1092,7 @@ dependencies = [
 [[package]]
 name = "lava-arch"
 version = "0.1.3"
-source = "git+https://github.com/pleme-io/lava-arch?branch=main#b76775c67ba839557e1d62cea07e95c30e5d47e3"
+source = "git+https://github.com/pleme-io/lava-arch?branch=main#180f7dd733de7fb397a7867ea49b6c982cc3e701"
 dependencies = [
  "indexmap 2.14.0",
  "lava-core",
@@ -1103,8 +1103,8 @@ dependencies = [
 
 [[package]]
 name = "lava-architectures"
-version = "0.1.13"
-source = "git+https://github.com/pleme-io/lava-architectures?branch=main#22653b5219cfccfda79156d2b304ff96b210b20e"
+version = "0.1.14"
+source = "git+https://github.com/pleme-io/lava-architectures?branch=main#395702f55d7fc7207b9e6b0b6f07dfea33781478"
 dependencies = [
  "indexmap 2.14.0",
  "lava-arch",
@@ -1121,7 +1121,7 @@ dependencies = [
 [[package]]
 name = "lava-contracts"
 version = "0.1.2"
-source = "git+https://github.com/pleme-io/lava-contracts?branch=main#f60fe3b3c2ae3c05be8993cdd43b4381bbb41922"
+source = "git+https://github.com/pleme-io/lava-contracts?branch=main#24bd3a1dfed51a5280488a0434259877280bf1dd"
 dependencies = [
  "indexmap 2.14.0",
  "lava-core",
@@ -1131,7 +1131,7 @@ dependencies = [
 [[package]]
 name = "lava-core"
 version = "0.1.6"
-source = "git+https://github.com/pleme-io/lava-core?branch=main#df13f94d90911d47138bf211d492c4962630f8ca"
+source = "git+https://github.com/pleme-io/lava-core?branch=main#4381dceade2582b3b06608efcd9df74254cf24cb"
 dependencies = [
  "indexmap 2.14.0",
  "serde",
@@ -1142,8 +1142,8 @@ dependencies = [
 
 [[package]]
 name = "lava-eval"
-version = "0.1.7"
-source = "git+https://github.com/pleme-io/lava-eval?branch=main#05532c96f7434a33557e7221a006fa0bea631654"
+version = "0.1.8"
+source = "git+https://github.com/pleme-io/lava-eval?branch=main#fc42426088e84f151cab10534ff0f3095982c4c2"
 dependencies = [
  "indexmap 2.14.0",
  "lava-arch",
@@ -1158,7 +1158,7 @@ dependencies = [
 [[package]]
 name = "lava-runtime"
 version = "0.1.5"
-source = "git+https://github.com/pleme-io/lava-runtime?branch=main#301762a6495112635a9c660c10f9975bf1b825f6"
+source = "git+https://github.com/pleme-io/lava-runtime?branch=main#491c993ddbbb6efab8a539355da1ae3026ed2418"
 dependencies = [
  "indexmap 2.14.0",
  "lava-core",
@@ -1172,7 +1172,7 @@ dependencies = [
 [[package]]
 name = "lava-schema"
 version = "0.1.4"
-source = "git+https://github.com/pleme-io/lava-schema?branch=main#1abb14533eca15a2092768d56357ebff3761b098"
+source = "git+https://github.com/pleme-io/lava-schema?branch=main#d7e6bb386c43e0953e7b0ad53ef285c9dee6ccaa"
 dependencies = [
  "indexmap 2.14.0",
  "lava-types",
@@ -1183,7 +1183,7 @@ dependencies = [
 [[package]]
 name = "lava-types"
 version = "0.1.2"
-source = "git+https://github.com/pleme-io/lava-types?branch=main#16ac0b6c7c33c96e2cf17c0067db94e8633e5062"
+source = "git+https://github.com/pleme-io/lava-types?branch=main#3f5e18261cd8ceb4e69d58a60a671056eabbf5a9"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -1410,7 +1410,7 @@ dependencies = [
 [[package]]
 name = "magma-config"
 version = "0.1.1"
-source = "git+https://github.com/pleme-io/magma?branch=main#e8fc9308e549d95101baaf1e8af95431c38955bd"
+source = "git+https://github.com/pleme-io/magma?branch=main#70e7fd4e5d8c3e3eedc3d8edef3670664679917f"
 dependencies = [
  "magma-types 0.1.1 (git+https://github.com/pleme-io/magma?branch=main)",
  "serde",
@@ -1552,8 +1552,8 @@ dependencies = [
 
 [[package]]
 name = "magma-lava"
-version = "0.2.3"
-source = "git+https://github.com/pleme-io/magma-lava?branch=main#78fb32d1ae8d5370be2a2ce98d958e45b6498969"
+version = "0.2.4"
+source = "git+https://github.com/pleme-io/magma-lava?branch=main#7db08185b1bf49fac3dc452bf5b4186b438b1de0"
 dependencies = [
  "indexmap 2.14.0",
  "lava-architectures",
@@ -1929,7 +1929,7 @@ dependencies = [
 [[package]]
 name = "magma-types"
 version = "0.1.1"
-source = "git+https://github.com/pleme-io/magma?branch=main#e8fc9308e549d95101baaf1e8af95431c38955bd"
+source = "git+https://github.com/pleme-io/magma?branch=main#70e7fd4e5d8c3e3eedc3d8edef3670664679917f"
 dependencies = [
  "chrono",
  "gen-platform",
@@ -2090,7 +2090,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "pangea-ruby-eval"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/pangea-operator#3bdf9b745b5340ec815433d00aee66eca3c14421"
+source = "git+https://github.com/pleme-io/pangea-operator#5cccc830e9088b4d9fb47d8ffa66593c7dd852e0"
 dependencies = [
  "magnus",
  "serde",
@@ -2631,7 +2631,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2872,8 +2872,8 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shigoto"
-version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#391a47959d0c29115c0fc98a7574b78105a09d65"
+version = "0.1.3"
+source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
 dependencies = [
  "shigoto-budget",
  "shigoto-dag",
@@ -2886,8 +2886,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-budget"
-version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#391a47959d0c29115c0fc98a7574b78105a09d65"
+version = "0.1.3"
+source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
 dependencies = [
  "serde",
  "shigoto-types",
@@ -2896,8 +2896,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-dag"
-version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#391a47959d0c29115c0fc98a7574b78105a09d65"
+version = "0.1.3"
+source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
 dependencies = [
  "petgraph 0.6.5",
  "serde",
@@ -2907,8 +2907,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-emit"
-version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#391a47959d0c29115c0fc98a7574b78105a09d65"
+version = "0.1.3"
+source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
 dependencies = [
  "async-trait",
  "serde",
@@ -2919,8 +2919,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-gate"
-version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#391a47959d0c29115c0fc98a7574b78105a09d65"
+version = "0.1.3"
+source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
 dependencies = [
  "shigoto-dag",
  "shigoto-types",
@@ -2928,8 +2928,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-retry"
-version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#391a47959d0c29115c0fc98a7574b78105a09d65"
+version = "0.1.3"
+source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
 dependencies = [
  "serde",
  "shigoto-types",
@@ -2937,8 +2937,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-scheduler"
-version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#391a47959d0c29115c0fc98a7574b78105a09d65"
+version = "0.1.3"
+source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2956,8 +2956,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-types"
-version = "0.1.0"
-source = "git+https://github.com/pleme-io/shigoto#391a47959d0c29115c0fc98a7574b78105a09d65"
+version = "0.1.3"
+source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2972,7 +2972,7 @@ dependencies = [
 [[package]]
 name = "shikumi"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shikumi#14ba02ab0dc28e88507181dcb6380db3911ec200"
+source = "git+https://github.com/pleme-io/shikumi#4426f572b66d053dde2ca211c3b55121d76598b1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3080,7 +3080,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3668,7 +3668,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
