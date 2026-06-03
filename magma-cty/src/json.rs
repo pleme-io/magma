@@ -90,10 +90,22 @@ pub fn from_json(v: &J, ty: &CtyType) -> Result<CtyValue, CtyError> {
 }
 
 fn json_seq(v: &J, elem: &CtyType) -> Result<Vec<CtyValue>, CtyError> {
-    let arr = v
-        .as_array()
-        .ok_or_else(|| CtyError::Type(format!("expected JSON array, got {v}")))?;
-    arr.iter().map(|x| from_json(x, elem)).collect()
+    if let Some(arr) = v.as_array() {
+        return arr.iter().map(|x| from_json(x, elem)).collect();
+    }
+    // (A `null` list never reaches here — `from_json` returns `CtyValue::Null`
+    //  for any null before dispatching to the List/Set arm.)
+    // terraform leniency for `max_items = 1` nested blocks: a list/set-of-
+    // object block may be written as a SINGLE OBJECT (e.g. github_repository's
+    // `pages = { build_type = "workflow" }`) rather than a one-element array.
+    // The block's cty type is still list(object)/set(object), so coerce the
+    // lone object into a single-element sequence — exactly what HCL→cty does.
+    // Only when the element is an object type, so genuine list(string)/etc.
+    // mismatches still error.
+    if v.is_object() && matches!(elem, CtyType::Object(_)) {
+        return Ok(vec![from_json(v, elem)?]);
+    }
+    Err(CtyError::Type(format!("expected JSON array, got {v}")))
 }
 
 /// Structurally infer a `CtyValue` from untyped JSON (for
@@ -128,5 +140,52 @@ pub fn to_json(v: &CtyValue) -> J {
         CtyValue::Map(m) | CtyValue::Object(m) => {
             J::Object(m.iter().map(|(k, val)| (k.clone(), to_json(val))).collect())
         }
+    }
+}
+
+#[cfg(test)]
+mod block_coercion_tests {
+    use super::*;
+    use crate::types::CtyType;
+    use std::collections::BTreeMap;
+    use serde_json::json;
+
+    fn obj_elem() -> CtyType {
+        let mut a = BTreeMap::new();
+        a.insert("build_type".to_string(), CtyType::String);
+        CtyType::Object(a)
+    }
+
+    #[test]
+    fn max_items_one_block_written_as_object_coerces_to_single_element_list() {
+        // github_repository's `pages = { build_type = "workflow" }`: a single
+        // object for a list(object) block must become a 1-element list.
+        let ty = CtyType::List(Box::new(obj_elem()));
+        let v = json!({ "build_type": "workflow" });
+        let out = from_json(&v, &ty).expect("object coerces to single-element list");
+        match out {
+            CtyValue::List(xs) => assert_eq!(xs.len(), 1, "exactly one element"),
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn null_list_is_cty_null() {
+        // A null list attribute resolves to cty null (handled at the top of
+        // from_json), which the provider accepts as an absent block.
+        let ty = CtyType::List(Box::new(obj_elem()));
+        let out = from_json(&serde_json::Value::Null, &ty).expect("null → cty null");
+        assert!(matches!(out, CtyValue::Null));
+    }
+
+    #[test]
+    fn array_still_works_and_non_object_elem_still_errors() {
+        // Normal array path unchanged.
+        let ty = CtyType::List(Box::new(obj_elem()));
+        let arr = json!([{ "build_type": "legacy" }, { "build_type": "workflow" }]);
+        assert!(matches!(from_json(&arr, &ty), Ok(CtyValue::List(xs)) if xs.len() == 2));
+        // A genuine list(string) given an object must STILL error (no over-coercion).
+        let sty = CtyType::List(Box::new(CtyType::String));
+        assert!(from_json(&json!({ "x": "y" }), &sty).is_err());
     }
 }
