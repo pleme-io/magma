@@ -13,10 +13,20 @@ authors.workspace      = true
 workspace = true
 
 [dependencies]
-magma-types  = { workspace = true }
-magma-plugin = { workspace = true }
-serde        = { workspace = true }
-serde_json   = { workspace = true }
-tokio        = { workspace = true }
-thiserror    = { workspace = true }
-tracing      = { workspace = true }
+magma-types    = { workspace = true }
+magma-plugin   = { workspace = true }
+magma-protocol = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+tokio          = { workspace = true }
+thiserror      = { workspace = true }
+tracing        = { workspace = true }
+tonic          = { workspace = true }
+# msgpack decode of provider DynamicValue responses (cty wire format).
+# rmpv (not rmp-serde) tolerates cty ext-types gracefully rather than
+# erroring; a fully-applied resource has no unknowns so the Value maps
+# cleanly to serde_json.
+rmpv           = { version = "1", features = ["with-serde"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
