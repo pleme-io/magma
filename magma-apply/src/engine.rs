@@ -359,7 +359,29 @@ pub async fn run_plan_with_providers(
         }
     }
 
-    if !applied.is_empty() {
+    // Self-heal phantom parents: a child create that failed with a
+    // `404 .../repos/<owner>/<repo>/...` — or an unresolved
+    // `${github_repository.<name>....}` reference — means the parent repo is a
+    // PHANTOM (recorded in state but absent in cloud), so the plan NoOp'd it
+    // and never created it. Drop it from state here; the next plan re-creates
+    // it and its children then resolve. This reacts to the REAL apply failure,
+    // so it converges independently of ReadResource null-vs-404 semantics and
+    // of any plan-time refresh suspect-matching.
+    let phantoms = collect_phantom_parents(&failed);
+    let dropped_phantoms = if phantoms.is_empty() {
+        0
+    } else {
+        drop_repos_from_state(state, &phantoms)
+    };
+    if dropped_phantoms > 0 {
+        tracing::warn!(
+            phantom_parents = phantoms.len(),
+            dropped = dropped_phantoms,
+            "magma apply: dropped phantom parent repos (children 404'd — in state, gone in cloud); re-creating next cycle"
+        );
+    }
+
+    if !applied.is_empty() || dropped_phantoms > 0 {
         state.serial = state.serial.saturating_add(1);
     }
 
@@ -371,6 +393,69 @@ pub async fn run_plan_with_providers(
         started_at,
         finished_at: Utc::now(),
     }
+}
+
+/// Parse the parent `github_repository` identifiers that a set of failed
+/// changes implicate as PHANTOMS: a `404 .../repos/<owner>/<repo>/...` (the
+/// repo NAME) or an unresolved `${github_repository.<name>....}` (the resource
+/// NAME) in the failure reason. Both forms are collected so
+/// [`drop_repos_from_state`] can match either the state resource-name or its
+/// `attributes["name"]`. Only repo-scoped 404 paths match — a repo-create's
+/// own `404 /orgs/.../repos` (already-exists) or an org-block path never do,
+/// so inverse-phantoms aren't wrongly dropped.
+fn collect_phantom_parents(failed: &[FailedChange]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for f in failed {
+        let r = f.reason.as_str();
+        // `.../repos/<owner>/<repo>/<child>...` → repo NAME (a child 404'd on
+        // a repo that doesn't exist). Require the 3rd `/`-segment (a child
+        // path) so a bare `/repos/owner/repo` or an `/orgs/.../repos`
+        // create-404 isn't mistaken for a parent.
+        let mut rest = r;
+        while let Some(i) = rest.find("/repos/") {
+            let after = &rest[i + "/repos/".len()..];
+            let parts: Vec<&str> = after.splitn(3, '/').collect();
+            if parts.len() == 3 {
+                let repo = parts[1].trim();
+                if !repo.is_empty() {
+                    out.insert(repo.to_string());
+                }
+            }
+            rest = after;
+        }
+        // unresolved `${github_repository.<name>.<attr>}` → resource NAME.
+        let mut rest2 = r;
+        while let Some(i) = rest2.find("${github_repository.") {
+            let after = &rest2[i + "${github_repository.".len()..];
+            let name: String = after.chars().take_while(|c| *c != '.' && *c != '}').collect();
+            if !name.is_empty() {
+                out.insert(name);
+            }
+            rest2 = after;
+        }
+    }
+    out
+}
+
+/// Drop every `github_repository` resource from `state` whose resource-name OR
+/// `attributes["name"]` is in `names`. Returns the count of resources removed.
+/// Evicts phantoms so the next plan re-creates them.
+fn drop_repos_from_state(state: &mut State, names: &HashSet<String>) -> usize {
+    let before = state.resources.len();
+    state.resources.retain(|r| {
+        if r.address.type_id.0 != "github_repository" {
+            return true;
+        }
+        let by_addr = names.contains(&r.address.name);
+        let by_attr = r
+            .instances
+            .first()
+            .and_then(|i| i.attributes.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|n| names.contains(n));
+        !(by_addr || by_attr)
+    });
+    before - state.resources.len()
 }
 
 /// What a [`refresh_state`] pass did, for logging + receipts.
@@ -982,5 +1067,87 @@ mod tests {
         assert_eq!(report.dropped_resources, 0);
         assert_eq!(report.kept_on_error, 1, "kept the instance it couldn't read");
         assert_eq!(state.resources.len(), 1, "resource survives uncertainty");
+    }
+
+    #[test]
+    fn phantom_parents_collected_and_dropped() {
+        use magma_types::{
+            InstanceStatus, ModulePath, ProviderReference, ResourceAddress, ResourceKind,
+            ResourceTypeId, StateInstance, StateResource,
+        };
+        let mkfail = |type_id: &str, name: &str, reason: &str| FailedChange {
+            address: ResourceAddress {
+                module: ModulePath::root(),
+                kind: ResourceKind::Managed,
+                type_id: ResourceTypeId(type_id.into()),
+                name: name.into(),
+                key: None,
+            },
+            action: Action::Create,
+            reason: reason.into(),
+        };
+        // A label 404 (parent repo gone) + an unresolved branch-protection ${ref}.
+        let failed = vec![
+            mkfail(
+                "github_issue_label",
+                "kanchi-label-bug",
+                "provider \"github\" RPC: POST https://api.github.com/repos/pleme-io/kanchi/labels: 404 Not Found []: ",
+            ),
+            mkfail(
+                "github_branch_protection",
+                "akeyless_stack_main",
+                "Could not resolve to a node with the global id of '${github_repository.akeyless_stack.node_id}'",
+            ),
+        ];
+        let parents = collect_phantom_parents(&failed);
+        assert!(parents.contains("kanchi"), "repo name from /repos/owner/kanchi/labels 404");
+        assert!(parents.contains("akeyless_stack"), "resource name from the ${{github_repository.X}} ref");
+
+        // A repo-CREATE 422 on /orgs/.../repos must NOT implicate a parent
+        // (inverse-phantom — exists in cloud, not state — handled elsewhere).
+        let inverse = vec![mkfail(
+            "github_repository",
+            "breathe",
+            "POST https://api.github.com/orgs/pleme-io/repos: 422 Repository creation failed [name already exists]",
+        )];
+        assert!(collect_phantom_parents(&inverse).is_empty(), "repo-create 422 is not a phantom signal");
+
+        let mkrepo = |rname: &str, attr: &str| StateResource {
+            address: ResourceAddress {
+                module: ModulePath::root(),
+                kind: ResourceKind::Managed,
+                type_id: ResourceTypeId("github_repository".into()),
+                name: rname.into(),
+                key: None,
+            },
+            provider: ProviderReference {
+                source: "integrations/github".into(),
+                name: "github".into(),
+                alias: None,
+            },
+            instances: vec![StateInstance {
+                schema_version: 0,
+                attributes: serde_json::json!({ "name": attr }),
+                private: vec![],
+                dependencies: vec![],
+                status: InstanceStatus::Ready,
+            }],
+        };
+        let mut state = State {
+            version: 4,
+            terraform_version: "1.9.0".into(),
+            serial: 1,
+            lineage: uuid::Uuid::nil(),
+            outputs: Default::default(),
+            resources: vec![
+                mkrepo("kanchi", "kanchi"),               // phantom → dropped
+                mkrepo("akeyless_stack", "akeyless-stack"), // phantom (addr-name match) → dropped
+                mkrepo("galho", "galho"),                 // not implicated → kept
+            ],
+        };
+        let dropped = drop_repos_from_state(&mut state, &parents);
+        assert_eq!(dropped, 2, "kanchi + akeyless_stack dropped");
+        assert_eq!(state.resources.len(), 1);
+        assert_eq!(state.resources[0].address.name, "galho", "non-phantom survives");
     }
 }
