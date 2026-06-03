@@ -46,6 +46,36 @@ fn locate_null_provider() -> Option<PathBuf> {
     None
 }
 
+/// Locate the github provider binary in the terraform plugin cache
+/// (`~/.terraform.d/plugin-cache/<registry>/integrations/github/<ver>/<os_arch>/
+/// terraform-provider-github_*`). This is the resolver shape the real
+/// `magma-providers::ProviderRegistry` formalizes; here it proves the v6
+/// client path against the ACTUAL rio target provider (github is v6,
+/// SDKv2-framework-mux), not just the v5 null provider. GetProviderSchema
+/// needs no credentials.
+fn locate_cached_github_provider() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let cache = PathBuf::from(home).join(".terraform.d/plugin-cache");
+    // <registry>/integrations/github/<version>/<os_arch>/terraform-provider-github_*
+    for registry in std::fs::read_dir(&cache).ok()?.flatten() {
+        let gh = registry.path().join("integrations/github");
+        let Ok(versions) = std::fs::read_dir(&gh) else { continue };
+        for ver in versions.flatten() {
+            let Ok(arches) = std::fs::read_dir(ver.path()) else { continue };
+            for arch in arches.flatten() {
+                let Ok(files) = std::fs::read_dir(arch.path()) else { continue };
+                for f in files.flatten() {
+                    let name = f.file_name();
+                    if name.to_string_lossy().starts_with("terraform-provider-github") {
+                        return Some(f.path());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn skip_if_missing() -> Option<PathBuf> {
     let binary = locate_null_provider();
     if binary.is_none() {
@@ -304,5 +334,65 @@ async fn real_null_provider_lifecycle() {
     // 4. Stop the provider cleanly.
     let _ = client.stop(tfplugin5::stop::Request {}).await;
 
+    drop(plugin);
+}
+
+// Proves the provider-RPC path against the REAL github provider — the
+// actual rio target (executor:magma reconciles github_repository).
+// FINDING: terraform-provider-github v6.12.1 negotiates protocol **v5**
+// (the "6" is the provider version; it's an SDKv2 provider → tfplugin5,
+// NOT framework/v6). So the registry must dispatch the gRPC client by
+// the negotiated handshake.app_protocol, never by the provider version.
+// GetSchema needs no credentials.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_github_provider_schema() {
+    use magma_protocol::tfplugin5;
+    let Some(binary) = locate_cached_github_provider() else {
+        eprintln!(
+            "skip: github provider not in ~/.terraform.d/plugin-cache. \
+             Populate via `tofu init` in a workspace using integrations/github."
+        );
+        return;
+    };
+    eprintln!("github provider binary: {}", binary.display());
+
+    let spec = PluginSpec {
+        binary,
+        kill_grace: Duration::from_secs(2),
+        ..PluginSpec::default()
+    };
+
+    let mut plugin = Plugin::spawn(spec).await.expect("spawn github provider");
+    let proto = plugin.handshake().app_protocol;
+    eprintln!("github handshake protocol: {proto:?}");
+    assert_eq!(
+        proto,
+        magma_protocol::PluginProtocol::V5,
+        "github v6.12.1 is an SDKv2 provider — expected protocol v5",
+    );
+    let channel = plugin.dial().await.expect("dial github gRPC").clone();
+    let mut client = tfplugin5::provider_client::ProviderClient::new(channel);
+
+    let resp = client
+        .get_schema(tfplugin5::get_provider_schema::Request {})
+        .await
+        .expect("GetSchema against real github provider")
+        .into_inner();
+
+    let resources: Vec<&str> = resp.resource_schemas.keys().map(|k| k.as_str()).collect();
+    eprintln!(
+        "github provider: {} resources, {} data sources, {} diagnostics",
+        resp.resource_schemas.len(),
+        resp.data_source_schemas.len(),
+        resp.diagnostics.len(),
+    );
+    assert!(
+        resp.resource_schemas.contains_key("github_repository"),
+        "github_repository schema present (got {} resources incl: {:?})",
+        resources.len(),
+        &resources.iter().take(8).collect::<Vec<_>>(),
+    );
+
+    let _ = client.stop(tfplugin5::stop::Request {}).await;
     drop(plugin);
 }
