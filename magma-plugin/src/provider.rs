@@ -82,6 +82,49 @@ pub enum ProviderError {
     Schema(#[from] SchemaError),
 }
 
+/// Is this provider error worth retrying with backoff? True for transient
+/// conditions — chiefly provider-side RATE LIMITING (github/cloud secondary
+/// rate limits surface as error diagnostics or transport errors) and
+/// transient transport faults. The tfplugin Diagnostic carries no status
+/// code, so detection is text-pattern matching on the diagnostic + transport
+/// strings. Permanent errors (bad config, schema, auth-denied) return false
+/// so they fail fast instead of looping.
+#[must_use]
+pub fn is_retryable(e: &ProviderError) -> bool {
+    const TRANSIENT: &[&str] = &[
+        "rate limit",
+        "secondary rate",
+        "too many request",
+        "abuse",
+        "quota",
+        "try again",
+        "retry",
+        "429",
+        "503",
+        "resource_exhausted",
+        "unavailable",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "broken pipe",
+        "tls",
+        "transport",
+        "h2 protocol",
+        "eof",
+    ];
+    let hit = |s: &str| {
+        let l = s.to_ascii_lowercase();
+        TRANSIENT.iter().any(|p| l.contains(p))
+    };
+    match e {
+        ProviderError::Transport(s) => hit(s),
+        ProviderError::Diagnostics(diags) => diags
+            .iter()
+            .any(|d| hit(&d.summary) || hit(&d.detail)),
+        ProviderError::NoNewState | ProviderError::Schema(_) => false,
+    }
+}
+
 fn fmt_diags(diags: &[Diag]) -> String {
     diags
         .iter()

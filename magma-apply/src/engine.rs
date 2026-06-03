@@ -13,16 +13,51 @@
 //! [`magma_plugin::provider::ProviderConn`] speaks the RPCs, and
 //! [`magma_cty`] encodes attributes against the schema-derived type.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use chrono::Utc;
+use magma_config::resolve_reference;
 use magma_cty::DynamicValue;
-use magma_plugin::provider::{ProviderConn, ProviderSchema};
+use magma_graph::ResourceGraph;
+use magma_plugin::provider::{ProviderConn, ProviderSchema, is_retryable};
 use magma_plugin::{Plugin, PluginSpec};
-use magma_types::{Action, Plan, ResourceChange, State, StateInstance, StateResource};
+use magma_types::{
+    Action, Plan, ResourceAddress, ResourceChange, State, StateInstance, StateResource,
+};
 
 use crate::{AppliedChange, ApplyOutcome, FailedChange, insert_resource, remove_resource};
+
+/// Retry an async provider RPC with exponential backoff on transient errors
+/// (chiefly provider-side rate limiting — see [`is_retryable`]). Re-evaluates
+/// the call expression each attempt (so it re-borrows the connection cleanly).
+/// Permanent errors fail fast; transient ones back off up to ~45s, 7 attempts.
+macro_rules! rpc_retry {
+    ($call:expr) => {{
+        let mut delay = std::time::Duration::from_millis(800);
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            match $call.await {
+                Ok(v) => break Ok(v),
+                Err(e) if attempt < 7 && is_retryable(&e) => {
+                    tracing::warn!(
+                        attempt,
+                        error = %e,
+                        delay_ms = delay.as_millis() as u64,
+                        "magma: retryable provider error — backing off"
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = std::cmp::min(
+                        delay.saturating_mul(2),
+                        std::time::Duration::from_secs(45),
+                    );
+                }
+                Err(e) => break Err(e),
+            }
+        }
+    }};
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -164,14 +199,98 @@ pub async fn run_plan_with_providers(
     let mut applied = Vec::new();
     let mut failed = Vec::new();
 
-    for change in &plan.resource_changes {
+    let mkfail = |c: &ResourceChange, e: EngineError| FailedChange {
+        address: c.address.clone(),
+        action: c.action,
+        reason: e.to_string(),
+    };
+
+    // Resolution map (type → {name → attributes}), the basis for substituting
+    // ${type.name.attr} references at apply time. Seed it from existing state
+    // so references to already-extant (matched) resources resolve immediately;
+    // it grows as each real change is applied.
+    let mut state_map: HashMap<String, serde_json::Value> = HashMap::new();
+    for r in &state.resources {
+        if let Some(inst) = r.instances.first() {
+            sm_insert(&mut state_map, &r.address, &inst.attributes);
+        }
+    }
+
+    // NoOp (matched) changes pass through with no provider call and no
+    // ordering; real changes (Create/Update/Delete/…) get dependency-ordered
+    // + reference-substituted apply below.
+    let (noops, reals): (Vec<&ResourceChange>, Vec<&ResourceChange>) = plan
+        .resource_changes
+        .iter()
+        .partition(|c| c.action == Action::NoOp);
+
+    for change in noops {
         match apply_one(change, state, &mut registry).await {
             Ok(a) => applied.push(a),
-            Err(e) => failed.push(FailedChange {
-                address: change.address.clone(),
-                action: change.action,
-                reason: e.to_string(),
-            }),
+            Err(e) => failed.push(mkfail(change, e)),
+        }
+    }
+
+    // Build the dependency graph from ${type.name.attr} references that point
+    // at OTHER real changes, so each resource is applied before anything that
+    // consumes its computed attributes (node_id, id, …).
+    let real_keys: HashSet<(String, String)> = reals
+        .iter()
+        .map(|c| (c.address.type_id.0.clone(), c.address.name.clone()))
+        .collect();
+    let by_key: HashMap<(String, String), &ResourceChange> = reals
+        .iter()
+        .map(|c| ((c.address.type_id.0.clone(), c.address.name.clone()), *c))
+        .collect();
+
+    let mut graph = ResourceGraph::new();
+    for c in &reals {
+        graph.add(c.address.clone());
+    }
+    for c in &reals {
+        let self_key = (c.address.type_id.0.clone(), c.address.name.clone());
+        if let Some(after) = &c.after {
+            for refstr in collect_refs(after) {
+                if let Some(dep_key) = ref_target(&refstr) {
+                    if dep_key != self_key && real_keys.contains(&dep_key) {
+                        if let Some(dep) = by_key.get(&dep_key) {
+                            graph.depend(c.address.clone(), dep.address.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Flattened topological waves. On a cycle / graph error, fall back to plan
+    // order — attempt the apply rather than refuse the whole cycle.
+    let ordered: Vec<ResourceAddress> = match graph.waves() {
+        Ok(waves) => waves.into_iter().flatten().collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "magma: dependency-graph error — applying in plan order");
+            reals.iter().map(|c| c.address.clone()).collect()
+        }
+    };
+
+    for addr in ordered {
+        let key = (addr.type_id.0.clone(), addr.name.clone());
+        let Some(change) = by_key.get(&key).copied() else {
+            continue;
+        };
+        // Substitute ${ref}s against everything applied so far.
+        let mut resolved = change.clone();
+        if let Some(after) = resolved.after.as_mut() {
+            substitute_refs(after, &state_map);
+        }
+        match apply_one(&resolved, state, &mut registry).await {
+            Ok(a) => {
+                if let Some(attrs) = &a.after {
+                    // Provider-returned new_state feeds dependents' references.
+                    sm_insert(&mut state_map, &change.address, attrs);
+                }
+                applied.push(a);
+            }
+            Err(e) => failed.push(mkfail(change, e)),
         }
     }
 
@@ -265,7 +384,7 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
                     continue;
                 }
             };
-            match lp.conn.read_resource(&type_name, &prior_dv).await {
+            match rpc_retry!(lp.conn.read_resource(&type_name, &prior_dv)) {
                 Ok(None) => {
                     // Confirmed gone — drop this phantom/deleted instance.
                     report.dropped_instances += 1;
@@ -337,10 +456,10 @@ async fn apply_one(
         Action::Delete | Action::Forget => {
             let null_dv = DynamicValue::from_json(&null_json, &implied)
                 .map_err(|e| EngineError::Cty(e.to_string()))?;
-            lp.conn
-                .apply_resource_change(&type_name, &prior_dv, &null_dv, &null_dv)
-                .await
-                .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
+            rpc_retry!(lp
+                .conn
+                .apply_resource_change(&type_name, &prior_dv, &null_dv, &null_dv))
+            .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
             remove_resource(state, &change.address);
             Ok(AppliedChange {
                 address: change.address.clone(),
@@ -357,16 +476,20 @@ async fn apply_one(
             // Provider normalizes the proposed state (computes defaults +
             // marks computed attributes unknown). Terraform requires the
             // planned state to flow from plan → apply.
-            let planned_dv = lp
-                .conn
-                .plan_resource_change(&type_name, &prior_dv, &config_dv, &config_dv)
-                .await
-                .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
-            let new_dv = lp
-                .conn
-                .apply_resource_change(&type_name, &prior_dv, &planned_dv, &config_dv)
-                .await
-                .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
+            let planned_dv = rpc_retry!(lp.conn.plan_resource_change(
+                &type_name,
+                &prior_dv,
+                &config_dv,
+                &config_dv
+            ))
+            .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
+            let new_dv = rpc_retry!(lp.conn.apply_resource_change(
+                &type_name,
+                &prior_dv,
+                &planned_dv,
+                &config_dv
+            ))
+            .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
             let new_attrs = new_dv
                 .to_json(&implied)
                 .map_err(|e| EngineError::Cty(e.to_string()))?;
@@ -388,9 +511,163 @@ fn provider_local_name(type_id: &str) -> String {
     type_id.split('_').next().unwrap_or(type_id).to_string()
 }
 
+// ── Apply-time reference resolution helpers ───────────────────────────────
+//
+// References in a rendered config are literal `${type.name.attr}` strings in
+// the JSON (magma-plan leaves them untouched). The apply engine resolves them
+// against a `state_map` (type → {name → attributes}) as resources are
+// created — the substitution `resolve_reference` consumes is shaped exactly
+// like the map navigation it does (head = type, then name, then attr path).
+
+/// Insert/overwrite a resource's attributes into the resolution map under
+/// `type → name`.
+fn sm_insert(
+    sm: &mut HashMap<String, serde_json::Value>,
+    addr: &ResourceAddress,
+    attrs: &serde_json::Value,
+) {
+    let entry = sm
+        .entry(addr.type_id.0.clone())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let serde_json::Value::Object(map) = entry {
+        map.insert(addr.name.clone(), attrs.clone());
+    }
+}
+
+/// Collect every `${…}` reference path (inner, no wrapper) found anywhere in
+/// a config value.
+fn collect_refs(v: &serde_json::Value) -> Vec<String> {
+    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => {
+                let mut rest = s.as_str();
+                while let Some(start) = rest.find("${") {
+                    let after = &rest[start + 2..];
+                    if let Some(end) = after.find('}') {
+                        out.push(after[..end].trim().to_string());
+                        rest = &after[end + 1..];
+                    } else {
+                        break;
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(v, &mut out);
+    out
+}
+
+/// The `(type, name)` a reference path targets — `github_repository.galho.node_id`
+/// → `("github_repository", "galho")`. Returns `None` for `data.*` sources
+/// (resolved from existing state, not ordered as apply dependencies) or
+/// malformed paths. Strips any `[index]` from the name segment.
+fn ref_target(inner: &str) -> Option<(String, String)> {
+    let segs: Vec<&str> = inner.split('.').collect();
+    if segs.first() == Some(&"data") {
+        return None;
+    }
+    if segs.len() >= 2 {
+        let name = segs[1].split('[').next().unwrap_or(segs[1]);
+        return Some((segs[0].to_string(), name.to_string()));
+    }
+    None
+}
+
+/// Replace `${type.name.attr}` references in-place against `sm`. A value that
+/// is exactly one reference is replaced by the resolved value (preserving its
+/// type); an interpolated string has each `${…}` substituted with the
+/// resolved value stringified. Unresolvable references are left untouched
+/// (the apply may then fail, surfacing the gap rather than masking it).
+fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::Value>) {
+    match v {
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if let Some(inner) = trimmed.strip_prefix("${").and_then(|x| x.strip_suffix('}')) {
+                if !inner.contains("${") {
+                    if let Ok(resolved) = resolve_reference(trimmed, sm) {
+                        *v = resolved;
+                    }
+                    return;
+                }
+            }
+            if s.contains("${") {
+                let mut result = String::new();
+                let mut rest = s.as_str();
+                while let Some(start) = rest.find("${") {
+                    result.push_str(&rest[..start]);
+                    let after = &rest[start + 2..];
+                    if let Some(end) = after.find('}') {
+                        let full = &rest[start..start + 2 + end + 1];
+                        match resolve_reference(full, sm) {
+                            Ok(serde_json::Value::String(rs)) => result.push_str(&rs),
+                            Ok(other) => result.push_str(&other.to_string()),
+                            Err(_) => result.push_str(full),
+                        }
+                        rest = &after[end + 1..];
+                    } else {
+                        result.push_str(&rest[start..]);
+                        rest = "";
+                        break;
+                    }
+                }
+                result.push_str(rest);
+                *s = result;
+            }
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(|x| substitute_refs(x, sm)),
+        serde_json::Value::Object(o) => o.values_mut().for_each(|x| substitute_refs(x, sm)),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_time_reference_resolution() {
+        use serde_json::json;
+        // state_map shaped like resolve_reference navigates: type → {name → attrs}.
+        // github_repository.galho has just been "applied" with a computed node_id.
+        let mut sm: HashMap<String, serde_json::Value> = HashMap::new();
+        sm.insert(
+            "github_repository".into(),
+            json!({ "galho": { "node_id": "R_kgABCDEF", "name": "galho" } }),
+        );
+
+        // collect_refs finds the dependency.
+        let after = json!({
+            "repository_id": "${github_repository.galho.node_id}",
+            "pattern": "main",
+            "msg": "repo ${github_repository.galho.name} protected",
+        });
+        let refs = collect_refs(&after);
+        assert!(refs.contains(&"github_repository.galho.node_id".to_string()));
+
+        // ref_target maps a path to its (type, name) dependency.
+        assert_eq!(
+            ref_target("github_repository.galho.node_id"),
+            Some(("github_repository".into(), "galho".into()))
+        );
+        assert_eq!(ref_target("data.github_repository.x.id"), None);
+
+        // substitute_refs resolves a PURE ref (type preserved) + an
+        // INTERPOLATED ref (stringified into the surrounding text).
+        let mut resolved = after;
+        substitute_refs(&mut resolved, &sm);
+        assert_eq!(resolved["repository_id"], json!("R_kgABCDEF"));
+        assert_eq!(resolved["pattern"], json!("main"));
+        assert_eq!(resolved["msg"], json!("repo galho protected"));
+
+        // An unresolvable ref is left untouched (surfaces, not masked).
+        let mut dangling = json!({ "x": "${github_repository.ghost.id}" });
+        substitute_refs(&mut dangling, &sm);
+        assert_eq!(dangling["x"], json!("${github_repository.ghost.id}"));
+    }
 
     #[test]
     fn provider_local_name_extracts_prefix() {
