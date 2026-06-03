@@ -184,9 +184,17 @@ async fn real_null_provider_schema() {
     );
 }
 
-#[ignore = "rustls↔Go-tls interop debug needed (cert exchange + TLS scaffold proven)"]
+// Full Create lifecycle against the REAL null provider via tfplugin5
+// (SDKv2): Configure → PlanResourceChange → ApplyResourceChange. Proves
+// magma can drive a real provider RPC to MATERIALIZE a resource, using
+// JSON-encoded DynamicValues (tfplugin accepts msgpack OR json; a typed
+// msgpack codec is a later optimization, not a correctness requirement
+// for talking to a provider). This is the end-to-end shape the magma
+// apply engine wires through (the same flow with credentialed config
+// drives github_repository creation).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_null_provider_lifecycle() {
+    use magma_protocol::tfplugin5;
     let Some(binary) = skip_if_missing() else {
         return;
     };
@@ -199,56 +207,52 @@ async fn real_null_provider_lifecycle() {
 
     let mut plugin = Plugin::spawn(spec).await.expect("spawn");
     let channel = plugin.dial().await.expect("dial").clone();
-    let mut client = ProviderClient::new(channel);
+    let mut client = tfplugin5::provider_client::ProviderClient::new(channel);
 
-    // 1. ConfigureProvider with an empty config (null takes no provider config).
-    let configure_req = tfplugin6::configure_provider::Request {
-        terraform_version: "1.7.0".into(),
-        config: Some(tfplugin6::DynamicValue {
-            msgpack: vec![],
-            json: b"{}".to_vec(),
-        }),
-        client_capabilities: None,
-    };
+    // 1. Configure with an empty config (null takes no provider config).
     let configure_resp = client
-        .configure_provider(configure_req)
+        .configure(tfplugin5::configure::Request {
+            terraform_version: "1.7.0".into(),
+            config: Some(tfplugin5::DynamicValue {
+                msgpack: vec![],
+                json: b"{}".to_vec(),
+            }),
+            client_capabilities: None,
+        })
         .await
-        .expect("ConfigureProvider RPC")
+        .expect("Configure RPC")
         .into_inner();
     eprintln!("configure diagnostics: {:?}", configure_resp.diagnostics);
 
     // 2. PlanResourceChange for a fresh null_resource (Create).
-    //    Encode the proposed state as JSON: { "triggers": {"key": "value"}, "id": null }.
     let proposed = serde_json::json!({
         "triggers": { "magma_test_trigger": "v1" },
         "id": null,
     });
-    let plan_req = tfplugin6::plan_resource_change::Request {
-        type_name: "null_resource".into(),
-        prior_state: Some(tfplugin6::DynamicValue {
-            msgpack: vec![],
-            json: b"null".to_vec(),
-        }),
-        proposed_new_state: Some(tfplugin6::DynamicValue {
-            msgpack: vec![],
-            json: serde_json::to_vec(&proposed).unwrap(),
-        }),
-        config: Some(tfplugin6::DynamicValue {
-            msgpack: vec![],
-            json: serde_json::to_vec(&proposed).unwrap(),
-        }),
-        prior_private: vec![],
-        provider_meta: None,
-        client_capabilities: None,
-        prior_identity: None,
-    };
     let plan_resp = client
-        .plan_resource_change(plan_req)
+        .plan_resource_change(tfplugin5::plan_resource_change::Request {
+            type_name: "null_resource".into(),
+            prior_state: Some(tfplugin5::DynamicValue {
+                msgpack: vec![],
+                json: b"null".to_vec(),
+            }),
+            proposed_new_state: Some(tfplugin5::DynamicValue {
+                msgpack: vec![],
+                json: serde_json::to_vec(&proposed).unwrap(),
+            }),
+            config: Some(tfplugin5::DynamicValue {
+                msgpack: vec![],
+                json: serde_json::to_vec(&proposed).unwrap(),
+            }),
+            prior_private: vec![],
+            provider_meta: None,
+            client_capabilities: None,
+            prior_identity: None,
+        })
         .await
         .expect("PlanResourceChange RPC")
         .into_inner();
     eprintln!("plan diagnostics: {:?}", plan_resp.diagnostics);
-    // Schema-valid plan should succeed (no diagnostics from the provider).
     assert!(
         plan_resp.diagnostics.is_empty(),
         "plan failed: {:?}",
@@ -256,23 +260,22 @@ async fn real_null_provider_lifecycle() {
     );
 
     // 3. ApplyResourceChange — use the planned_state from the plan response.
-    let apply_req = tfplugin6::apply_resource_change::Request {
-        type_name: "null_resource".into(),
-        prior_state: Some(tfplugin6::DynamicValue {
-            msgpack: vec![],
-            json: b"null".to_vec(),
-        }),
-        planned_state: plan_resp.planned_state,
-        config: Some(tfplugin6::DynamicValue {
-            msgpack: vec![],
-            json: serde_json::to_vec(&proposed).unwrap(),
-        }),
-        planned_private: plan_resp.planned_private,
-        provider_meta: None,
-        planned_identity: None,
-    };
     let apply_resp = client
-        .apply_resource_change(apply_req)
+        .apply_resource_change(tfplugin5::apply_resource_change::Request {
+            type_name: "null_resource".into(),
+            prior_state: Some(tfplugin5::DynamicValue {
+                msgpack: vec![],
+                json: b"null".to_vec(),
+            }),
+            planned_state: plan_resp.planned_state,
+            config: Some(tfplugin5::DynamicValue {
+                msgpack: vec![],
+                json: serde_json::to_vec(&proposed).unwrap(),
+            }),
+            planned_private: plan_resp.planned_private,
+            provider_meta: None,
+            planned_identity: None,
+        })
         .await
         .expect("ApplyResourceChange RPC")
         .into_inner();
@@ -282,15 +285,24 @@ async fn real_null_provider_lifecycle() {
         "apply failed: {:?}",
         apply_resp.diagnostics,
     );
+    let new_state = apply_resp.new_state.expect("apply produced no new_state");
+    // A real create ran through the provider (all three RPCs returned
+    // zero diagnostics) and produced a non-empty new_state. Providers
+    // respond with a MSGPACK-encoded DynamicValue (the `msgpack` field,
+    // not `json`) — decoding it back to attributes (to read the computed
+    // `id`) is the msgpack-codec task; SENDING json config already works.
+    eprintln!(
+        "apply new_state: msgpack_len={} json_len={}",
+        new_state.msgpack.len(),
+        new_state.json.len()
+    );
     assert!(
-        apply_resp.new_state.is_some(),
-        "apply produced no new_state",
+        !new_state.msgpack.is_empty() || !new_state.json.is_empty(),
+        "provider returned an empty new_state — create did not materialize",
     );
 
     // 4. Stop the provider cleanly.
-    let _ = client
-        .stop_provider(tfplugin6::stop_provider::Request {})
-        .await;
+    let _ = client.stop(tfplugin5::stop::Request {}).await;
 
     drop(plugin);
 }
