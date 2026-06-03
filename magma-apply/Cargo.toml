@@ -14,6 +14,7 @@ workspace = true
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = { workspace = true }
 
 [dependencies]
 magma-types   = { workspace = true }

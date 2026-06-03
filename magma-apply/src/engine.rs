@@ -407,4 +407,58 @@ mod tests {
         assert_eq!(ctx.workspace_dir, PathBuf::from("/ws"));
         assert!(ctx.provider_configs.contains_key("github"));
     }
+
+    /// The load-bearing safety invariant: refresh must NEVER drop state when
+    /// it cannot read the resource. Here no provider is locatable (empty
+    /// workspace, no `$MAGMA_PROVIDER_DIR`), so every instance is kept
+    /// unchanged and counted as `kept_on_error` — a transient provider/RPC
+    /// failure can never silently delete real state.
+    #[tokio::test]
+    async fn refresh_never_drops_when_provider_unavailable() {
+        use magma_types::{
+            InstanceStatus, ModulePath, ProviderReference, ResourceAddress, ResourceKind,
+            ResourceTypeId, StateInstance, StateResource,
+        };
+        // Ensure no baked mirror leaks in from the test env.
+        // SAFETY: single-threaded test; no other thread reads this var.
+        unsafe { std::env::remove_var("MAGMA_PROVIDER_DIR") };
+
+        let mut state = State {
+            version: 4,
+            terraform_version: "1.9.0".into(),
+            serial: 1,
+            lineage: uuid::Uuid::nil(),
+            outputs: Default::default(),
+            resources: vec![StateResource {
+                address: ResourceAddress {
+                    module: ModulePath::root(),
+                    kind: ResourceKind::Managed,
+                    type_id: ResourceTypeId("github_repository".into()),
+                    name: "keep_me".into(),
+                    key: None,
+                },
+                provider: ProviderReference {
+                    source: "integrations/github".into(),
+                    name: "github".into(),
+                    alias: None,
+                },
+                instances: vec![StateInstance {
+                    schema_version: 0,
+                    attributes: serde_json::json!({"name": "keep_me"}),
+                    private: vec![],
+                    dependencies: vec![],
+                    status: InstanceStatus::Ready,
+                }],
+            }],
+        };
+
+        let td = tempfile::tempdir().unwrap();
+        let ctx = ApplyContext::new(td.path().to_path_buf());
+        let report = refresh_state(&mut state, &ctx).await;
+
+        assert_eq!(report.dropped_instances, 0, "must not drop on read failure");
+        assert_eq!(report.dropped_resources, 0);
+        assert_eq!(report.kept_on_error, 1, "kept the instance it couldn't read");
+        assert_eq!(state.resources.len(), 1, "resource survives uncertainty");
+    }
 }
