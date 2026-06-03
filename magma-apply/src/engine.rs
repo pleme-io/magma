@@ -488,6 +488,151 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
     report
 }
 
+/// From a plan's CREATE changes, collect the names of the parent
+/// `github_repository` resources they depend on — both the literal
+/// `repository` field value (the repo NAME, e.g. `"kanchi"`) and any
+/// `${github_repository.X.*}` reference target (the resource NAME, e.g.
+/// `"akeyless_stack"`). These are the phantom-parent candidates: when a
+/// child (label / branch-protection) is a create but its parent repo is a
+/// NoOp in state, the parent is a likely phantom (in state, not in cloud).
+#[must_use]
+pub fn collect_suspect_repos(plan: &Plan) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for c in &plan.resource_changes {
+        if c.action == Action::NoOp {
+            continue;
+        }
+        let Some(after) = &c.after else { continue };
+        if let Some(serde_json::Value::String(r)) = after.get("repository") {
+            names.insert(r.clone());
+        }
+        for refstr in collect_refs(after) {
+            if let Some((ty, name)) = ref_target(&refstr) {
+                if ty == "github_repository" {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Targeted, low-cost cousin of [`refresh_state`]: `ReadResource` ONLY the
+/// resources of `type_id` whose resource-name OR `attributes["name"]` is in
+/// `names`, dropping any the provider confirms **gone** (cty-null). Same
+/// safety as [`refresh_state`] — NEVER drops on error/uncertainty, only on a
+/// confirmed-null read — so the choice of `names` can be liberal without risk
+/// (a wrong guess just costs an extra read). Reads are paced via `ctx.pacer`.
+///
+/// This heals PHANTOM parents: a repo recorded in state but never actually
+/// created (whose children then fail `404` / unresolved-`${ref}`) is dropped,
+/// so the next plan re-creates it. `names` is the small set of parents named
+/// by the current plan's create-children, so this is a handful of reads — not
+/// a full-state refresh (which would be ~1k RPCs).
+pub async fn refresh_named(
+    state: &mut State,
+    type_id: &str,
+    names: &HashSet<String>,
+    ctx: &ApplyContext,
+) -> RefreshReport {
+    let mut report = RefreshReport::default();
+    if names.is_empty() {
+        return report;
+    }
+    let mut registry = Registry::new(ctx);
+    let pacer = ctx.pacer.clone();
+    let mut kept: Vec<StateResource> = Vec::new();
+
+    for resource in std::mem::take(&mut state.resources) {
+        let attr_name = resource
+            .instances
+            .first()
+            .and_then(|i| i.attributes.get("name"))
+            .and_then(serde_json::Value::as_str);
+        let is_target = resource.address.type_id.0 == type_id
+            && (names.contains(&resource.address.name)
+                || attr_name.is_some_and(|n| names.contains(n)));
+        if !is_target {
+            kept.push(resource);
+            continue;
+        }
+
+        let type_name = resource.address.type_id.0.clone();
+        let provider_name = provider_local_name(&type_name);
+        let implied = match registry.get(&provider_name).await {
+            Ok(lp) => match lp.schema.resource(&type_name) {
+                Some(t) => t.clone(),
+                None => {
+                    report.kept_on_error += resource.instances.len();
+                    kept.push(resource);
+                    continue;
+                }
+            },
+            Err(_) => {
+                report.kept_on_error += resource.instances.len();
+                kept.push(resource);
+                continue;
+            }
+        };
+
+        let mut kept_instances: Vec<StateInstance> = Vec::new();
+        for inst in resource.instances {
+            let prior_dv = match DynamicValue::from_json(&inst.attributes, &implied) {
+                Ok(d) => d,
+                Err(_) => {
+                    report.kept_on_error += 1;
+                    kept_instances.push(inst);
+                    continue;
+                }
+            };
+            if let Some(p) = pacer.as_deref() {
+                let _ = p.acquire().await;
+            }
+            let lp = match registry.get(&provider_name).await {
+                Ok(l) => l,
+                Err(_) => {
+                    report.kept_on_error += 1;
+                    kept_instances.push(inst);
+                    continue;
+                }
+            };
+            match rpc_retry!(pacer.as_deref(), lp.conn.read_resource(&type_name, &prior_dv)) {
+                Ok(None) => {
+                    // Confirmed gone — drop the phantom so the plan re-creates it.
+                    report.dropped_instances += 1;
+                }
+                Ok(Some(dv)) => match dv.to_json(&implied) {
+                    Ok(attrs) => {
+                        report.refreshed += 1;
+                        kept_instances.push(StateInstance {
+                            attributes: attrs,
+                            ..inst
+                        });
+                    }
+                    Err(_) => {
+                        report.kept_on_error += 1;
+                        kept_instances.push(inst);
+                    }
+                },
+                Err(_) => {
+                    report.kept_on_error += 1;
+                    kept_instances.push(inst);
+                }
+            }
+        }
+        if kept_instances.is_empty() {
+            report.dropped_resources += 1;
+        } else {
+            kept.push(StateResource {
+                instances: kept_instances,
+                ..resource
+            });
+        }
+    }
+    state.resources = kept;
+    report
+}
+
 async fn apply_one(
     change: &ResourceChange,
     state: &mut State,

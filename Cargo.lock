@@ -1246,12 +1246,12 @@ checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 
 [[package]]
 name = "magma"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "magma-apply",
  "magma-attest",
  "magma-backend",
- "magma-config 0.1.5",
+ "magma-config 0.1.7",
  "magma-graph",
  "magma-mcp",
  "magma-pangea",
@@ -1260,26 +1260,26 @@ dependencies = [
  "magma-protocol",
  "magma-providers",
  "magma-state",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
 ]
 
 [[package]]
 name = "magma-apply"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "chrono",
  "futures",
  "hex",
  "magma-attest",
- "magma-config 0.1.5",
+ "magma-config 0.1.7",
  "magma-cty",
  "magma-graph",
  "magma-plan",
  "magma-plugin",
  "magma-providers",
  "magma-state",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "samba",
  "serde",
  "serde_json",
@@ -1294,16 +1294,16 @@ dependencies = [
 
 [[package]]
 name = "magma-arch-test"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "hex",
- "magma-config 0.1.5",
+ "magma-config 0.1.7",
  "magma-pangea",
  "magma-plan",
  "magma-state",
  "magma-test-laws",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "serde",
  "serde_json",
  "tempfile",
@@ -1313,12 +1313,12 @@ dependencies = [
 
 [[package]]
 name = "magma-attest"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "chrono",
  "hex",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "proptest",
  "serde",
  "serde_json",
@@ -1327,10 +1327,10 @@ dependencies = [
 
 [[package]]
 name = "magma-backend"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "serde",
  "serde_json",
  "tempfile",
@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "magma-budget"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "magma-bundle"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "chrono",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "magma-cli"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1415,9 +1415,9 @@ dependencies = [
 
 [[package]]
 name = "magma-config"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1426,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "magma-controller"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "magma-converge"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1457,10 +1457,10 @@ dependencies = [
  "hex",
  "magma-apply",
  "magma-backend",
- "magma-config 0.1.5",
+ "magma-config 0.1.7",
  "magma-plan",
  "magma-state",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "proptest",
  "serde",
  "serde_json",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "magma-cty"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "rmpv",
  "serde",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "magma-discover"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "magma-converge",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "magma-drift"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "chrono",
@@ -1512,10 +1512,10 @@ dependencies = [
 
 [[package]]
 name = "magma-fixtures"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "magma-state",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1524,15 +1524,15 @@ dependencies = [
 
 [[package]]
 name = "magma-flow"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "hex",
  "magma-backend",
- "magma-config 0.1.5",
+ "magma-config 0.1.7",
  "magma-fixtures",
  "magma-pangea",
  "magma-plan",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "proptest",
  "serde",
  "serde_json",
@@ -1544,7 +1544,7 @@ dependencies = [
 
 [[package]]
 name = "magma-fsm"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "magma-converge",
@@ -1556,9 +1556,9 @@ dependencies = [
 
 [[package]]
 name = "magma-graph"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "petgraph 0.6.5",
  "proptest",
  "serde",
@@ -1584,20 +1584,20 @@ dependencies = [
 
 [[package]]
 name = "magma-mcp"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "hex",
  "magma-arch-test",
  "magma-backend",
- "magma-config 0.1.5",
+ "magma-config 0.1.7",
  "magma-fixtures",
  "magma-flow",
  "magma-migrate",
  "magma-pangea",
  "magma-plan",
  "magma-state",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "serde",
  "serde_json",
  "tempfile",
@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "magma-metrics"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "magma-converge",
@@ -1622,13 +1622,13 @@ dependencies = [
 
 [[package]]
 name = "magma-migrate"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "chrono",
  "hex",
  "magma-state",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "serde",
  "serde_json",
  "tempfile",
@@ -1640,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "magma-nix"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "hex",
@@ -1651,13 +1651,13 @@ dependencies = [
 
 [[package]]
 name = "magma-operator-backend"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "magma-backend",
  "magma-fixtures",
  "magma-state",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "proptest",
  "serde",
  "serde_json",
@@ -1669,13 +1669,13 @@ dependencies = [
 
 [[package]]
 name = "magma-pangea"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
- "magma-config 0.1.5",
+ "magma-config 0.1.7",
  "magma-plan",
  "magma-state",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "pangea-ruby-eval",
  "petgraph 0.6.5",
  "serde",
@@ -1688,16 +1688,16 @@ dependencies = [
 
 [[package]]
 name = "magma-plan"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "chrono",
  "magma-attest",
- "magma-config 0.1.5",
+ "magma-config 0.1.7",
  "magma-graph",
  "magma-plugin",
  "magma-state",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "proptest",
  "serde",
  "serde_json",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "magma-plugin"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "base64",
@@ -1720,7 +1720,7 @@ dependencies = [
  "hyper-util",
  "magma-cty",
  "magma-protocol",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "rcgen",
  "rustls",
  "rustls-pemfile",
@@ -1737,7 +1737,7 @@ dependencies = [
 
 [[package]]
 name = "magma-protocol"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "prost",
  "prost-build",
@@ -1751,10 +1751,10 @@ dependencies = [
 
 [[package]]
 name = "magma-providers"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "magma-plugin",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "serde",
  "serde_json",
  "tempfile",
@@ -1765,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "magma-replay"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "magma-converge",
@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "magma-repo"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1799,7 +1799,7 @@ dependencies = [
 
 [[package]]
 name = "magma-rubygems"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "hex",
@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "magma-spec"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "magma-converge",
  "magma-test-laws",
@@ -1825,11 +1825,11 @@ dependencies = [
 
 [[package]]
 name = "magma-state"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "magma-backend",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "serde",
  "serde_json",
  "tempfile",
@@ -1841,7 +1841,7 @@ dependencies = [
 
 [[package]]
 name = "magma-stream"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1862,7 +1862,7 @@ dependencies = [
 
 [[package]]
 name = "magma-tatara"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "proptest",
  "serde_json",
@@ -1871,21 +1871,21 @@ dependencies = [
 
 [[package]]
 name = "magma-test"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "base64",
  "insta",
  "magma",
  "magma-arch-test",
- "magma-config 0.1.5",
+ "magma-config 0.1.7",
  "magma-pangea",
  "magma-plan",
  "magma-plugin",
  "magma-protocol",
  "magma-state",
  "magma-test-laws",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "proptest",
  "prost",
  "prost-types",
@@ -1904,20 +1904,20 @@ dependencies = [
 
 [[package]]
 name = "magma-test-laws"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "chrono",
  "magma-apply",
  "magma-backend",
- "magma-config 0.1.5",
+ "magma-config 0.1.7",
  "magma-converge",
  "magma-flow",
  "magma-fsm",
  "magma-plan",
  "magma-state",
  "magma-stream",
- "magma-types 0.1.5",
+ "magma-types 0.1.7",
  "proptest",
  "serde",
  "serde_json",
@@ -1927,7 +1927,7 @@ dependencies = [
 
 [[package]]
 name = "magma-tfmod"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -1951,7 +1951,7 @@ dependencies = [
 
 [[package]]
 name = "magma-types"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "gen-platform",
