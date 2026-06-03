@@ -109,6 +109,108 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
     })
 }
 
+/// Provider-backed apply — the real one. Unlike [`run_plan`] (which
+/// echoes config into state with no side effects), this drives actual
+/// provider RPC through a [`ProviderRegistry`]: per Create change it
+/// connects to the resource's provider, `Configure`s it once, calls
+/// `PlanResourceChange` + `ApplyResourceChange`, and writes the
+/// provider-returned (msgpack-decoded) state back. THIS is what makes
+/// `executor:magma` create real cloud resources.
+///
+/// `provider_configs` maps provider source (`"ns/name"`) → the provider
+/// block config (e.g. `{"token": "…"}` for github; `{}` when none).
+///
+/// Action coverage (M1 of the provider-RPC apply):
+///   * `Create` / `Read` → provider plan+apply (real materialization).
+///   * `NoOp` → passthrough.
+///   * `Delete` / `Update` / `Replace` / … → recorded as a typed
+///     `FailedChange` (NOT silently echoed) — provider-backed
+///     delete/update land next. Surfacing them keeps the no-silent-
+///     wrong-answers discipline; the rio repo-creation workload is
+///     all-Create so this is sufficient to materialize it.
+///
+/// Provider source resolution currently uses the `default_provider_for`
+/// heuristic. Non-hashicorp providers whose source differs from the type
+/// prefix (e.g. `github_*` → `integrations/github`, not `hashicorp/github`)
+/// must be pre-seeded into the registry (via `connect_binary`/`connect`
+/// under the correct source) OR have their source supplied by the
+/// Config-driven resolver the caller layers on — the documented last mile.
+pub async fn run_plan_via_providers(
+    plan: &Plan,
+    state: &mut State,
+    registry: &magma_providers::ProviderRegistry,
+    provider_configs: &std::collections::HashMap<String, serde_json::Value>,
+) -> Result<ApplyOutcome, ApplyError> {
+    let started_at = Utc::now();
+    let mut applied: Vec<AppliedChange> = Vec::new();
+    let mut failed: Vec<FailedChange> = Vec::new();
+    let mut configured: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let empty_cfg = serde_json::json!({});
+
+    for change in &plan.resource_changes {
+        match change.action {
+            Action::NoOp => applied.push(AppliedChange {
+                address: change.address.clone(),
+                action: Action::NoOp,
+                before: change.before.clone(),
+                after: change.after.clone(),
+            }),
+            Action::Create | Action::Read => {
+                let source = default_provider_for(&change.address).source;
+                let type_name = change.address.type_id.0.clone();
+                let config = change.after.clone().unwrap_or_else(|| empty_cfg.clone());
+                let res = async {
+                    let conn = registry.connect(&source).await?;
+                    if configured.insert(source.clone()) {
+                        let pc = provider_configs.get(&source).unwrap_or(&empty_cfg);
+                        conn.configure(pc).await?;
+                    }
+                    let planned = conn.plan_create(&type_name, &config).await?;
+                    conn.apply_create(&type_name, &planned, &config).await
+                }
+                .await;
+                match res {
+                    Ok(new_state) => {
+                        insert_resource(state, &change.address, new_state.clone());
+                        applied.push(AppliedChange {
+                            address: change.address.clone(),
+                            action: change.action,
+                            before: None,
+                            after: Some(new_state),
+                        });
+                    }
+                    Err(e) => failed.push(FailedChange {
+                        address: change.address.clone(),
+                        action: change.action,
+                        reason: e.to_string(),
+                    }),
+                }
+            }
+            other => failed.push(FailedChange {
+                address: change.address.clone(),
+                action: other,
+                reason: format!(
+                    "provider-backed `{other:?}` not yet wired in run_plan_via_providers \
+                     (Create is; delete/update land next)"
+                ),
+            }),
+        }
+    }
+
+    if !applied.is_empty() {
+        state.serial = state.serial.saturating_add(1);
+    }
+
+    Ok(ApplyOutcome {
+        plan_id: plan.id,
+        state: state.clone(),
+        applied,
+        failed,
+        started_at,
+        finished_at: Utc::now(),
+    })
+}
+
 fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange, ApplyError> {
     match change.action {
         Action::NoOp => Ok(AppliedChange {

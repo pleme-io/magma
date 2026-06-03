@@ -19,7 +19,8 @@ magma-graph   = { workspace = true }
 magma-state   = { workspace = true }
 magma-plan    = { workspace = true }
 hex           = { workspace = true }
-magma-plugin  = { workspace = true }
+magma-plugin    = { workspace = true }
+magma-providers = { workspace = true }
 magma-attest  = { workspace = true }
 shigoto       = { workspace = true }
 tokio         = { workspace = true }

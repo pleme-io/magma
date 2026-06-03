@@ -1276,6 +1276,7 @@ dependencies = [
  "magma-graph",
  "magma-plan",
  "magma-plugin",
+ "magma-providers",
  "magma-state",
  "magma-types 0.1.1",
  "serde",

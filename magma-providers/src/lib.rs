@@ -219,6 +219,16 @@ impl ProviderRegistry {
     /// provider for `source`. Subsequent calls return the same
     /// connection — the provider process + gRPC channel are reused.
     pub async fn connect(&self, source: &str) -> Result<ProviderConn, ProviderError> {
+        // Cache first: a connection pre-seeded via `connect_binary` (or a
+        // prior `connect`) is reused without touching the plugin cache —
+        // so callers can register a provider by an explicit path under a
+        // source key and have `connect(source)` resolve to it.
+        {
+            let st = self.state.lock().await;
+            if let Some(c) = st.conns.get(source) {
+                return Ok(c.clone());
+            }
+        }
         let binary = self.resolve(source)?;
         self.connect_binary(source, binary).await
     }
