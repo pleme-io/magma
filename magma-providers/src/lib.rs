@@ -179,10 +179,21 @@ impl ProviderRegistry {
         }
     }
 
-    /// Build a registry over the default terraform plugin cache
-    /// (`$HOME/.terraform.d/plugin-cache`).
+    /// Build a registry over the default terraform plugin cache.
+    ///
+    /// Honors `TF_PLUGIN_CACHE_DIR` (the standard terraform env) first —
+    /// so a Nix-built image can point the registry at a store path that
+    /// bundles the provider binaries (e.g.
+    /// `${terraform-providers.github}/libexec/terraform-providers`)
+    /// without any `$HOME` juggling — then falls back to
+    /// `$HOME/.terraform.d/plugin-cache`.
     #[must_use]
     pub fn from_default_cache() -> Self {
+        if let Ok(dir) = std::env::var("TF_PLUGIN_CACHE_DIR") {
+            if !dir.is_empty() {
+                return Self::new(dir);
+            }
+        }
         let home = std::env::var("HOME").unwrap_or_default();
         Self::new(PathBuf::from(home).join(".terraform.d/plugin-cache"))
     }
