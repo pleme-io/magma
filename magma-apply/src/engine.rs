@@ -20,7 +20,7 @@ use chrono::Utc;
 use magma_cty::DynamicValue;
 use magma_plugin::provider::{ProviderConn, ProviderSchema};
 use magma_plugin::{Plugin, PluginSpec};
-use magma_types::{Action, Plan, ResourceChange, State};
+use magma_types::{Action, Plan, ResourceChange, State, StateInstance, StateResource};
 
 use crate::{AppliedChange, ApplyOutcome, FailedChange, insert_resource, remove_resource};
 
@@ -187,6 +187,121 @@ pub async fn run_plan_with_providers(
         started_at,
         finished_at: Utc::now(),
     }
+}
+
+/// What a [`refresh_state`] pass did, for logging + receipts.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RefreshReport {
+    /// Instances whose attributes were updated from the provider.
+    pub refreshed: usize,
+    /// Instances the provider reported gone (dropped from state).
+    pub dropped_instances: usize,
+    /// Resources dropped entirely (all their instances were gone).
+    pub dropped_resources: usize,
+    /// Instances kept unchanged because refresh couldn't be performed
+    /// (provider spawn failure, missing schema, encode/decode error, RPC
+    /// error). Refresh NEVER drops state on uncertainty — only on a
+    /// confirmed null `ReadResource`.
+    pub kept_on_error: usize,
+}
+
+/// Refresh `state` against the providers' ACTUAL current state — terraform's
+/// plan-time refresh. For every resource instance, call `ReadResource`:
+///
+/// * provider reports it **gone** (cty-null) → drop the instance. This
+///   self-heals phantom entries — e.g. a resource a prior structural-only
+///   apply recorded in state but never actually created — so the next plan
+///   re-creates it.
+/// * provider returns refreshed state → update the instance's attributes
+///   (so drift in real attributes is detected).
+/// * any error / uncertainty → KEEP the instance unchanged. Refresh must
+///   never delete state because a read failed.
+///
+/// Resources whose every instance went away are removed entirely. Returns a
+/// [`RefreshReport`] for the caller's cycle receipt.
+pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshReport {
+    let mut registry = Registry::new(ctx);
+    let mut report = RefreshReport::default();
+    let mut kept: Vec<StateResource> = Vec::new();
+
+    for resource in std::mem::take(&mut state.resources) {
+        let type_name = resource.address.type_id.0.clone();
+        let provider_name = provider_local_name(&type_name);
+
+        // Resolve the implied type once (clone so the schema borrow ends
+        // before the per-instance mutable RPC borrows). Any failure here ⇒
+        // keep the whole resource untouched.
+        let implied = match registry.get(&provider_name).await {
+            Ok(lp) => match lp.schema.resource(&type_name) {
+                Some(t) => t.clone(),
+                None => {
+                    report.kept_on_error += resource.instances.len();
+                    kept.push(resource);
+                    continue;
+                }
+            },
+            Err(_) => {
+                report.kept_on_error += resource.instances.len();
+                kept.push(resource);
+                continue;
+            }
+        };
+
+        let mut kept_instances: Vec<StateInstance> = Vec::new();
+        for inst in resource.instances {
+            let prior_dv = match DynamicValue::from_json(&inst.attributes, &implied) {
+                Ok(d) => d,
+                Err(_) => {
+                    report.kept_on_error += 1;
+                    kept_instances.push(inst);
+                    continue;
+                }
+            };
+            let lp = match registry.get(&provider_name).await {
+                Ok(l) => l,
+                Err(_) => {
+                    report.kept_on_error += 1;
+                    kept_instances.push(inst);
+                    continue;
+                }
+            };
+            match lp.conn.read_resource(&type_name, &prior_dv).await {
+                Ok(None) => {
+                    // Confirmed gone — drop this phantom/deleted instance.
+                    report.dropped_instances += 1;
+                }
+                Ok(Some(dv)) => match dv.to_json(&implied) {
+                    Ok(attrs) => {
+                        report.refreshed += 1;
+                        kept_instances.push(StateInstance {
+                            attributes: attrs,
+                            ..inst
+                        });
+                    }
+                    Err(_) => {
+                        report.kept_on_error += 1;
+                        kept_instances.push(inst);
+                    }
+                },
+                Err(_) => {
+                    report.kept_on_error += 1;
+                    kept_instances.push(inst);
+                }
+            }
+        }
+
+        if kept_instances.is_empty() {
+            report.dropped_resources += 1;
+        } else {
+            kept.push(StateResource {
+                instances: kept_instances,
+                ..resource
+            });
+        }
+    }
+
+    state.resources = kept;
+    report
 }
 
 async fn apply_one(

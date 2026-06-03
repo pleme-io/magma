@@ -78,6 +78,15 @@ impl DynamicValue {
     pub fn to_json(&self, ty: &CtyType) -> Result<serde_json::Value, CtyError> {
         Ok(json::to_json(&self.to_value(ty)?))
     }
+
+    /// True when this value is the cty null (msgpack nil, `0xc0`). A
+    /// `ReadResource` response whose `new_state` is null is the provider's
+    /// signal that the resource no longer exists in the world — the refresh
+    /// path uses this to drop stale / phantom entries from state.
+    #[must_use]
+    pub fn is_null(&self) -> bool {
+        self.msgpack.as_slice() == [0xc0]
+    }
 }
 
 #[cfg(test)]

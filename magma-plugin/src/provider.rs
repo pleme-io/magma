@@ -281,6 +281,46 @@ impl ProviderConn {
             }
         }
     }
+
+    /// `ReadResource` — read the resource's ACTUAL current state from the
+    /// provider (the refresh primitive). Returns `Ok(None)` when the provider
+    /// reports the resource no longer exists (`new_state` is cty-null), so
+    /// callers drop stale / phantom entries from state; `Ok(Some(dv))` with
+    /// the refreshed wire state when it still exists.
+    pub async fn read_resource(
+        &mut self,
+        type_name: &str,
+        current_state: &DynamicValue,
+    ) -> Result<Option<DynamicValue>, ProviderError> {
+        match &mut self.client {
+            Client::V6(c) => {
+                let resp = c
+                    .read_resource(tfplugin6::read_resource::Request {
+                        type_name: type_name.to_string(),
+                        current_state: Some(to_pb6(current_state)),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(transport)?
+                    .into_inner();
+                check_diags(resp.diagnostics.iter().map(diag6))?;
+                Ok(resp.new_state.map(from_pb6).filter(|d| !d.is_null()))
+            }
+            Client::V5(c) => {
+                let resp = c
+                    .read_resource(tfplugin5::read_resource::Request {
+                        type_name: type_name.to_string(),
+                        current_state: Some(to_pb5(current_state)),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(transport)?
+                    .into_inner();
+                check_diags(resp.diagnostics.iter().map(diag5))?;
+                Ok(resp.new_state.map(from_pb5).filter(|d| !d.is_null()))
+            }
+        }
+    }
 }
 
 fn transport(s: tonic::Status) -> ProviderError {
