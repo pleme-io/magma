@@ -15,9 +15,11 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::Utc;
 use magma_config::resolve_reference;
+use samba::LeakyBucket;
 use magma_cty::DynamicValue;
 use magma_graph::ResourceGraph;
 use magma_plugin::provider::{ProviderConn, ProviderSchema, is_retryable};
@@ -33,7 +35,7 @@ use crate::{AppliedChange, ApplyOutcome, FailedChange, insert_resource, remove_r
 /// the call expression each attempt (so it re-borrows the connection cleanly).
 /// Permanent errors fail fast; transient ones back off up to ~45s, 7 attempts.
 macro_rules! rpc_retry {
-    ($call:expr) => {{
+    ($pacer:expr, $call:expr) => {{
         let mut delay = std::time::Duration::from_millis(800);
         let mut attempt = 0u32;
         loop {
@@ -41,11 +43,21 @@ macro_rules! rpc_retry {
             match $call.await {
                 Ok(v) => break Ok(v),
                 Err(e) if attempt < 7 && is_retryable(&e) => {
+                    // A retryable provider error is almost always a secondary
+                    // rate limit. Beyond backing off this call, escalate the
+                    // shared pacer to maximum back-pressure (samba Emergency,
+                    // 0.125× pace) so EVERY subsequent mutation this cycle is
+                    // spaced way out — synthesized 0% headroom drives the
+                    // level (magma can't read the provider's X-RateLimit
+                    // headers, so error-occurrence is the pressure signal).
+                    if let Some(p) = $pacer {
+                        p.record_headroom(0, 100).await;
+                    }
                     tracing::warn!(
                         attempt,
                         error = %e,
                         delay_ms = delay.as_millis() as u64,
-                        "magma: retryable provider error — backing off"
+                        "magma: retryable provider error — backing off + raising pace pressure"
                     );
                     tokio::time::sleep(delay).await;
                     delay = std::cmp::min(
@@ -82,6 +94,31 @@ pub struct ApplyContext {
     /// provider local name (e.g. `"github"`) → `ConfigureProvider` config
     /// as JSON (e.g. `{ "token": "…", "owner": "pleme-io" }`).
     pub provider_configs: BTreeMap<String, serde_json::Value>,
+    /// Strict-pace governor for provider MUTATION RPCs (samba `LeakyBucket`).
+    /// `apply_one` acquires one token before each non-NoOp resource's RPCs so
+    /// a bulk apply (e.g. 50 GitHub creates) can't burst past the provider's
+    /// secondary rate limit. `None` = unpaced. NoOps never acquire.
+    pub pacer: Option<Arc<LeakyBucket>>,
+}
+
+/// Default mutation pace: 1 request/second — GitHub's documented minimum
+/// spacing between mutative API requests, and a safe floor for any provider.
+/// `quota_pct = 1.0 × 3600 rph / 60 = 60 rpm`; `burst = 1` means strict
+/// spacing (no bursts — bursts are exactly what trips secondary limits);
+/// 10% jitter de-synchronizes retried calls.
+const DEFAULT_PACE_RPH: f64 = 3600.0;
+
+fn build_pacer(rph: f64) -> Option<Arc<LeakyBucket>> {
+    if rph <= 0.0 {
+        return None;
+    }
+    match LeakyBucket::new(1.0, rph, 50, 25, 0.1, 1) {
+        Ok(b) => Some(Arc::new(b)),
+        Err(e) => {
+            tracing::warn!(error = %e, "magma: failed to build apply pacer — proceeding unpaced");
+            None
+        }
+    }
 }
 
 impl ApplyContext {
@@ -90,6 +127,7 @@ impl ApplyContext {
             workspace_dir,
             terraform_version: "1.9.0".to_string(),
             provider_configs: BTreeMap::new(),
+            pacer: build_pacer(DEFAULT_PACE_RPH),
         }
     }
 
@@ -99,6 +137,21 @@ impl ApplyContext {
         config: serde_json::Value,
     ) -> Self {
         self.provider_configs.insert(name.into(), config);
+        self
+    }
+
+    /// Override the mutation pace (full-pressure requests/hour). `<= 0`
+    /// disables pacing entirely.
+    #[must_use]
+    pub fn with_pace_rph(mut self, rph: f64) -> Self {
+        self.pacer = build_pacer(rph);
+        self
+    }
+
+    /// Disable RPC pacing (e.g. tests, or a provider with no rate limit).
+    #[must_use]
+    pub fn without_pacer(mut self) -> Self {
+        self.pacer = None;
         self
     }
 }
@@ -199,10 +252,22 @@ pub async fn run_plan_with_providers(
     let mut applied = Vec::new();
     let mut failed = Vec::new();
 
-    let mkfail = |c: &ResourceChange, e: EngineError| FailedChange {
-        address: c.address.clone(),
-        action: c.action,
-        reason: e.to_string(),
+    let mkfail = |c: &ResourceChange, e: EngineError| {
+        // Observability: surface EVERY failed change with its address +
+        // action + provider reason. Previously the apply collapsed failures
+        // into a bare count, so the per-resource cause was invisible in the
+        // operator log (had to be archaeologated from the on-disk bundle).
+        tracing::warn!(
+            address = ?c.address,
+            action = ?c.action,
+            reason = %e,
+            "magma apply: change failed"
+        );
+        FailedChange {
+            address: c.address.clone(),
+            action: c.action,
+            reason: e.to_string(),
+        }
     };
 
     // Resolution map (type → {name → attributes}), the basis for substituting
@@ -384,7 +449,7 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
                     continue;
                 }
             };
-            match rpc_retry!(lp.conn.read_resource(&type_name, &prior_dv)) {
+            match rpc_retry!(None::<&LeakyBucket>, lp.conn.read_resource(&type_name, &prior_dv)) {
                 Ok(None) => {
                     // Confirmed gone — drop this phantom/deleted instance.
                     report.dropped_instances += 1;
@@ -437,6 +502,15 @@ async fn apply_one(
         });
     }
 
+    // Pace the upcoming mutation RPCs under the provider's secondary rate
+    // limit. Cloned (cheap Arc) before the mutable `reg` borrow below.
+    // NoOps returned above never reach here, so all-matched cycles pay
+    // zero pacing latency.
+    let pacer = reg.ctx.pacer.clone();
+    if let Some(p) = pacer.as_deref() {
+        let _ = p.acquire().await;
+    }
+
     let type_name = change.address.type_id.0.clone();
     let provider_name = provider_local_name(&type_name);
     let lp = reg.get(&provider_name).await?;
@@ -456,7 +530,7 @@ async fn apply_one(
         Action::Delete | Action::Forget => {
             let null_dv = DynamicValue::from_json(&null_json, &implied)
                 .map_err(|e| EngineError::Cty(e.to_string()))?;
-            rpc_retry!(lp
+            rpc_retry!(pacer.as_deref(), lp
                 .conn
                 .apply_resource_change(&type_name, &prior_dv, &null_dv, &null_dv))
             .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
@@ -476,14 +550,14 @@ async fn apply_one(
             // Provider normalizes the proposed state (computes defaults +
             // marks computed attributes unknown). Terraform requires the
             // planned state to flow from plan → apply.
-            let planned_dv = rpc_retry!(lp.conn.plan_resource_change(
+            let planned_dv = rpc_retry!(pacer.as_deref(), lp.conn.plan_resource_change(
                 &type_name,
                 &prior_dv,
                 &config_dv,
                 &config_dv
             ))
             .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
-            let new_dv = rpc_retry!(lp.conn.apply_resource_change(
+            let new_dv = rpc_retry!(pacer.as_deref(), lp.conn.apply_resource_change(
                 &type_name,
                 &prior_dv,
                 &planned_dv,
@@ -627,6 +701,32 @@ fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_context_has_default_pacer() {
+        // Every apply paces mutation RPCs by default (1 req/s).
+        let ctx = ApplyContext::new(PathBuf::from("/tmp/x"));
+        assert!(ctx.pacer.is_some(), "default ApplyContext must carry a pacer");
+    }
+
+    #[test]
+    fn pace_rph_zero_disables_pacing() {
+        let ctx = ApplyContext::new(PathBuf::from("/tmp/x")).with_pace_rph(0.0);
+        assert!(ctx.pacer.is_none(), "rph<=0 disables the pacer");
+        let ctx2 = ApplyContext::new(PathBuf::from("/tmp/x")).without_pacer();
+        assert!(ctx2.pacer.is_none());
+    }
+
+    #[tokio::test]
+    async fn pace_rph_sets_target_rate() {
+        // 7200 rph at quota 1.0 → 120 rpm.
+        let ctx = ApplyContext::new(PathBuf::from("/tmp/x")).with_pace_rph(7200.0);
+        let bucket = ctx.pacer.expect("pacer present");
+        assert!((bucket.target_rpm().await - 120.0).abs() < 0.01);
+        // A rate-limit signal escalates pressure → effective rpm drops.
+        bucket.record_headroom(0, 100).await;
+        assert!(bucket.effective_rpm().await < bucket.target_rpm().await);
+    }
 
     #[test]
     fn apply_time_reference_resolution() {

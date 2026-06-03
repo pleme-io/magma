@@ -27,6 +27,7 @@ magma-plugin  = { workspace = true }
 magma-cty     = { workspace = true }
 magma-providers = { workspace = true }
 magma-attest  = { workspace = true }
+samba         = { workspace = true }
 shigoto       = { workspace = true }
 tokio         = { workspace = true }
 async-trait   = { workspace = true }

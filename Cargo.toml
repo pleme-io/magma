@@ -43,7 +43,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT"
@@ -108,6 +108,9 @@ magma-repo      = { path = "magma-repo" }
 shikumi          = { git = "https://github.com/pleme-io/shikumi" }
 shigoto          = { git = "https://github.com/pleme-io/shigoto", rev = "8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2" }
 shigoto-types    = { git = "https://github.com/pleme-io/shigoto", rev = "8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2" }
+# samba light core (LeakyBucket pacer), NATS-free — the apply engine paces
+# provider mutation RPCs under GitHub's secondary rate limit.
+samba            = { git = "https://github.com/pleme-io/samba", rev = "29650485132f635429291b08c5b2cdc5f9293500", default-features = false }
 magma-lava       = { git = "https://github.com/pleme-io/magma-lava", branch = "main" }
 indexmap         = { version = "2", features = ["serde"] }
 # pangea-ruby-eval is consumed via the `magnus` feature on magma-pangea —
