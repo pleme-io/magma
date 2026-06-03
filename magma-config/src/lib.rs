@@ -139,6 +139,38 @@ impl Config {
             })
             .collect()
     }
+
+    /// Map of **local provider name → registry source**, from
+    /// `terraform.required_providers`. This is the authoritative source
+    /// resolution the provider-backed apply engine needs: a resource
+    /// type's prefix is its local provider name (e.g. `github_repository`
+    /// → `github`), and `required_providers.github.source` is
+    /// `integrations/github` — which a type-prefix heuristic gets WRONG.
+    #[must_use]
+    pub fn provider_source_map(&self) -> HashMap<String, String> {
+        self.terraform
+            .required_providers
+            .iter()
+            .map(|(name, rp)| (name.clone(), rp.source.clone()))
+            .collect()
+    }
+
+    /// Map of **local provider name → provider block config** (the
+    /// `provider "<name>" { … }` body, e.g. `{"token": "…"}` for github),
+    /// passed to `ConfigureProvider`. Providers with no config block are
+    /// absent (the caller configures them with `{}`).
+    #[must_use]
+    pub fn provider_config_map(&self) -> HashMap<String, serde_json::Value> {
+        self.providers
+            .iter()
+            .map(|(name, pc)| {
+                (
+                    name.clone(),
+                    serde_json::Value::Object(pc.fields.clone().into_iter().collect()),
+                )
+            })
+            .collect()
+    }
 }
 
 // ── Interpolation resolver ─────────────────────────────────────────

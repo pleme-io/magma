@@ -117,8 +117,14 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
 /// provider-returned (msgpack-decoded) state back. THIS is what makes
 /// `executor:magma` create real cloud resources.
 ///
-/// `provider_configs` maps provider source (`"ns/name"`) → the provider
-/// block config (e.g. `{"token": "…"}` for github; `{}` when none).
+/// `provider_sources` maps **local provider name → registry source**
+/// (`magma_config::Config::provider_source_map`, e.g. `github` →
+/// `integrations/github`). `provider_configs` maps **local provider name
+/// → provider block config** (`Config::provider_config_map`, e.g.
+/// `github` → `{"token": "…"}`; absent → `{}`). A resource type's prefix
+/// is its local provider name (`github_repository` → `github`). When a
+/// source is absent from the map, the `default_provider_for` heuristic is
+/// the fallback (correct for hashicorp-namespaced providers like null).
 ///
 /// Action coverage (M1 of the provider-RPC apply):
 ///   * `Create` / `Read` → provider plan+apply (real materialization).
@@ -128,17 +134,11 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
 ///     delete/update land next. Surfacing them keeps the no-silent-
 ///     wrong-answers discipline; the rio repo-creation workload is
 ///     all-Create so this is sufficient to materialize it.
-///
-/// Provider source resolution currently uses the `default_provider_for`
-/// heuristic. Non-hashicorp providers whose source differs from the type
-/// prefix (e.g. `github_*` → `integrations/github`, not `hashicorp/github`)
-/// must be pre-seeded into the registry (via `connect_binary`/`connect`
-/// under the correct source) OR have their source supplied by the
-/// Config-driven resolver the caller layers on — the documented last mile.
 pub async fn run_plan_via_providers(
     plan: &Plan,
     state: &mut State,
     registry: &magma_providers::ProviderRegistry,
+    provider_sources: &std::collections::HashMap<String, String>,
     provider_configs: &std::collections::HashMap<String, serde_json::Value>,
 ) -> Result<ApplyOutcome, ApplyError> {
     let started_at = Utc::now();
@@ -156,14 +156,28 @@ pub async fn run_plan_via_providers(
                 after: change.after.clone(),
             }),
             Action::Create | Action::Read => {
-                let source = default_provider_for(&change.address).source;
                 let type_name = change.address.type_id.0.clone();
+                // Resource type prefix = local provider name (terraform
+                // convention): `github_repository` → `github`.
+                let local = type_name
+                    .split('_')
+                    .next()
+                    .unwrap_or(&type_name)
+                    .to_string();
+                // Config-declared source wins; heuristic is the fallback.
+                let source = provider_sources
+                    .get(&local)
+                    .cloned()
+                    .unwrap_or_else(|| default_provider_for(&change.address).source);
+                let provider_block = provider_configs
+                    .get(&local)
+                    .cloned()
+                    .unwrap_or_else(|| empty_cfg.clone());
                 let config = change.after.clone().unwrap_or_else(|| empty_cfg.clone());
                 let res = async {
                     let conn = registry.connect(&source).await?;
                     if configured.insert(source.clone()) {
-                        let pc = provider_configs.get(&source).unwrap_or(&empty_cfg);
-                        conn.configure(pc).await?;
+                        conn.configure(&provider_block).await?;
                     }
                     let planned = conn.plan_create(&type_name, &config).await?;
                     conn.apply_create(&type_name, &planned, &config).await

@@ -93,10 +93,14 @@ async fn run_plan_via_providers_creates_null_resource() {
         serde_json::json!({ "triggers": { "via": "run_plan_via_providers" }, "id": null }),
     )]);
 
-    let provider_configs = HashMap::new(); // null needs no provider config
-    let outcome = run_plan_via_providers(&plan, &mut state, &registry, &provider_configs)
-        .await
-        .expect("run_plan_via_providers");
+    // null: no source map (falls back to default_provider_for →
+    // hashicorp/null, pre-seeded) and no provider config.
+    let provider_sources = HashMap::new();
+    let provider_configs = HashMap::new();
+    let outcome =
+        run_plan_via_providers(&plan, &mut state, &registry, &provider_sources, &provider_configs)
+            .await
+            .expect("run_plan_via_providers");
 
     eprintln!(
         "applied={} failed={} resources={}",
