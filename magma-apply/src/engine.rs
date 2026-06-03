@@ -718,6 +718,32 @@ pub async fn refresh_named(
     report
 }
 
+/// Does a provider error message indicate the resource already exists
+/// (a create-conflict to be adopted via import, not a hard failure)?
+/// Matches the GitHub provider's 422 shapes ("name already exists on this
+/// account", "has already been blocked") + generic already-exists/409.
+fn is_already_exists(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("already exists")
+        || m.contains("already been")
+        || m.contains("name_already_in_use")
+        || m.contains("422")
+        || m.contains("409")
+}
+
+/// The provider-native import id for a create-conflict adoption. Most
+/// providers key import on the `name` attribute (github_repository's id IS
+/// its name); fall back to the resource's address name.
+fn natural_import_id(change: &ResourceChange) -> Option<String> {
+    change
+        .after
+        .as_ref()
+        .and_then(|a| a.get("name"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| Some(change.address.name.clone()))
+}
+
 async fn apply_one(
     change: &ResourceChange,
     state: &mut State,
@@ -787,13 +813,49 @@ async fn apply_one(
                 &config_dv
             ))
             .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
-            let new_dv = rpc_retry!(pacer.as_deref(), lp.conn.apply_resource_change(
+            let new_dv = match rpc_retry!(pacer.as_deref(), lp.conn.apply_resource_change(
                 &type_name,
                 &prior_dv,
                 &planned_dv,
                 &config_dv
-            ))
-            .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
+            )) {
+                Ok(dv) => dv,
+                Err(e) => {
+                    let msg = e.to_string();
+                    // Import-on-conflict: a Create whose provider returns an
+                    // "already exists" diagnostic (e.g. GitHub 422) means the
+                    // resource EXISTS in cloud but is absent from magma's
+                    // state. Adopt it via ImportResourceState instead of
+                    // failing — otherwise the plan re-creates it every cycle
+                    // and 422-loops forever (the pleme-io-opensource
+                    // created:0 / all-422 wedge). This is the magma analog of
+                    // tofu's importPolicy.autoOnConflict.
+                    if change.action == Action::Create && is_already_exists(&msg) {
+                        if let Some(id) = natural_import_id(change) {
+                            if let Ok(Some(imp_dv)) =
+                                lp.conn.import_resource_state(&type_name, &id).await
+                            {
+                                let attrs = imp_dv
+                                    .to_json(&implied)
+                                    .map_err(|e| EngineError::Cty(e.to_string()))?;
+                                insert_resource(state, &change.address, attrs.clone());
+                                tracing::info!(
+                                    address = ?change.address,
+                                    import_id = %id,
+                                    "magma apply: adopted pre-existing resource via import-on-conflict (was already-exists)"
+                                );
+                                return Ok(AppliedChange {
+                                    address: change.address.clone(),
+                                    action: change.action,
+                                    before: None,
+                                    after: Some(attrs),
+                                });
+                            }
+                        }
+                    }
+                    return Err(EngineError::Rpc(provider_name.clone(), msg));
+                }
+            };
             let new_attrs = new_dv
                 .to_json(&implied)
                 .map_err(|e| EngineError::Cty(e.to_string()))?;

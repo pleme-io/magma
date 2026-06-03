@@ -364,6 +364,60 @@ impl ProviderConn {
             }
         }
     }
+
+    /// `ImportResourceState` — adopt a resource that EXISTS in the cloud but
+    /// is absent from magma's state, by its provider-native import id (e.g.
+    /// the repo name for `github_repository`). Returns the imported wire state
+    /// (`Ok(Some(dv))`) or `Ok(None)` if the provider imported nothing /
+    /// returned cty-null. This is the read/import half of the protocol that
+    /// powers import-on-create-conflict (422 already-exists → observe → adopt)
+    /// + `magma import`. Mirrors apply/read's V5/V6 dispatch + msgpack decode.
+    pub async fn import_resource_state(
+        &mut self,
+        type_name: &str,
+        id: &str,
+    ) -> Result<Option<DynamicValue>, ProviderError> {
+        match &mut self.client {
+            Client::V6(c) => {
+                let resp = c
+                    .import_resource_state(tfplugin6::import_resource_state::Request {
+                        type_name: type_name.to_string(),
+                        id: id.to_string(),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(transport)?
+                    .into_inner();
+                check_diags(resp.diagnostics.iter().map(diag6))?;
+                Ok(resp
+                    .imported_resources
+                    .into_iter()
+                    .next()
+                    .and_then(|ir| ir.state)
+                    .map(from_pb6)
+                    .filter(|d| !d.is_null()))
+            }
+            Client::V5(c) => {
+                let resp = c
+                    .import_resource_state(tfplugin5::import_resource_state::Request {
+                        type_name: type_name.to_string(),
+                        id: id.to_string(),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(transport)?
+                    .into_inner();
+                check_diags(resp.diagnostics.iter().map(diag5))?;
+                Ok(resp
+                    .imported_resources
+                    .into_iter()
+                    .next()
+                    .and_then(|ir| ir.state)
+                    .map(from_pb5)
+                    .filter(|d| !d.is_null()))
+            }
+        }
+    }
 }
 
 fn transport(s: tonic::Status) -> ProviderError {
