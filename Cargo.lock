@@ -56,7 +56,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -67,7 +67,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -520,7 +520,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -670,8 +670,8 @@ dependencies = [
 
 [[package]]
 name = "gen-macros"
-version = "0.1.6"
-source = "git+https://github.com/pleme-io/gen#eea15518fdff36d8b21ed753b6b161fc0d3623f6"
+version = "0.1.9"
+source = "git+https://github.com/pleme-io/gen#6d82c9d3885c781e923ec46330d05d7eca469a3b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -680,8 +680,8 @@ dependencies = [
 
 [[package]]
 name = "gen-platform"
-version = "0.1.6"
-source = "git+https://github.com/pleme-io/gen#eea15518fdff36d8b21ed753b6b161fc0d3623f6"
+version = "0.1.9"
+source = "git+https://github.com/pleme-io/gen#6d82c9d3885c781e923ec46330d05d7eca469a3b"
 dependencies = [
  "gen-macros",
  "gen-types",
@@ -693,8 +693,8 @@ dependencies = [
 
 [[package]]
 name = "gen-types"
-version = "0.1.6"
-source = "git+https://github.com/pleme-io/gen#eea15518fdff36d8b21ed753b6b161fc0d3623f6"
+version = "0.1.9"
+source = "git+https://github.com/pleme-io/gen#6d82c9d3885c781e923ec46330d05d7eca469a3b"
 dependencies = [
  "blake3",
  "chrono",
@@ -2057,7 +2057,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2631,7 +2631,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2872,8 +2872,8 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shigoto"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/shigoto#c8792add60be360ff29788f87f3bd46a2b666af6"
 dependencies = [
  "shigoto-budget",
  "shigoto-dag",
@@ -2886,8 +2886,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-budget"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/shigoto#c8792add60be360ff29788f87f3bd46a2b666af6"
 dependencies = [
  "serde",
  "shigoto-types",
@@ -2896,8 +2896,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-dag"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/shigoto#c8792add60be360ff29788f87f3bd46a2b666af6"
 dependencies = [
  "petgraph 0.6.5",
  "serde",
@@ -2907,8 +2907,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-emit"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/shigoto#c8792add60be360ff29788f87f3bd46a2b666af6"
 dependencies = [
  "async-trait",
  "serde",
@@ -2919,8 +2919,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-gate"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/shigoto#c8792add60be360ff29788f87f3bd46a2b666af6"
 dependencies = [
  "shigoto-dag",
  "shigoto-types",
@@ -2928,8 +2928,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-retry"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/shigoto#c8792add60be360ff29788f87f3bd46a2b666af6"
 dependencies = [
  "serde",
  "shigoto-types",
@@ -2937,8 +2937,8 @@ dependencies = [
 
 [[package]]
 name = "shigoto-scheduler"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/shigoto#c8792add60be360ff29788f87f3bd46a2b666af6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2956,13 +2956,15 @@ dependencies = [
 
 [[package]]
 name = "shigoto-types"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/shigoto#deec4901fb050a4419501cadac8ffef6800e0cc5"
+version = "0.1.6"
+source = "git+https://github.com/pleme-io/shigoto#c8792add60be360ff29788f87f3bd46a2b666af6"
 dependencies = [
  "async-trait",
+ "blake3",
  "chrono",
  "gen-platform",
  "gen-types",
+ "hex",
  "schemars",
  "serde",
  "serde_json",
@@ -3038,7 +3040,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3080,7 +3082,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3668,7 +3670,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
