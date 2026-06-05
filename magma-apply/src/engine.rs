@@ -472,6 +472,13 @@ pub struct RefreshReport {
     /// error). Refresh NEVER drops state on uncertainty — only on a
     /// confirmed null `ReadResource`.
     pub kept_on_error: usize,
+    /// Whole-resource drops that the mass-drop safety guard SUPPRESSED and
+    /// restored (see [`refresh_named`]). Non-zero ⇒ a systemic read
+    /// malfunction was detected (a large fraction of probed targets all read
+    /// "gone" at once) and the drop was refused to protect state from the
+    /// false-drop → +N-create → adopt oscillation. `dropped_*` are zeroed when
+    /// this fires.
+    pub suppressed_mass_drop: usize,
 }
 
 /// Refresh `state` against the providers' ACTUAL current state — terraform's
@@ -602,6 +609,23 @@ pub fn collect_suspect_repos(plan: &Plan) -> HashSet<String> {
     names
 }
 
+/// Below this many whole-resource drops in a single [`refresh_named`] pass,
+/// the result is trusted outright — genuine phantoms are rare, individual
+/// events. At or above it AND covering ≥ half the probed targets, the drop is
+/// treated as a systemic `ReadResource` malfunction (provider auth/owner/
+/// read-id, mass rate-limit miscoded as null) and SUPPRESSED. A real
+/// deployment never loses half its resources between two plans.
+const MASS_DROP_FLOOR: usize = 8;
+
+/// The mass-drop guard's decision (pure, so it is unit-tested without a
+/// provider). Returns `true` when the staged whole-resource drops should be
+/// REFUSED — i.e. the drop is both absolutely non-trivial (`>= MASS_DROP_FLOOR`)
+/// and covers at least half the probed targets. Such a pass is a systemic
+/// `ReadResource` malfunction, not N genuine phantoms. See [`refresh_named`].
+fn mass_drop_should_suppress(dropped: usize, targeted: usize) -> bool {
+    dropped >= MASS_DROP_FLOOR && dropped.saturating_mul(2) >= targeted
+}
+
 /// Targeted, low-cost cousin of [`refresh_state`]: `ReadResource` ONLY the
 /// resources of `type_id` whose resource-name OR `attributes["name"]` is in
 /// `names`, dropping any the provider confirms **gone** (cty-null). Same
@@ -627,6 +651,10 @@ pub async fn refresh_named(
     let mut registry = Registry::new(ctx);
     let pacer = ctx.pacer.clone();
     let mut kept: Vec<StateResource> = Vec::new();
+    // Whole-resource drops are STAGED, not applied, so the mass-drop guard
+    // below can restore them if the read looks systemically broken.
+    let mut staged_drop: Vec<StateResource> = Vec::new();
+    let mut targeted: usize = 0;
 
     for resource in std::mem::take(&mut state.resources) {
         let attr_name = resource
@@ -641,6 +669,7 @@ pub async fn refresh_named(
             kept.push(resource);
             continue;
         }
+        targeted += 1;
 
         let type_name = resource.address.type_id.0.clone();
         let provider_name = provider_local_name(&type_name);
@@ -661,6 +690,7 @@ pub async fn refresh_named(
         };
 
         let mut kept_instances: Vec<StateInstance> = Vec::new();
+        let mut gone_instances: Vec<StateInstance> = Vec::new();
         for inst in resource.instances {
             let prior_dv = match DynamicValue::from_json(&inst.attributes, &implied) {
                 Ok(d) => d,
@@ -683,8 +713,11 @@ pub async fn refresh_named(
             };
             match rpc_retry!(pacer.as_deref(), lp.conn.read_resource(&type_name, &prior_dv)) {
                 Ok(None) => {
-                    // Confirmed gone — drop the phantom so the plan re-creates it.
+                    // Provider confirms gone — STAGE the instance for dropping.
+                    // The mass-drop guard (below) may yet restore it if the
+                    // whole pass looks like a systemic read malfunction.
                     report.dropped_instances += 1;
+                    gone_instances.push(inst);
                 }
                 Ok(Some(dv)) => match dv.to_json(&implied) {
                     Ok(attrs) => {
@@ -705,14 +738,38 @@ pub async fn refresh_named(
                 }
             }
         }
-        if kept_instances.is_empty() {
+        if kept_instances.is_empty() && !gone_instances.is_empty() {
+            // Every instance read gone — STAGE the whole-resource drop so the
+            // guard can decide. (A resource with zero instances and no gones
+            // falls through to the keep path unchanged.)
             report.dropped_resources += 1;
+            staged_drop.push(StateResource {
+                instances: gone_instances,
+                ..resource
+            });
         } else {
             kept.push(StateResource {
                 instances: kept_instances,
                 ..resource
             });
         }
+    }
+
+    // ── Mass-drop safety guard (attractor invariant) ─────────────────────
+    // "Drop only on confirmed-gone" is safe ONLY if ReadResource is reliable.
+    // If a large fraction of probed targets all read "gone" in a single pass,
+    // that is not N genuine phantoms — it is a systemic read malfunction
+    // (provider auth/owner/read-id, mass rate-limit miscoded as cty-null, …).
+    // Honoring it corrupts state into a false-drop → +N-create → adopt
+    // oscillation that never converges. So when the staged drop is both
+    // absolutely non-trivial AND covers ≥ half the probed targets, REFUSE it:
+    // restore everything and surface the malfunction via `suppressed_mass_drop`.
+    let suppress = mass_drop_should_suppress(report.dropped_resources, targeted);
+    if suppress {
+        report.suppressed_mass_drop = report.dropped_resources;
+        report.dropped_resources = 0;
+        report.dropped_instances = 0;
+        kept.append(&mut staged_drop);
     }
     state.resources = kept;
     report
@@ -993,6 +1050,28 @@ fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mass_drop_guard_suppresses_systemic_read_failure() {
+        // The live pleme-io-opensource bug: 661 existing repos all read "gone"
+        // in one pass → must be refused (systemic ReadResource malfunction).
+        assert!(mass_drop_should_suppress(661, 661));
+        // Whole suspect set going gone at once → refuse regardless of size.
+        assert!(mass_drop_should_suppress(MASS_DROP_FLOOR, MASS_DROP_FLOOR));
+        // Half the probed targets going gone → refuse (boundary, inclusive).
+        assert!(mass_drop_should_suppress(MASS_DROP_FLOOR, MASS_DROP_FLOOR * 2));
+    }
+
+    #[test]
+    fn mass_drop_guard_trusts_genuine_phantoms() {
+        // Nothing dropped → never suppress.
+        assert!(!mass_drop_should_suppress(0, 1000));
+        // A handful of real phantoms among many healthy targets → honor it.
+        assert!(!mass_drop_should_suppress(2, 600));
+        assert!(!mass_drop_should_suppress(MASS_DROP_FLOOR - 1, MASS_DROP_FLOOR - 1));
+        // At/above the floor but < half of probed targets → honor it.
+        assert!(!mass_drop_should_suppress(MASS_DROP_FLOOR, MASS_DROP_FLOOR * 2 + 1));
+    }
 
     #[test]
     fn apply_context_has_default_pacer() {
