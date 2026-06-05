@@ -892,14 +892,33 @@ async fn apply_one(
                             if let Ok(Some(imp_dv)) =
                                 lp.conn.import_resource_state(&type_name, &id).await
                             {
-                                let attrs = imp_dv
+                                // ImportResourceState returns a STUB (the id +
+                                // minimal fields). The terraform import protocol
+                                // requires a follow-up ReadResource to populate
+                                // the full current attributes (node_id, name,
+                                // …). Skipping it leaves computed attrs empty, so
+                                // dependents referencing them (e.g.
+                                // github_branch_protection.repository_id =
+                                // github_repository.X.node_id) resolve to "" and
+                                // fail with "Could not resolve to a node with the
+                                // global id of ''". Refresh the stub; fall back
+                                // to it only if the read can't confirm.
+                                let full_dv = match lp
+                                    .conn
+                                    .read_resource(&type_name, &imp_dv)
+                                    .await
+                                {
+                                    Ok(Some(read_dv)) => read_dv,
+                                    _ => imp_dv,
+                                };
+                                let attrs = full_dv
                                     .to_json(&implied)
                                     .map_err(|e| EngineError::Cty(e.to_string()))?;
                                 insert_resource(state, &change.address, attrs.clone());
                                 tracing::info!(
                                     address = ?change.address,
                                     import_id = %id,
-                                    "magma apply: adopted pre-existing resource via import-on-conflict (was already-exists)"
+                                    "magma apply: adopted pre-existing resource via import-on-conflict + ReadResource refresh (was already-exists)"
                                 );
                                 return Ok(AppliedChange {
                                     address: change.address.clone(),
