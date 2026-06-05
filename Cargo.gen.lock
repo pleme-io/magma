@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "611833fa80d9b1b3eb6492b7c90a4cbce8e7e4ebeb8c826ad97ecc3c0f25a2ce",
+  "cargo_lock_sha256": "ccb972f48c4ab4aec447c4eeb55c7061fb6bd6c06d112a730ba29890dbb8e90b",
   "target_resolves": {
     "base": {
       "aho-corasick-1.1.4": {
@@ -1637,7 +1637,7 @@
           "std"
         ]
       },
-      "gen-macros-0.1.6": {
+      "gen-macros-0.1.9": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -1676,11 +1676,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "gen-platform-0.1.6": {
+      "gen-platform-0.1.9": {
         "runtime_dependencies": [
           {
             "name": "gen_macros",
-            "package_key": "gen-macros-0.1.6",
+            "package_key": "gen-macros-0.1.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1690,7 +1690,7 @@
           },
           {
             "name": "gen_types",
-            "package_key": "gen-types-0.1.6",
+            "package_key": "gen-types-0.1.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1744,7 +1744,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "gen-types-0.1.6": {
+      "gen-types-0.1.9": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -3448,11 +3448,11 @@
           "std"
         ]
       },
-      "magma-0.1.1": {
+      "magma-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "magma_apply",
-            "package_key": "magma-apply-0.1.1",
+            "package_key": "magma-apply-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3462,7 +3462,7 @@
           },
           {
             "name": "magma_attest",
-            "package_key": "magma-attest-0.1.1",
+            "package_key": "magma-attest-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3472,7 +3472,7 @@
           },
           {
             "name": "magma_backend",
-            "package_key": "magma-backend-0.1.1",
+            "package_key": "magma-backend-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3482,7 +3482,7 @@
           },
           {
             "name": "magma_config",
-            "package_key": "magma-config-0.1.1",
+            "package_key": "magma-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3492,7 +3492,7 @@
           },
           {
             "name": "magma_graph",
-            "package_key": "magma-graph-0.1.1",
+            "package_key": "magma-graph-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3502,7 +3502,7 @@
           },
           {
             "name": "magma_mcp",
-            "package_key": "magma-mcp-0.1.1",
+            "package_key": "magma-mcp-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3512,7 +3512,7 @@
           },
           {
             "name": "magma_pangea",
-            "package_key": "magma-pangea-0.1.1",
+            "package_key": "magma-pangea-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3522,7 +3522,7 @@
           },
           {
             "name": "magma_plan",
-            "package_key": "magma-plan-0.1.1",
+            "package_key": "magma-plan-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3532,7 +3532,7 @@
           },
           {
             "name": "magma_plugin",
-            "package_key": "magma-plugin-0.1.1",
+            "package_key": "magma-plugin-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3542,7 +3542,7 @@
           },
           {
             "name": "magma_protocol",
-            "package_key": "magma-protocol-0.1.1",
+            "package_key": "magma-protocol-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3552,7 +3552,7 @@
           },
           {
             "name": "magma_providers",
-            "package_key": "magma-providers-0.1.1",
+            "package_key": "magma-providers-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3562,7 +3562,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3572,7 +3572,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3586,7 +3586,7 @@
           "default"
         ]
       },
-      "magma-apply-0.1.1": {
+      "magma-apply-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -3632,7 +3632,7 @@
           },
           {
             "name": "magma_attest",
-            "package_key": "magma-attest-0.1.1",
+            "package_key": "magma-attest-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3642,7 +3642,7 @@
           },
           {
             "name": "magma_config",
-            "package_key": "magma-config-0.1.1",
+            "package_key": "magma-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3652,7 +3652,7 @@
           },
           {
             "name": "magma_graph",
-            "package_key": "magma-graph-0.1.1",
+            "package_key": "magma-graph-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3662,7 +3662,7 @@
           },
           {
             "name": "magma_plan",
-            "package_key": "magma-plan-0.1.1",
+            "package_key": "magma-plan-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3672,7 +3672,7 @@
           },
           {
             "name": "magma_plugin",
-            "package_key": "magma-plugin-0.1.1",
+            "package_key": "magma-plugin-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3682,7 +3682,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3692,7 +3692,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3724,7 +3724,7 @@
           },
           {
             "name": "shigoto",
-            "package_key": "shigoto-0.1.3",
+            "package_key": "shigoto-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3789,7 +3789,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-arch-test-0.1.1": {
+      "magma-arch-test-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "chrono",
@@ -3815,7 +3815,7 @@
           },
           {
             "name": "magma_config",
-            "package_key": "magma-config-0.1.1",
+            "package_key": "magma-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3825,7 +3825,7 @@
           },
           {
             "name": "magma_pangea",
-            "package_key": "magma-pangea-0.1.1",
+            "package_key": "magma-pangea-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3835,7 +3835,7 @@
           },
           {
             "name": "magma_plan",
-            "package_key": "magma-plan-0.1.1",
+            "package_key": "magma-plan-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3845,7 +3845,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3855,7 +3855,7 @@
           },
           {
             "name": "magma_test_laws",
-            "package_key": "magma-test-laws-0.1.1",
+            "package_key": "magma-test-laws-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3865,7 +3865,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -3939,7 +3939,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-attest-0.1.1": {
+      "magma-attest-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -3975,7 +3975,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4019,7 +4019,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-backend-0.1.1": {
+      "magma-backend-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -4033,7 +4033,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4120,7 +4120,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-budget-0.1.1": {
+      "magma-budget-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -4134,7 +4134,7 @@
           },
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4208,7 +4208,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-bundle-0.1.1": {
+      "magma-bundle-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -4244,7 +4244,7 @@
           },
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4254,7 +4254,7 @@
           },
           {
             "name": "magma_drift",
-            "package_key": "magma-drift-0.1.1",
+            "package_key": "magma-drift-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4264,7 +4264,7 @@
           },
           {
             "name": "magma_fsm",
-            "package_key": "magma-fsm-0.1.1",
+            "package_key": "magma-fsm-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4274,7 +4274,7 @@
           },
           {
             "name": "magma_stream",
-            "package_key": "magma-stream-0.1.1",
+            "package_key": "magma-stream-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4318,7 +4318,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-cli-0.1.1": {
+      "magma-cli-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -4379,7 +4379,7 @@
           },
           {
             "name": "magma",
-            "package_key": "magma-0.1.1",
+            "package_key": "magma-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4389,7 +4389,7 @@
           },
           {
             "name": "magma_arch_test",
-            "package_key": "magma-arch-test-0.1.1",
+            "package_key": "magma-arch-test-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4399,7 +4399,7 @@
           },
           {
             "name": "magma_flow",
-            "package_key": "magma-flow-0.1.1",
+            "package_key": "magma-flow-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4419,7 +4419,7 @@
           },
           {
             "name": "magma_migrate",
-            "package_key": "magma-migrate-0.1.1",
+            "package_key": "magma-migrate-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4429,7 +4429,7 @@
           },
           {
             "name": "magma_rubygems",
-            "package_key": "magma-rubygems-0.1.1",
+            "package_key": "magma-rubygems-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4439,7 +4439,7 @@
           },
           {
             "name": "magma_tatara",
-            "package_key": "magma-tatara-0.1.1",
+            "package_key": "magma-tatara-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4591,7 +4591,65 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-controller-0.1.1": {
+      "magma-config-0.1.4": {
+        "runtime_dependencies": [
+          {
+            "name": "magma_types",
+            "package_key": "magma-types-0.1.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "magma-controller-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -4617,7 +4675,7 @@
           },
           {
             "name": "magma_budget",
-            "package_key": "magma-budget-0.1.1",
+            "package_key": "magma-budget-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4627,7 +4685,7 @@
           },
           {
             "name": "magma_bundle",
-            "package_key": "magma-bundle-0.1.1",
+            "package_key": "magma-bundle-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4637,7 +4695,7 @@
           },
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4647,7 +4705,7 @@
           },
           {
             "name": "magma_drift",
-            "package_key": "magma-drift-0.1.1",
+            "package_key": "magma-drift-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4657,7 +4715,7 @@
           },
           {
             "name": "magma_fsm",
-            "package_key": "magma-fsm-0.1.1",
+            "package_key": "magma-fsm-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4667,7 +4725,7 @@
           },
           {
             "name": "magma_metrics",
-            "package_key": "magma-metrics-0.1.1",
+            "package_key": "magma-metrics-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4677,7 +4735,7 @@
           },
           {
             "name": "magma_stream",
-            "package_key": "magma-stream-0.1.1",
+            "package_key": "magma-stream-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4751,7 +4809,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-converge-0.1.1": {
+      "magma-converge-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -4787,7 +4845,7 @@
           },
           {
             "name": "gen_platform",
-            "package_key": "gen-platform-0.1.6",
+            "package_key": "gen-platform-0.1.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4807,7 +4865,7 @@
           },
           {
             "name": "magma_apply",
-            "package_key": "magma-apply-0.1.1",
+            "package_key": "magma-apply-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4817,7 +4875,7 @@
           },
           {
             "name": "magma_backend",
-            "package_key": "magma-backend-0.1.1",
+            "package_key": "magma-backend-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4827,7 +4885,7 @@
           },
           {
             "name": "magma_config",
-            "package_key": "magma-config-0.1.1",
+            "package_key": "magma-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4837,7 +4895,7 @@
           },
           {
             "name": "magma_plan",
-            "package_key": "magma-plan-0.1.1",
+            "package_key": "magma-plan-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4847,7 +4905,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4857,7 +4915,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4889,7 +4947,7 @@
           },
           {
             "name": "shigoto_types",
-            "package_key": "shigoto-types-0.1.3",
+            "package_key": "shigoto-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -4941,7 +4999,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-discover-0.1.1": {
+      "magma-discover-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -4955,7 +5013,7 @@
           },
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5019,7 +5077,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-drift-0.1.1": {
+      "magma-drift-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -5045,7 +5103,7 @@
           },
           {
             "name": "gen_platform",
-            "package_key": "gen-platform-0.1.6",
+            "package_key": "gen-platform-0.1.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5065,7 +5123,7 @@
           },
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5109,11 +5167,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-fixtures-0.1.1": {
+      "magma-fixtures-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5123,7 +5181,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5188,7 +5246,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-flow-0.1.1": {
+      "magma-flow-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "hex",
@@ -5202,7 +5260,7 @@
           },
           {
             "name": "magma_backend",
-            "package_key": "magma-backend-0.1.1",
+            "package_key": "magma-backend-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5212,7 +5270,7 @@
           },
           {
             "name": "magma_config",
-            "package_key": "magma-config-0.1.1",
+            "package_key": "magma-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5222,7 +5280,7 @@
           },
           {
             "name": "magma_pangea",
-            "package_key": "magma-pangea-0.1.1",
+            "package_key": "magma-pangea-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5232,7 +5290,7 @@
           },
           {
             "name": "magma_plan",
-            "package_key": "magma-plan-0.1.1",
+            "package_key": "magma-plan-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5242,7 +5300,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5316,7 +5374,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-fsm-0.1.1": {
+      "magma-fsm-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "chrono",
@@ -5332,7 +5390,7 @@
           },
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5376,11 +5434,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-graph-0.1.1": {
+      "magma-graph-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5534,7 +5592,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-mcp-0.1.1": {
+      "magma-mcp-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -5558,7 +5616,7 @@
           },
           {
             "name": "magma_arch_test",
-            "package_key": "magma-arch-test-0.1.1",
+            "package_key": "magma-arch-test-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5568,7 +5626,7 @@
           },
           {
             "name": "magma_backend",
-            "package_key": "magma-backend-0.1.1",
+            "package_key": "magma-backend-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5578,7 +5636,7 @@
           },
           {
             "name": "magma_config",
-            "package_key": "magma-config-0.1.1",
+            "package_key": "magma-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5588,7 +5646,7 @@
           },
           {
             "name": "magma_flow",
-            "package_key": "magma-flow-0.1.1",
+            "package_key": "magma-flow-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5598,7 +5656,7 @@
           },
           {
             "name": "magma_migrate",
-            "package_key": "magma-migrate-0.1.1",
+            "package_key": "magma-migrate-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5608,7 +5666,7 @@
           },
           {
             "name": "magma_pangea",
-            "package_key": "magma-pangea-0.1.1",
+            "package_key": "magma-pangea-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5618,7 +5676,7 @@
           },
           {
             "name": "magma_plan",
-            "package_key": "magma-plan-0.1.1",
+            "package_key": "magma-plan-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5628,7 +5686,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5638,7 +5696,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5712,11 +5770,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-metrics-0.1.1": {
+      "magma-metrics-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5726,7 +5784,7 @@
           },
           {
             "name": "magma_drift",
-            "package_key": "magma-drift-0.1.1",
+            "package_key": "magma-drift-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5758,7 +5816,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-migrate-0.1.1": {
+      "magma-migrate-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -5794,7 +5852,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5804,7 +5862,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5891,7 +5949,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-nix-0.1.1": {
+      "magma-nix-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -5949,7 +6007,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-operator-backend-0.1.1": {
+      "magma-operator-backend-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -5963,7 +6021,7 @@
           },
           {
             "name": "magma_backend",
-            "package_key": "magma-backend-0.1.1",
+            "package_key": "magma-backend-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5973,7 +6031,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5983,7 +6041,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6040,7 +6098,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-pangea-0.1.1": {
+      "magma-pangea-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -6054,7 +6112,7 @@
           },
           {
             "name": "magma_config",
-            "package_key": "magma-config-0.1.1",
+            "package_key": "magma-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6064,7 +6122,7 @@
           },
           {
             "name": "magma_plan",
-            "package_key": "magma-plan-0.1.1",
+            "package_key": "magma-plan-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6074,7 +6132,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6084,7 +6142,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6170,7 +6228,7 @@
           "default"
         ]
       },
-      "magma-plan-0.1.1": {
+      "magma-plan-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -6196,7 +6254,7 @@
           },
           {
             "name": "magma_attest",
-            "package_key": "magma-attest-0.1.1",
+            "package_key": "magma-attest-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6206,7 +6264,7 @@
           },
           {
             "name": "magma_config",
-            "package_key": "magma-config-0.1.1",
+            "package_key": "magma-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6216,7 +6274,7 @@
           },
           {
             "name": "magma_graph",
-            "package_key": "magma-graph-0.1.1",
+            "package_key": "magma-graph-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6226,7 +6284,7 @@
           },
           {
             "name": "magma_plugin",
-            "package_key": "magma-plugin-0.1.1",
+            "package_key": "magma-plugin-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6236,7 +6294,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6246,7 +6304,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6313,7 +6371,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-plugin-0.1.1": {
+      "magma-plugin-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -6367,7 +6425,7 @@
           },
           {
             "name": "magma_protocol",
-            "package_key": "magma-protocol-0.1.1",
+            "package_key": "magma-protocol-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6377,7 +6435,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6507,7 +6565,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-protocol-0.1.1": {
+      "magma-protocol-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "prost",
@@ -6608,11 +6666,11 @@
         ],
         "features": []
       },
-      "magma-providers-0.1.1": {
+      "magma-providers-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "magma_plugin",
-            "package_key": "magma-plugin-0.1.1",
+            "package_key": "magma-plugin-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6622,7 +6680,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6696,7 +6754,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-replay-0.1.1": {
+      "magma-replay-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "chrono",
@@ -6712,7 +6770,7 @@
           },
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6722,7 +6780,7 @@
           },
           {
             "name": "magma_fsm",
-            "package_key": "magma-fsm-0.1.1",
+            "package_key": "magma-fsm-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6732,7 +6790,7 @@
           },
           {
             "name": "magma_stream",
-            "package_key": "magma-stream-0.1.1",
+            "package_key": "magma-stream-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6776,7 +6834,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-repo-0.1.1": {
+      "magma-repo-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -6822,7 +6880,7 @@
           },
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6896,7 +6954,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-rubygems-0.1.1": {
+      "magma-rubygems-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -6964,11 +7022,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-spec-0.1.1": {
+      "magma-spec-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7012,7 +7070,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-state-0.1.1": {
+      "magma-state-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "chrono",
@@ -7028,7 +7086,7 @@
           },
           {
             "name": "magma_backend",
-            "package_key": "magma-backend-0.1.1",
+            "package_key": "magma-backend-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7038,7 +7096,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7125,7 +7183,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-stream-0.1.1": {
+      "magma-stream-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -7171,7 +7229,7 @@
           },
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7181,7 +7239,7 @@
           },
           {
             "name": "magma_drift",
-            "package_key": "magma-drift-0.1.1",
+            "package_key": "magma-drift-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7255,7 +7313,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-tatara-0.1.1": {
+      "magma-tatara-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "serde_json",
@@ -7281,7 +7339,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-test-0.1.1": {
+      "magma-test-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -7315,7 +7373,7 @@
           },
           {
             "name": "magma",
-            "package_key": "magma-0.1.1",
+            "package_key": "magma-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7325,7 +7383,7 @@
           },
           {
             "name": "magma_arch_test",
-            "package_key": "magma-arch-test-0.1.1",
+            "package_key": "magma-arch-test-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7335,7 +7393,7 @@
           },
           {
             "name": "magma_config",
-            "package_key": "magma-config-0.1.1",
+            "package_key": "magma-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7345,7 +7403,7 @@
           },
           {
             "name": "magma_pangea",
-            "package_key": "magma-pangea-0.1.1",
+            "package_key": "magma-pangea-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7355,7 +7413,7 @@
           },
           {
             "name": "magma_plan",
-            "package_key": "magma-plan-0.1.1",
+            "package_key": "magma-plan-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7365,7 +7423,7 @@
           },
           {
             "name": "magma_plugin",
-            "package_key": "magma-plugin-0.1.1",
+            "package_key": "magma-plugin-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7375,7 +7433,7 @@
           },
           {
             "name": "magma_protocol",
-            "package_key": "magma-protocol-0.1.1",
+            "package_key": "magma-protocol-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7385,7 +7443,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7395,7 +7453,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7565,11 +7623,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "magma-test-laws-0.1.1": {
+      "magma-test-laws-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "magma_apply",
-            "package_key": "magma-apply-0.1.1",
+            "package_key": "magma-apply-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7579,7 +7637,7 @@
           },
           {
             "name": "magma_config",
-            "package_key": "magma-config-0.1.1",
+            "package_key": "magma-config-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7589,7 +7647,7 @@
           },
           {
             "name": "magma_converge",
-            "package_key": "magma-converge-0.1.1",
+            "package_key": "magma-converge-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7599,7 +7657,7 @@
           },
           {
             "name": "magma_flow",
-            "package_key": "magma-flow-0.1.1",
+            "package_key": "magma-flow-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7609,7 +7667,7 @@
           },
           {
             "name": "magma_fsm",
-            "package_key": "magma-fsm-0.1.1",
+            "package_key": "magma-fsm-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7619,7 +7677,7 @@
           },
           {
             "name": "magma_plan",
-            "package_key": "magma-plan-0.1.1",
+            "package_key": "magma-plan-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7629,7 +7687,7 @@
           },
           {
             "name": "magma_state",
-            "package_key": "magma-state-0.1.1",
+            "package_key": "magma-state-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7639,7 +7697,7 @@
           },
           {
             "name": "magma_stream",
-            "package_key": "magma-stream-0.1.1",
+            "package_key": "magma-stream-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7649,7 +7707,7 @@
           },
           {
             "name": "magma_types",
-            "package_key": "magma-types-0.1.1",
+            "package_key": "magma-types-0.1.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7721,7 +7779,7 @@
           "workspace-laws"
         ]
       },
-      "magma-tfmod-0.1.1": {
+      "magma-tfmod-0.1.4": {
         "runtime_dependencies": [
           {
             "name": "serde",
@@ -7775,7 +7833,7 @@
           },
           {
             "name": "gen_platform",
-            "package_key": "gen-platform-0.1.6",
+            "package_key": "gen-platform-0.1.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7785,7 +7843,102 @@
           },
           {
             "name": "gen_types",
-            "package_key": "gen-types-0.1.6",
+            "package_key": "gen-types-0.1.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "schemars",
+            "package_key": "schemars-0.8.22",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "uuid",
+            "package_key": "uuid-1.23.1",
+            "kind": "normal",
+            "features": [
+              "v4",
+              "serde"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "magma-types-0.1.4": {
+        "runtime_dependencies": [
+          {
+            "name": "chrono",
+            "package_key": "chrono-0.4.44",
+            "kind": "normal",
+            "features": [
+              "serde"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "gen_platform",
+            "package_key": "gen-platform-0.1.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "gen_types",
+            "package_key": "gen-types-0.1.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10126,11 +10279,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "shigoto-0.1.3": {
+      "shigoto-0.1.6": {
         "runtime_dependencies": [
           {
             "name": "shigoto_budget",
-            "package_key": "shigoto-budget-0.1.3",
+            "package_key": "shigoto-budget-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10140,7 +10293,7 @@
           },
           {
             "name": "shigoto_dag",
-            "package_key": "shigoto-dag-0.1.3",
+            "package_key": "shigoto-dag-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10150,7 +10303,7 @@
           },
           {
             "name": "shigoto_emit",
-            "package_key": "shigoto-emit-0.1.3",
+            "package_key": "shigoto-emit-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10160,7 +10313,7 @@
           },
           {
             "name": "shigoto_gate",
-            "package_key": "shigoto-gate-0.1.3",
+            "package_key": "shigoto-gate-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10170,7 +10323,7 @@
           },
           {
             "name": "shigoto_retry",
-            "package_key": "shigoto-retry-0.1.3",
+            "package_key": "shigoto-retry-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10180,7 +10333,7 @@
           },
           {
             "name": "shigoto_scheduler",
-            "package_key": "shigoto-scheduler-0.1.3",
+            "package_key": "shigoto-scheduler-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10190,7 +10343,7 @@
           },
           {
             "name": "shigoto_types",
-            "package_key": "shigoto-types-0.1.3",
+            "package_key": "shigoto-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10202,7 +10355,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shigoto-budget-0.1.3": {
+      "shigoto-budget-0.1.6": {
         "runtime_dependencies": [
           {
             "name": "serde",
@@ -10218,7 +10371,7 @@
           },
           {
             "name": "shigoto_types",
-            "package_key": "shigoto-types-0.1.3",
+            "package_key": "shigoto-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10240,7 +10393,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shigoto-dag-0.1.3": {
+      "shigoto-dag-0.1.6": {
         "runtime_dependencies": [
           {
             "name": "petgraph",
@@ -10266,7 +10419,7 @@
           },
           {
             "name": "shigoto_types",
-            "package_key": "shigoto-types-0.1.3",
+            "package_key": "shigoto-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10288,7 +10441,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shigoto-emit-0.1.3": {
+      "shigoto-emit-0.1.6": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -10324,7 +10477,7 @@
           },
           {
             "name": "shigoto_types",
-            "package_key": "shigoto-types-0.1.3",
+            "package_key": "shigoto-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10346,11 +10499,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "shigoto-gate-0.1.3": {
+      "shigoto-gate-0.1.6": {
         "runtime_dependencies": [
           {
             "name": "shigoto_dag",
-            "package_key": "shigoto-dag-0.1.3",
+            "package_key": "shigoto-dag-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10360,7 +10513,7 @@
           },
           {
             "name": "shigoto_types",
-            "package_key": "shigoto-types-0.1.3",
+            "package_key": "shigoto-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10372,7 +10525,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shigoto-retry-0.1.3": {
+      "shigoto-retry-0.1.6": {
         "runtime_dependencies": [
           {
             "name": "serde",
@@ -10388,7 +10541,7 @@
           },
           {
             "name": "shigoto_types",
-            "package_key": "shigoto-types-0.1.3",
+            "package_key": "shigoto-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10400,7 +10553,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shigoto-scheduler-0.1.3": {
+      "shigoto-scheduler-0.1.6": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -10436,7 +10589,7 @@
           },
           {
             "name": "shigoto_budget",
-            "package_key": "shigoto-budget-0.1.3",
+            "package_key": "shigoto-budget-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10446,7 +10599,7 @@
           },
           {
             "name": "shigoto_dag",
-            "package_key": "shigoto-dag-0.1.3",
+            "package_key": "shigoto-dag-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10456,7 +10609,7 @@
           },
           {
             "name": "shigoto_emit",
-            "package_key": "shigoto-emit-0.1.3",
+            "package_key": "shigoto-emit-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10466,7 +10619,7 @@
           },
           {
             "name": "shigoto_gate",
-            "package_key": "shigoto-gate-0.1.3",
+            "package_key": "shigoto-gate-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10476,7 +10629,7 @@
           },
           {
             "name": "shigoto_retry",
-            "package_key": "shigoto-retry-0.1.3",
+            "package_key": "shigoto-retry-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10486,7 +10639,7 @@
           },
           {
             "name": "shigoto_types",
-            "package_key": "shigoto-types-0.1.3",
+            "package_key": "shigoto-types-0.1.6",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10533,7 +10686,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shigoto-types-0.1.3": {
+      "shigoto-types-0.1.6": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -10544,6 +10697,16 @@
             "optional": false,
             "target": null,
             "tree": "host"
+          },
+          {
+            "name": "blake3",
+            "package_key": "blake3-1.8.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
           },
           {
             "name": "chrono",
@@ -10559,7 +10722,7 @@
           },
           {
             "name": "gen_platform",
-            "package_key": "gen-platform-0.1.6",
+            "package_key": "gen-platform-0.1.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10569,7 +10732,17 @@
           },
           {
             "name": "gen_types",
-            "package_key": "gen-types-0.1.6",
+            "package_key": "gen-types-0.1.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hex",
+            "package_key": "hex-0.4.3",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10663,7 +10836,7 @@
           },
           {
             "name": "gen_platform",
-            "package_key": "gen-platform-0.1.6",
+            "package_key": "gen-platform-0.1.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10673,7 +10846,7 @@
           },
           {
             "name": "gen_types",
-            "package_key": "gen-types-0.1.6",
+            "package_key": "gen-types-0.1.9",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -15994,11 +16167,11 @@
     "constant_time_eq-0.4.2": {
       "edition": "2024"
     },
-    "core-foundation-sys-0.8.7": {
-      "edition": "2018"
-    },
     "cpufeatures-0.2.17": {
       "edition": "2018"
+    },
+    "cpufeatures-0.3.0": {
+      "edition": "2024"
     },
     "crypto-common-0.1.7": {
       "edition": "2018"
@@ -16078,14 +16251,14 @@
     "futures-util-0.3.32": {
       "edition": "2018"
     },
-    "gen-macros-0.1.6": {
+    "gen-macros-0.1.9": {
       "edition": "2024",
       "proc_macro": true
     },
-    "gen-platform-0.1.6": {
+    "gen-platform-0.1.9": {
       "edition": "2024"
     },
-    "gen-types-0.1.6": {
+    "gen-types-0.1.9": {
       "edition": "2024"
     },
     "generic-array-0.14.7": {
@@ -16159,6 +16332,12 @@
     "inlinable_string-0.1.15": {
       "edition": "2018"
     },
+    "inotify-0.11.1": {
+      "edition": "2018"
+    },
+    "inotify-sys-0.1.5": {
+      "edition": "2015"
+    },
     "insta-1.47.2": {
       "edition": "2021"
     },
@@ -16175,12 +16354,6 @@
       "edition": "2021"
     },
     "jobserver-0.1.34": {
-      "edition": "2021"
-    },
-    "kqueue-1.1.1": {
-      "edition": "2021"
-    },
-    "kqueue-sys-1.1.2": {
       "edition": "2021"
     },
     "lava-arch-0.1.3": {
@@ -16214,62 +16387,68 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
+    "linux-raw-sys-0.4.15": {
+      "edition": "2021"
+    },
+    "linux-raw-sys-0.12.1": {
+      "edition": "2021"
+    },
     "lock_api-0.4.14": {
       "edition": "2021"
     },
     "log-0.4.30": {
       "edition": "2021"
     },
-    "magma-0.1.1": {
+    "magma-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma",
         "path": "src/lib.rs"
       }
     },
-    "magma-apply-0.1.1": {
+    "magma-apply-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_apply",
         "path": "src/lib.rs"
       }
     },
-    "magma-arch-test-0.1.1": {
+    "magma-arch-test-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_arch_test",
         "path": "src/lib.rs"
       }
     },
-    "magma-attest-0.1.1": {
+    "magma-attest-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_attest",
         "path": "src/lib.rs"
       }
     },
-    "magma-backend-0.1.1": {
+    "magma-backend-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_backend",
         "path": "src/lib.rs"
       }
     },
-    "magma-budget-0.1.1": {
+    "magma-budget-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_budget",
         "path": "src/lib.rs"
       }
     },
-    "magma-bundle-0.1.1": {
+    "magma-bundle-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_bundle",
         "path": "src/lib.rs"
       }
     },
-    "magma-cli-0.1.1": {
+    "magma-cli-0.1.4": {
       "edition": "2024",
       "binaries": [
         {
@@ -16279,62 +16458,65 @@
       ]
     },
     "magma-config-0.1.1": {
+      "edition": "2024"
+    },
+    "magma-config-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_config",
         "path": "src/lib.rs"
       }
     },
-    "magma-controller-0.1.1": {
+    "magma-controller-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_controller",
         "path": "src/lib.rs"
       }
     },
-    "magma-converge-0.1.1": {
+    "magma-converge-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_converge",
         "path": "src/lib.rs"
       }
     },
-    "magma-discover-0.1.1": {
+    "magma-discover-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_discover",
         "path": "src/lib.rs"
       }
     },
-    "magma-drift-0.1.1": {
+    "magma-drift-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_drift",
         "path": "src/lib.rs"
       }
     },
-    "magma-fixtures-0.1.1": {
+    "magma-fixtures-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_fixtures",
         "path": "src/lib.rs"
       }
     },
-    "magma-flow-0.1.1": {
+    "magma-flow-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_flow",
         "path": "src/lib.rs"
       }
     },
-    "magma-fsm-0.1.1": {
+    "magma-fsm-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_fsm",
         "path": "src/lib.rs"
       }
     },
-    "magma-graph-0.1.1": {
+    "magma-graph-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_graph",
@@ -16344,63 +16526,63 @@
     "magma-lava-0.2.4": {
       "edition": "2024"
     },
-    "magma-mcp-0.1.1": {
+    "magma-mcp-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_mcp",
         "path": "src/lib.rs"
       }
     },
-    "magma-metrics-0.1.1": {
+    "magma-metrics-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_metrics",
         "path": "src/lib.rs"
       }
     },
-    "magma-migrate-0.1.1": {
+    "magma-migrate-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_migrate",
         "path": "src/lib.rs"
       }
     },
-    "magma-nix-0.1.1": {
+    "magma-nix-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_nix",
         "path": "src/lib.rs"
       }
     },
-    "magma-operator-backend-0.1.1": {
+    "magma-operator-backend-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_operator_backend",
         "path": "src/lib.rs"
       }
     },
-    "magma-pangea-0.1.1": {
+    "magma-pangea-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_pangea",
         "path": "src/lib.rs"
       }
     },
-    "magma-plan-0.1.1": {
+    "magma-plan-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_plan",
         "path": "src/lib.rs"
       }
     },
-    "magma-plugin-0.1.1": {
+    "magma-plugin-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_plugin",
         "path": "src/lib.rs"
       }
     },
-    "magma-protocol-0.1.1": {
+    "magma-protocol-0.1.4": {
       "edition": "2024",
       "build_script": "build.rs",
       "lib_target": {
@@ -16408,63 +16590,63 @@
         "path": "src/lib.rs"
       }
     },
-    "magma-providers-0.1.1": {
+    "magma-providers-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_providers",
         "path": "src/lib.rs"
       }
     },
-    "magma-replay-0.1.1": {
+    "magma-replay-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_replay",
         "path": "src/lib.rs"
       }
     },
-    "magma-repo-0.1.1": {
+    "magma-repo-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_repo",
         "path": "src/lib.rs"
       }
     },
-    "magma-rubygems-0.1.1": {
+    "magma-rubygems-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_rubygems",
         "path": "src/lib.rs"
       }
     },
-    "magma-spec-0.1.1": {
+    "magma-spec-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_spec",
         "path": "src/lib.rs"
       }
     },
-    "magma-state-0.1.1": {
+    "magma-state-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_state",
         "path": "src/lib.rs"
       }
     },
-    "magma-stream-0.1.1": {
+    "magma-stream-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_stream",
         "path": "src/lib.rs"
       }
     },
-    "magma-tatara-0.1.1": {
+    "magma-tatara-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_tatara",
         "path": "src/lib.rs"
       }
     },
-    "magma-test-0.1.1": {
+    "magma-test-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_test",
@@ -16477,14 +16659,14 @@
         }
       ]
     },
-    "magma-test-laws-0.1.1": {
+    "magma-test-laws-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_test_laws",
         "path": "src/lib.rs"
       }
     },
-    "magma-tfmod-0.1.1": {
+    "magma-tfmod-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_tfmod",
@@ -16492,6 +16674,9 @@
       }
     },
     "magma-types-0.1.1": {
+      "edition": "2024"
+    },
+    "magma-types-0.1.4": {
       "edition": "2024",
       "lib_target": {
         "name": "magma_types",
@@ -16784,28 +16969,28 @@
     "sharded-slab-0.1.7": {
       "edition": "2018"
     },
-    "shigoto-0.1.3": {
+    "shigoto-0.1.6": {
       "edition": "2024"
     },
-    "shigoto-budget-0.1.3": {
+    "shigoto-budget-0.1.6": {
       "edition": "2024"
     },
-    "shigoto-dag-0.1.3": {
+    "shigoto-dag-0.1.6": {
       "edition": "2024"
     },
-    "shigoto-emit-0.1.3": {
+    "shigoto-emit-0.1.6": {
       "edition": "2024"
     },
-    "shigoto-gate-0.1.3": {
+    "shigoto-gate-0.1.6": {
       "edition": "2024"
     },
-    "shigoto-retry-0.1.3": {
+    "shigoto-retry-0.1.6": {
       "edition": "2024"
     },
-    "shigoto-scheduler-0.1.3": {
+    "shigoto-scheduler-0.1.6": {
       "edition": "2024"
     },
-    "shigoto-types-0.1.3": {
+    "shigoto-types-0.1.6": {
       "edition": "2024"
     },
     "shikumi-0.1.0": {
@@ -17030,26 +17215,20 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "cpufeatures-0.3.0": {
-      "edition": "2024"
-    },
-    "inotify-0.11.1": {
+    "core-foundation-sys-0.8.7": {
       "edition": "2018"
     },
-    "inotify-sys-0.1.5": {
-      "edition": "2015"
-    },
-    "linux-raw-sys-0.4.15": {
+    "kqueue-1.1.1": {
       "edition": "2021"
     },
-    "linux-raw-sys-0.12.1": {
+    "kqueue-sys-1.1.2": {
       "edition": "2021"
     }
   },
   "git_nar_sha256": {
-    "gen-macros-0.1.6": "sha256-vFH1p5Kdlop4JZIOsAWCi3NHKRU5an0uH0rkvDVEZPk=",
-    "gen-platform-0.1.6": "sha256-vFH1p5Kdlop4JZIOsAWCi3NHKRU5an0uH0rkvDVEZPk=",
-    "gen-types-0.1.6": "sha256-vFH1p5Kdlop4JZIOsAWCi3NHKRU5an0uH0rkvDVEZPk=",
+    "gen-macros-0.1.9": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
+    "gen-platform-0.1.9": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
+    "gen-types-0.1.9": "sha256-KkZmHxQBwz3Q4XNaJVLdl6TLLPiR+erMbGOrrvPRE0A=",
     "lava-arch-0.1.3": "sha256-DMSAZVMT4mv/dLpGPAO1lP/tVVpqs4JWySMWCdF49ZY=",
     "lava-architectures-0.1.14": "sha256-p1PArqZf+cv6MxRzWxSpcuGVmG52xPa+l4QBT0QGFXg=",
     "lava-contracts-0.1.2": "sha256-rchGLowuZEjO1YgNULlr+FTCFo8tcKE6qvVVYDRNyfI=",
@@ -17058,15 +17237,17 @@
     "lava-runtime-0.1.5": "sha256-zeyPoKprVCs3y5gG4Dsf4hxPscwBxCvvwv5gXD2psbw=",
     "lava-schema-0.1.4": "sha256-ED2KQfMTf9dJ0P67irdk+aCZ2vztlYFgWGfSqrz7tsY=",
     "lava-types-0.1.2": "sha256-nQ/LuOQx4QyFueiuo9pFmAwzyGnbcSns9PhZDf0duZ0=",
+    "magma-config-0.1.1": "sha256-0K/Duq7G4ttKYWQUvPkgkLiQZkmlVcMcoH6iDwZUHNQ=",
     "magma-lava-0.2.4": "sha256-YLFTsFStN9Ue3dtFjxGVuaRolywsO8kbF6O+DllKoRY=",
-    "shigoto-0.1.3": "sha256-KFxkD0nzcQS5eDj31QNICh9KXG9mqREAUd0h6UeAu28=",
-    "shigoto-budget-0.1.3": "sha256-KFxkD0nzcQS5eDj31QNICh9KXG9mqREAUd0h6UeAu28=",
-    "shigoto-dag-0.1.3": "sha256-KFxkD0nzcQS5eDj31QNICh9KXG9mqREAUd0h6UeAu28=",
-    "shigoto-emit-0.1.3": "sha256-KFxkD0nzcQS5eDj31QNICh9KXG9mqREAUd0h6UeAu28=",
-    "shigoto-gate-0.1.3": "sha256-KFxkD0nzcQS5eDj31QNICh9KXG9mqREAUd0h6UeAu28=",
-    "shigoto-retry-0.1.3": "sha256-KFxkD0nzcQS5eDj31QNICh9KXG9mqREAUd0h6UeAu28=",
-    "shigoto-scheduler-0.1.3": "sha256-KFxkD0nzcQS5eDj31QNICh9KXG9mqREAUd0h6UeAu28=",
-    "shigoto-types-0.1.3": "sha256-KFxkD0nzcQS5eDj31QNICh9KXG9mqREAUd0h6UeAu28=",
+    "magma-types-0.1.1": "sha256-0K/Duq7G4ttKYWQUvPkgkLiQZkmlVcMcoH6iDwZUHNQ=",
+    "shigoto-0.1.6": "sha256-6HLdhsuhlRpUeT7MFKPu4H8d484JOMnkEUbtvcmghU4=",
+    "shigoto-budget-0.1.6": "sha256-6HLdhsuhlRpUeT7MFKPu4H8d484JOMnkEUbtvcmghU4=",
+    "shigoto-dag-0.1.6": "sha256-6HLdhsuhlRpUeT7MFKPu4H8d484JOMnkEUbtvcmghU4=",
+    "shigoto-emit-0.1.6": "sha256-6HLdhsuhlRpUeT7MFKPu4H8d484JOMnkEUbtvcmghU4=",
+    "shigoto-gate-0.1.6": "sha256-6HLdhsuhlRpUeT7MFKPu4H8d484JOMnkEUbtvcmghU4=",
+    "shigoto-retry-0.1.6": "sha256-6HLdhsuhlRpUeT7MFKPu4H8d484JOMnkEUbtvcmghU4=",
+    "shigoto-scheduler-0.1.6": "sha256-6HLdhsuhlRpUeT7MFKPu4H8d484JOMnkEUbtvcmghU4=",
+    "shigoto-types-0.1.6": "sha256-6HLdhsuhlRpUeT7MFKPu4H8d484JOMnkEUbtvcmghU4=",
     "shikumi-0.1.0": "sha256-1hpQx6tu1Nc78XzxDTwVArW77AgpxIEp+6WzLslBbso="
   },
   "flake_metadata": {}
