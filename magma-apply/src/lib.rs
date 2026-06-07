@@ -147,67 +147,109 @@ pub async fn run_plan_via_providers(
     let mut configured: std::collections::HashSet<String> = std::collections::HashSet::new();
     let empty_cfg = serde_json::json!({});
 
-    for change in &plan.resource_changes {
-        match change.action {
-            Action::NoOp => applied.push(AppliedChange {
-                address: change.address.clone(),
-                action: Action::NoOp,
-                before: change.before.clone(),
-                after: change.after.clone(),
-            }),
-            Action::Create | Action::Read => {
-                let type_name = change.address.type_id.0.clone();
-                // Resource type prefix = local provider name (terraform
-                // convention): `github_repository` → `github`.
-                let local = type_name
-                    .split('_')
-                    .next()
-                    .unwrap_or(&type_name)
-                    .to_string();
-                // Config-declared source wins; heuristic is the fallback.
-                let source = provider_sources
-                    .get(&local)
-                    .cloned()
-                    .unwrap_or_else(|| default_provider_for(&change.address).source);
-                let provider_block = provider_configs
-                    .get(&local)
-                    .cloned()
-                    .unwrap_or_else(|| empty_cfg.clone());
-                let config = change.after.clone().unwrap_or_else(|| empty_cfg.clone());
-                let res = async {
-                    let conn = registry.connect(&source).await?;
-                    if configured.insert(source.clone()) {
-                        conn.configure(&provider_block).await?;
-                    }
-                    let planned = conn.plan_create(&type_name, &config).await?;
-                    conn.apply_create(&type_name, &planned, &config).await
-                }
-                .await;
-                match res {
-                    Ok(new_state) => {
-                        insert_resource(state, &change.address, new_state.clone());
+    // Provider-backed apply with interpolation resolution — the phase magma was
+    // missing (rendered `${data.cloudflare_accounts...}` / sibling-resource refs
+    // leaked verbatim to the provider RPC → Cloudflare 400 on rio-drive). Two
+    // ordered passes so every `${...}` resolves against an already-populated
+    // state map:
+    //   pass 1 — DATA SOURCES: `ReadDataSource` up front (account/zone discovery).
+    //   pass 2 — MANAGED resources, in plan order (the architecture declares
+    //            producers before consumers, so refs to data sources + earlier
+    //            resources resolve against the growing state).
+    for data_phase in [true, false] {
+        for change in &plan.resource_changes {
+            let is_data = change.address.kind == ResourceKind::Data;
+            if is_data != data_phase {
+                continue;
+            }
+            match change.action {
+                Action::NoOp => {
+                    if !data_phase {
                         applied.push(AppliedChange {
                             address: change.address.clone(),
-                            action: change.action,
-                            before: None,
-                            after: Some(new_state),
+                            action: Action::NoOp,
+                            before: change.before.clone(),
+                            after: change.after.clone(),
                         });
                     }
-                    Err(e) => failed.push(FailedChange {
-                        address: change.address.clone(),
-                        action: change.action,
-                        reason: e.to_string(),
-                    }),
+                }
+                Action::Create | Action::Read => {
+                    let type_name = change.address.type_id.0.clone();
+                    // Resource type prefix = local provider name (terraform
+                    // convention): `github_repository` → `github`.
+                    let local = type_name
+                        .split('_')
+                        .next()
+                        .unwrap_or(&type_name)
+                        .to_string();
+                    // Config-declared source wins; heuristic is the fallback.
+                    let source = provider_sources
+                        .get(&local)
+                        .cloned()
+                        .unwrap_or_else(|| default_provider_for(&change.address).source);
+                    let provider_block = provider_configs
+                        .get(&local)
+                        .cloned()
+                        .unwrap_or_else(|| empty_cfg.clone());
+                    // Resolve every `${...}` against the state map (data sources
+                    // read in pass 1 + resources applied earlier in pass 2).
+                    // Unresolved → typed FailedChange, never leaked to the RPC.
+                    let raw = change.after.clone().unwrap_or_else(|| empty_cfg.clone());
+                    let state_map = build_state_map(state);
+                    let config = match magma_config::resolve_config(&raw, &state_map) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            failed.push(FailedChange {
+                                address: change.address.clone(),
+                                action: change.action,
+                                reason: format!("interpolation resolution failed: {e}"),
+                            });
+                            continue;
+                        }
+                    };
+                    let res = async {
+                        let conn = registry.connect(&source).await?;
+                        if configured.insert(source.clone()) {
+                            conn.configure(&provider_block).await?;
+                        }
+                        if is_data {
+                            conn.read_data_source(&type_name, &config).await
+                        } else {
+                            let planned = conn.plan_create(&type_name, &config).await?;
+                            conn.apply_create(&type_name, &planned, &config).await
+                        }
+                    }
+                    .await;
+                    match res {
+                        Ok(new_state) => {
+                            insert_resource(state, &change.address, new_state.clone());
+                            applied.push(AppliedChange {
+                                address: change.address.clone(),
+                                action: change.action,
+                                before: None,
+                                after: Some(new_state),
+                            });
+                        }
+                        Err(e) => failed.push(FailedChange {
+                            address: change.address.clone(),
+                            action: change.action,
+                            reason: e.to_string(),
+                        }),
+                    }
+                }
+                other => {
+                    if !data_phase {
+                        failed.push(FailedChange {
+                            address: change.address.clone(),
+                            action: other,
+                            reason: format!(
+                                "provider-backed `{other:?}` not yet wired in run_plan_via_providers \
+                                 (Create is; delete/update land next)"
+                            ),
+                        });
+                    }
                 }
             }
-            other => failed.push(FailedChange {
-                address: change.address.clone(),
-                action: other,
-                reason: format!(
-                    "provider-backed `{other:?}` not yet wired in run_plan_via_providers \
-                     (Create is; delete/update land next)"
-                ),
-            }),
         }
     }
 
@@ -309,6 +351,46 @@ fn insert_resource(state: &mut State, address: &ResourceAddress, attributes: ser
             status: InstanceStatus::Ready,
         }],
     });
+}
+
+/// Build the nested state map `magma_config::resolve_config` resolves against,
+/// from the accumulated apply State. Managed resources key by their Terraform
+/// type (`${cloudflare_zero_trust_tunnel_cloudflared.rio.id}`); data sources
+/// nest under a `data` head (`${data.cloudflare_zones.z.result[0].id}`) —
+/// matching Terraform's reference grammar + Pangea's ReferenceGenerator output.
+fn build_state_map(state: &State) -> std::collections::HashMap<String, serde_json::Value> {
+    use serde_json::{Map, Value};
+    let mut map: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    for res in &state.resources {
+        let Some(inst) = res.instances.first() else {
+            continue;
+        };
+        let type_name = res.address.type_id.0.clone();
+        let name = res.address.name.clone();
+        let attrs = inst.attributes.clone();
+        if res.address.kind == ResourceKind::Data {
+            // ${data.<type>.<name>.<attr>}
+            if let Value::Object(d) = map
+                .entry("data".to_string())
+                .or_insert_with(|| Value::Object(Map::new()))
+            {
+                if let Value::Object(t) =
+                    d.entry(type_name).or_insert_with(|| Value::Object(Map::new()))
+                {
+                    t.insert(name, attrs);
+                }
+            }
+        } else {
+            // ${<type>.<name>.<attr>}
+            if let Value::Object(t) = map
+                .entry(type_name)
+                .or_insert_with(|| Value::Object(Map::new()))
+            {
+                t.insert(name, attrs);
+            }
+        }
+    }
+    map
 }
 
 fn remove_resource(state: &mut State, address: &ResourceAddress) {

@@ -456,6 +456,59 @@ impl ProviderConn {
         }
     }
 
+    /// `ReadDataSource` — evaluate a Terraform `data` block (e.g.
+    /// `data.cloudflare_zones`) by querying the provider, returning its result
+    /// state as a `Value`. magma previously never called this, so `${data.*}`
+    /// references leaked unresolved into managed-resource RPCs (the rio-drive
+    /// Cloudflare 400 on `account_id = "${data.cloudflare_accounts...}"`). With
+    /// this, the apply engine can read data sources up front + populate the
+    /// state map that `magma_config::resolve_config` resolves against.
+    pub async fn read_data_source(
+        &self,
+        type_name: &str,
+        config: &Value,
+    ) -> Result<Value, ProviderError> {
+        let json = to_json_bytes(config)?;
+        match self.protocol {
+            PluginProtocol::V5 => {
+                let mut c = self.v5();
+                let resp = c
+                    .read_data_source(tfplugin5::read_data_source::Request {
+                        type_name: type_name.to_string(),
+                        config: Some(tfplugin5::DynamicValue {
+                            msgpack: vec![],
+                            json,
+                        }),
+                        provider_meta: None,
+                        client_capabilities: None,
+                    })
+                    .await
+                    .map_err(|s| ProviderError::Rpc {
+                        rpc: "read_data_source",
+                        status: s.to_string(),
+                    })?
+                    .into_inner();
+                check_v5_diags("read_data_source", &resp.diagnostics)?;
+                let state = resp.state.ok_or(ProviderError::EmptyResponse {
+                    rpc: "read_data_source",
+                    what: "state",
+                })?;
+                if !state.msgpack.is_empty() {
+                    decode_dynamic_value_msgpack(&state.msgpack)
+                } else if !state.json.is_empty() {
+                    serde_json::from_slice(&state.json)
+                        .map_err(|e| ProviderError::Decode(e.to_string()))
+                } else {
+                    Err(ProviderError::EmptyResponse {
+                        rpc: "read_data_source",
+                        what: "state payload",
+                    })
+                }
+            }
+            other => Err(ProviderError::UnsupportedProtocol(other)),
+        }
+    }
+
     fn v5(&self) -> tfplugin5::provider_client::ProviderClient<Channel> {
         tfplugin5::provider_client::ProviderClient::new(self.channel.clone())
     }
