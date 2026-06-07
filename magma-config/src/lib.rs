@@ -200,19 +200,139 @@ pub fn resolve_reference(
         .next()
         .ok_or_else(|| ConfigError::Malformed(format!("empty reference: {reference:?}")))?;
 
+    // The head segment may itself carry an index (rare, but uniform).
+    let (head_key, head_idx) = parse_segment(head);
     let mut current = state
-        .get(head)
+        .get(head_key)
         .cloned()
         .ok_or_else(|| ConfigError::UnknownReference(reference.to_string()))?;
+    if let Some(i) = head_idx {
+        current = index_into(&current, i, reference)?;
+    }
 
     for part in parts {
+        // Each segment is `IDENT` or `IDENT[index]` (the documented grammar).
+        // The old impl only did `get(part)`, so it could not navigate the
+        // `.result[0].id` shape Pangea's cloudflare_* data sources emit
+        // (e.g. ${data.cloudflare_zones.X.result[0].id}) — the literal
+        // string then leaked to the provider RPC. Parse the optional index.
+        let (key, idx) = parse_segment(part);
         current = current
-            .get(part)
+            .get(key)
             .cloned()
             .ok_or_else(|| ConfigError::UnknownReference(reference.to_string()))?;
+        if let Some(i) = idx {
+            current = index_into(&current, i, reference)?;
+        }
     }
 
     Ok(current)
+}
+
+/// Split a path segment into its identifier and an optional `[index]`.
+/// `"result[0]"` → `("result", Some(0))`; `"id"` → `("id", None)`.
+/// A malformed/non-numeric index degrades to no-index (the subsequent
+/// `get` then fails with a clean UnknownReference rather than panicking).
+fn parse_segment(seg: &str) -> (&str, Option<usize>) {
+    match seg.split_once('[') {
+        Some((ident, rest)) => {
+            let idx = rest.strip_suffix(']').and_then(|n| n.trim().parse::<usize>().ok());
+            (ident, idx)
+        }
+        None => (seg, None),
+    }
+}
+
+/// Index into a JSON array; error (never panic) if `value` is not an array
+/// or the index is out of bounds.
+fn index_into(
+    value: &serde_json::Value,
+    idx: usize,
+    reference: &str,
+) -> Result<serde_json::Value, ConfigError> {
+    value
+        .get(idx)
+        .cloned()
+        .ok_or_else(|| ConfigError::UnknownReference(reference.to_string()))
+}
+
+/// Recursively resolve every Terraform interpolation in a resource config
+/// against `state`, returning the fully-concrete config to hand to a provider
+/// RPC. This is the step magma was missing: the rendered config arrives with
+/// literal `${...}` strings (e.g. account_id = "${data.cloudflare_accounts...}")
+/// which the provider cannot accept (Cloudflare 400). Walk the JSON tree:
+///   - a string that is EXACTLY one reference (`"${...}"`) → replaced by the
+///     resolved value, preserving its JSON type (id stays a string, a count
+///     stays a number, etc.);
+///   - a string with an EMBEDDED reference (`"x-${...}-y"`) → each reference
+///     substituted by its stringified resolved value;
+///   - arrays/objects recurse; scalars pass through.
+/// An unresolved reference is an error (surfaced, never silently leaked).
+pub fn resolve_config(
+    value: &serde_json::Value,
+    state: &HashMap<String, serde_json::Value>,
+) -> Result<serde_json::Value, ConfigError> {
+    use serde_json::Value;
+    match value {
+        Value::String(s) => resolve_string(s, state),
+        Value::Array(items) => {
+            let resolved: Result<Vec<_>, _> =
+                items.iter().map(|v| resolve_config(v, state)).collect();
+            Ok(Value::Array(resolved?))
+        }
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                out.insert(k.clone(), resolve_config(v, state)?);
+            }
+            Ok(Value::Object(out))
+        }
+        other => Ok(other.clone()),
+    }
+}
+
+/// `true` if the string contains a `${...}` interpolation.
+fn has_interpolation(s: &str) -> bool {
+    s.contains("${")
+}
+
+/// `true` if the whole string is exactly one `${...}` reference (no surrounding
+/// text), so the resolved value's JSON type is preserved.
+fn is_whole_reference(s: &str) -> bool {
+    let t = s.trim();
+    t.starts_with("${") && t.ends_with('}') && t[2..].find("${").is_none()
+}
+
+fn resolve_string(
+    s: &str,
+    state: &HashMap<String, serde_json::Value>,
+) -> Result<serde_json::Value, ConfigError> {
+    if !has_interpolation(s) {
+        return Ok(serde_json::Value::String(s.to_string()));
+    }
+    if is_whole_reference(s) {
+        return resolve_reference(s.trim(), state);
+    }
+    // Embedded interpolation(s) inside a larger string → string substitution.
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        let end = after
+            .find('}')
+            .ok_or_else(|| ConfigError::Malformed(format!("unterminated interpolation: {s:?}")))?;
+        let reference = &after[..=end];
+        let resolved = resolve_reference(reference, state)?;
+        // Stringify the resolved value for embedding (strip quotes for strings).
+        match resolved {
+            serde_json::Value::String(v) => out.push_str(&v),
+            other => out.push_str(&other.to_string()),
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(serde_json::Value::String(out))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -278,5 +398,88 @@ mod tests {
         let state = HashMap::new();
         let err = resolve_reference("${aws_vpc.missing.id}", &state).unwrap_err();
         assert!(matches!(err, ConfigError::UnknownReference(_)));
+    }
+
+    #[test]
+    fn resolve_indexed_data_source_reference() {
+        // The exact grammar the Pangea CloudflareTunnel architecture emits
+        // (rio-drive): a data-source result navigated by list index. The old
+        // impl could not parse `result[0]` and leaked the literal `${...}` to
+        // the provider → Cloudflare 400.
+        let mut state = HashMap::new();
+        state.insert(
+            "data".to_string(),
+            json!({
+                "cloudflare_zones": { "rio_drive_zone": { "result": [ { "id": "zone-abc" } ] } },
+                "cloudflare_accounts": { "rio_drive_account": { "result": [ { "id": "acct-xyz" } ] } }
+            }),
+        );
+        assert_eq!(
+            resolve_reference("${data.cloudflare_zones.rio_drive_zone.result[0].id}", &state).unwrap(),
+            json!("zone-abc"),
+        );
+        assert_eq!(
+            resolve_reference("${data.cloudflare_accounts.rio_drive_account.result[0].id}", &state).unwrap(),
+            json!("acct-xyz"),
+        );
+    }
+
+    #[test]
+    fn resolve_index_out_of_bounds_errs() {
+        let mut state = HashMap::new();
+        state.insert("data".to_string(), json!({ "x": { "y": { "result": [] } } }));
+        let err = resolve_reference("${data.x.y.result[0].id}", &state).unwrap_err();
+        assert!(matches!(err, ConfigError::UnknownReference(_)));
+    }
+
+    #[test]
+    fn resolve_managed_resource_id_reference() {
+        // The tunnel-config references the tunnel's id (sibling managed
+        // resource) — same path machinery, no index.
+        let mut state = HashMap::new();
+        state.insert(
+            "cloudflare_zero_trust_tunnel_cloudflared".to_string(),
+            json!({ "rio": { "id": "tunnel-123" } }),
+        );
+        assert_eq!(
+            resolve_reference("${cloudflare_zero_trust_tunnel_cloudflared.rio.id}", &state).unwrap(),
+            json!("tunnel-123"),
+        );
+    }
+
+    #[test]
+    fn resolve_config_walks_rio_drive_shaped_resource() {
+        // A config shaped like the rio-drive CloudflareTunnel resources: a
+        // whole-reference account_id/zone_id (must stay strings), a sibling
+        // tunnel-id whole-reference, a nested ingress array (plain strings),
+        // and an embedded interpolation in a hostname. resolve_config must
+        // produce a fully-concrete config with zero `${...}` left.
+        let mut state = HashMap::new();
+        state.insert(
+            "data".to_string(),
+            json!({
+                "cloudflare_accounts": { "a": { "result": [ { "id": "acct-xyz" } ] } },
+                "cloudflare_zones": { "z": { "result": [ { "id": "zone-abc" } ] } }
+            }),
+        );
+        state.insert(
+            "cloudflare_zero_trust_tunnel_cloudflared".to_string(),
+            json!({ "rio": { "id": "tun-1" } }),
+        );
+        let cfg = json!({
+            "account_id": "${data.cloudflare_accounts.a.result[0].id}",
+            "zone_id":    "${data.cloudflare_zones.z.result[0].id}",
+            "tunnel_id":  "${cloudflare_zero_trust_tunnel_cloudflared.rio.id}",
+            "name":       "tunnel-${cloudflare_zero_trust_tunnel_cloudflared.rio.id}-cfg",
+            "ingress":    [ { "hostname": "drive.bristol.quero.cloud" } ]
+        });
+        let resolved = resolve_config(&cfg, &state).unwrap();
+        assert_eq!(resolved["account_id"], json!("acct-xyz"));
+        assert_eq!(resolved["zone_id"], json!("zone-abc"));
+        assert_eq!(resolved["tunnel_id"], json!("tun-1"));
+        assert_eq!(resolved["name"], json!("tunnel-tun-1-cfg")); // embedded substitution
+        assert_eq!(resolved["ingress"][0]["hostname"], json!("drive.bristol.quero.cloud"));
+        // No interpolation must survive anywhere.
+        assert!(!resolved.to_string().contains("${"));
     }
 }
