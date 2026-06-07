@@ -48,11 +48,19 @@ pub struct ProviderConn {
 pub struct ProviderSchema {
     pub provider_config: CtyType,
     pub resources: BTreeMap<String, CtyType>,
+    /// Data-source implied types (`data.<type>`), needed to encode a
+    /// ReadDataSource config + decode its result. Without these the apply
+    /// engine cannot evaluate `${data.*}` references (the rio-drive leak).
+    pub data_sources: BTreeMap<String, CtyType>,
 }
 
 impl ProviderSchema {
     pub fn resource(&self, type_name: &str) -> Option<&CtyType> {
         self.resources.get(type_name)
+    }
+
+    pub fn data_source(&self, type_name: &str) -> Option<&CtyType> {
+        self.data_sources.get(type_name)
     }
 }
 
@@ -169,9 +177,16 @@ impl ProviderConn {
                         resources.insert(name, schema::block_implied_type(&b)?);
                     }
                 }
+                let mut data_sources = BTreeMap::new();
+                for (name, sch) in resp.data_source_schemas {
+                    if let Some(b) = sch.block {
+                        data_sources.insert(name, schema::block_implied_type(&b)?);
+                    }
+                }
                 Ok(ProviderSchema {
                     provider_config,
                     resources,
+                    data_sources,
                 })
             }
             Client::V5(c) => {
@@ -191,9 +206,16 @@ impl ProviderConn {
                         resources.insert(name, schema::block5_implied_type(&b)?);
                     }
                 }
+                let mut data_sources = BTreeMap::new();
+                for (name, sch) in resp.data_source_schemas {
+                    if let Some(b) = sch.block {
+                        data_sources.insert(name, schema::block5_implied_type(&b)?);
+                    }
+                }
                 Ok(ProviderSchema {
                     provider_config,
                     resources,
+                    data_sources,
                 })
             }
         }
@@ -361,6 +383,46 @@ impl ProviderConn {
                     .into_inner();
                 check_diags(resp.diagnostics.iter().map(diag5))?;
                 Ok(resp.new_state.map(from_pb5).filter(|d| !d.is_null()))
+            }
+        }
+    }
+
+    /// `ReadDataSource` — evaluate a `data` block by querying the provider,
+    /// returning its result state. The apply engine reads data sources up front
+    /// so `${data.<type>.<name>.<attr>}` references resolve; without it those
+    /// strings leaked verbatim to managed-resource RPCs (the rio-drive
+    /// Cloudflare 400). `Ok(None)` if the provider returned cty-null.
+    pub async fn read_data_source(
+        &mut self,
+        type_name: &str,
+        config: &DynamicValue,
+    ) -> Result<Option<DynamicValue>, ProviderError> {
+        match &mut self.client {
+            Client::V6(c) => {
+                let resp = c
+                    .read_data_source(tfplugin6::read_data_source::Request {
+                        type_name: type_name.to_string(),
+                        config: Some(to_pb6(config)),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(transport)?
+                    .into_inner();
+                check_diags(resp.diagnostics.iter().map(diag6))?;
+                Ok(resp.state.map(from_pb6).filter(|d| !d.is_null()))
+            }
+            Client::V5(c) => {
+                let resp = c
+                    .read_data_source(tfplugin5::read_data_source::Request {
+                        type_name: type_name.to_string(),
+                        config: Some(to_pb5(config)),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(transport)?
+                    .into_inner();
+                check_diags(resp.diagnostics.iter().map(diag5))?;
+                Ok(resp.state.map(from_pb5).filter(|d| !d.is_null()))
             }
         }
     }

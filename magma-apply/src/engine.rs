@@ -25,7 +25,8 @@ use magma_graph::ResourceGraph;
 use magma_plugin::provider::{ProviderConn, ProviderSchema, is_retryable};
 use magma_plugin::{Plugin, PluginSpec};
 use magma_types::{
-    Action, Plan, ResourceAddress, ResourceChange, State, StateInstance, StateResource,
+    Action, Plan, ResourceAddress, ResourceChange, ResourceKind, State, StateInstance,
+    StateResource,
 };
 
 use crate::{AppliedChange, ApplyOutcome, FailedChange, insert_resource, remove_resource};
@@ -284,14 +285,45 @@ pub async fn run_plan_with_providers(
     // NoOp (matched) changes pass through with no provider call and no
     // ordering; real changes (Create/Update/Delete/…) get dependency-ordered
     // + reference-substituted apply below.
-    let (noops, reals): (Vec<&ResourceChange>, Vec<&ResourceChange>) = plan
+    let (noops, rest): (Vec<&ResourceChange>, Vec<&ResourceChange>) = plan
         .resource_changes
         .iter()
         .partition(|c| c.action == Action::NoOp);
+    // Data sources are evaluated up front (ReadDataSource) so their results
+    // populate the resolution map under `data.<type>.<name>` BEFORE any managed
+    // resource that references them is applied. Without this the `${data.*}`
+    // strings leaked verbatim into the provider RPC (the rio-drive 400).
+    let (datas, reals): (Vec<&ResourceChange>, Vec<&ResourceChange>) = rest
+        .into_iter()
+        .partition(|c| c.address.kind == ResourceKind::Data);
 
     for change in noops {
         match apply_one(change, state, &mut registry).await {
             Ok(a) => applied.push(a),
+            Err(e) => failed.push(mkfail(change, e)),
+        }
+    }
+
+    // Read each data source + fold its result into state_map under the `data`
+    // head, so `${data.<type>.<name>.<attr>}` references resolve in the managed
+    // pass below. (Data sources are not graph-ordered — they have no computed
+    // deps on managed resources; ref_target deliberately returns None for them.)
+    for change in &datas {
+        // Resolve any refs in the data-source config first (usually literal).
+        let mut resolved = (*change).clone();
+        if let Some(after) = resolved.after.as_mut() {
+            substitute_refs(after, &state_map);
+        }
+        match read_data_source_one(&resolved, &mut registry).await {
+            Ok(result) => {
+                sm_insert_data(&mut state_map, &change.address, &result);
+                applied.push(AppliedChange {
+                    address: change.address.clone(),
+                    action: change.action,
+                    before: None,
+                    after: Some(result),
+                });
+            }
             Err(e) => failed.push(mkfail(change, e)),
         }
     }
@@ -976,6 +1008,64 @@ fn sm_insert(
     }
 }
 
+/// Insert a data-source result under the `data` head, so a reference like
+/// `${data.cloudflare_zones.z.result[0].id}` (head = `data`) resolves — distinct
+/// from `sm_insert`'s `type → name` shape for managed resources.
+fn sm_insert_data(
+    sm: &mut HashMap<String, serde_json::Value>,
+    addr: &ResourceAddress,
+    attrs: &serde_json::Value,
+) {
+    let data = sm
+        .entry("data".to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let serde_json::Value::Object(by_type) = data {
+        let t = by_type
+            .entry(addr.type_id.0.clone())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let serde_json::Value::Object(by_name) = t {
+            by_name.insert(addr.name.clone(), attrs.clone());
+        }
+    }
+}
+
+/// Evaluate one data source: encode its config against the DATA-SOURCE schema,
+/// call `ReadDataSource`, decode the result to JSON (for `sm_insert_data`).
+async fn read_data_source_one(
+    change: &ResourceChange,
+    reg: &mut Registry<'_>,
+) -> Result<serde_json::Value, EngineError> {
+    let pacer = reg.ctx.pacer.clone();
+    if let Some(p) = pacer.as_deref() {
+        let _ = p.acquire().await;
+    }
+    let type_name = change.address.type_id.0.clone();
+    let provider_name = provider_local_name(&type_name);
+    let lp = reg.get(&provider_name).await?;
+    let implied = lp
+        .schema
+        .data_source(&type_name)
+        .ok_or_else(|| EngineError::NoResourceSchema(type_name.clone(), provider_name.clone()))?
+        .clone();
+    let config_json = change.after.clone().unwrap_or(serde_json::Value::Null);
+    let config_dv = DynamicValue::from_json(&config_json, &implied)
+        .map_err(|e| EngineError::Cty(e.to_string()))?;
+    let state_dv = lp
+        .conn
+        .read_data_source(&type_name, &config_dv)
+        .await
+        .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?
+        .ok_or_else(|| {
+            EngineError::Rpc(
+                provider_name.clone(),
+                format!("data source {type_name} returned null state"),
+            )
+        })?;
+    state_dv
+        .to_json(&implied)
+        .map_err(|e| EngineError::Cty(e.to_string()))
+}
+
 /// Collect every `${…}` reference path (inner, no wrapper) found anywhere in
 /// a config value.
 fn collect_refs(v: &serde_json::Value) -> Vec<String> {
@@ -1157,6 +1247,59 @@ mod tests {
         let mut dangling = json!({ "x": "${github_repository.ghost.id}" });
         substitute_refs(&mut dangling, &sm);
         assert_eq!(dangling["x"], json!("${github_repository.ghost.id}"));
+    }
+
+    #[test]
+    fn data_source_reference_resolution() {
+        use magma_types::{ModulePath, ResourceKind, ResourceTypeId};
+        use serde_json::json;
+        // This is the rio-drive Cloudflare bug, captured as a unit test: a
+        // managed resource references a `data` source result by index, e.g.
+        // `${data.cloudflare_zones.quero.result[0].id}`. Before the data-source
+        // read pass + `data` head insert, that string leaked verbatim into the
+        // provider RPC → Cloudflare 400. It must now resolve.
+        let mut sm: HashMap<String, serde_json::Value> = HashMap::new();
+
+        // sm_insert_data folds a ReadDataSource result under the `data` head.
+        let zones_addr = ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Data,
+            type_id: ResourceTypeId("cloudflare_zones".into()),
+            name: "quero".into(),
+            key: None,
+        };
+        sm_insert_data(
+            &mut sm,
+            &zones_addr,
+            &json!({ "result": [ { "id": "0da42c8d2132a9ddaf714f9e7c920711", "name": "quero.cloud" } ] }),
+        );
+        let acct_addr = ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Data,
+            type_id: ResourceTypeId("cloudflare_accounts".into()),
+            name: "main".into(),
+            key: None,
+        };
+        sm_insert_data(
+            &mut sm,
+            &acct_addr,
+            &json!({ "result": [ { "id": "acct-9f3" } ] }),
+        );
+
+        // ref_target keeps returning None for data refs (they're read up front,
+        // never graph-ordered against managed resources).
+        assert_eq!(ref_target("data.cloudflare_zones.quero.result[0].id"), None);
+
+        // A managed tunnel config referencing both data sources, indexed.
+        let mut after = json!({
+            "zone_id": "${data.cloudflare_zones.quero.result[0].id}",
+            "account_id": "${data.cloudflare_accounts.main.result[0].id}",
+            "comment": "tunnel for ${data.cloudflare_zones.quero.result[0].name}",
+        });
+        substitute_refs(&mut after, &sm);
+        assert_eq!(after["zone_id"], json!("0da42c8d2132a9ddaf714f9e7c920711"));
+        assert_eq!(after["account_id"], json!("acct-9f3"));
+        assert_eq!(after["comment"], json!("tunnel for quero.cloud"));
     }
 
     #[test]
