@@ -188,9 +188,46 @@ impl Provider for MockProvider {
 
     async fn import_resource_state(
         &self,
-        _req: Request<tfplugin6::import_resource_state::Request>,
+        req: Request<tfplugin6::import_resource_state::Request>,
     ) -> Result<Response<tfplugin6::import_resource_state::Response>, Status> {
-        Err(Status::unimplemented("mock: import_resource_state"))
+        // Exercise the real client → prepass → absorb flow. The mock
+        // adopts ANY (type_name, id) by returning a canned state whose
+        // attributes echo the requested id — exactly what a real
+        // provider's ImportResourceState does for a resource that
+        // exists. A sentinel id of "missing" yields an ERROR
+        // diagnostic so the per-resource-failure-isolation law can be
+        // exercised against the real wire path.
+        let r = req.into_inner();
+        if r.id == "missing" {
+            return Ok(Response::new(tfplugin6::import_resource_state::Response {
+                imported_resources: vec![],
+                diagnostics: vec![tfplugin6::Diagnostic {
+                    severity: tfplugin6::diagnostic::Severity::Error as i32,
+                    summary: "resource not found".into(),
+                    detail: format!("mock: no resource with id {:?}", r.id),
+                    attribute: None,
+                }],
+                deferred: None,
+            }));
+        }
+        let state_json = serde_json::json!({
+            "id":   r.id,
+            "name": r.id,
+            "imported_by": "mock_provider",
+        });
+        Ok(Response::new(tfplugin6::import_resource_state::Response {
+            imported_resources: vec![tfplugin6::import_resource_state::ImportedResource {
+                type_name: r.type_name,
+                state: Some(tfplugin6::DynamicValue {
+                    msgpack: vec![],
+                    json: serde_json::to_vec(&state_json).unwrap_or_default(),
+                }),
+                private: vec![],
+                identity: None,
+            }],
+            diagnostics: vec![],
+            deferred: None,
+        }))
     }
 
     async fn move_resource_state(

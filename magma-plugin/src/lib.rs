@@ -45,10 +45,18 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tonic::transport::{Channel, Endpoint};
+pub use tonic::transport::Channel;
+use tonic::transport::Endpoint;
 use tracing::{debug, warn};
 
 use magma_protocol::PluginProtocol;
+
+// The dialed gRPC `Channel` is re-exported (see the `pub use
+// tonic::transport::Channel` above) so downstream crates (magma-apply's
+// import prepass) can name the dialed-channel handle without taking a
+// direct dependency on tonic + its TLS closure.
+pub mod import;
+pub use import::import_resource_state;
 
 /// Install the rustls process-default `CryptoProvider`. Required
 /// before any rustls operation in 0.23 — the ring feature flag alone
@@ -151,6 +159,16 @@ pub enum PluginError {
     Io(#[from] std::io::Error),
     #[error("tls / cert error: {0}")]
     Tls(String),
+    #[error("ImportResourceState RPC error: {0}")]
+    ImportRpc(String),
+    #[error("provider rejected import of {type_name} (id {id:?}): {reason}")]
+    ImportRejected {
+        type_name: String,
+        id: String,
+        reason: String,
+    },
+    #[error("imported-state decode error: {0}")]
+    ImportDecode(String),
 }
 
 // ── Parent identity (cert + key for mTLS) ──────────────────────────

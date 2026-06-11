@@ -11,13 +11,12 @@
 //! values handle that via magma's existing serde plumbing; the
 //! catalog reflection is for inventory + discovery.
 
-use gen_platform::{catalog, TypedDispatcherTrait};
+use gen_platform::{TypedDispatcherTrait, catalog};
 use magma_types::{Action, ResourceKind};
 
 #[test]
 fn resource_kind_registers() {
-    let entry =
-        catalog::by_label("magma.resource-kind").expect("ResourceKind must register");
+    let entry = catalog::by_label("magma.resource-kind").expect("ResourceKind must register");
     assert_eq!((entry.variant_count)(), 5);
 }
 
@@ -30,7 +29,10 @@ fn action_registers() {
 #[test]
 fn resource_kind_variants() {
     let kinds = ResourceKind::variant_kinds();
-    assert_eq!(kinds, vec!["managed", "data", "output", "local", "variable"]);
+    assert_eq!(
+        kinds,
+        vec!["managed", "data", "output", "local", "variable"]
+    );
 }
 
 #[test]
@@ -58,8 +60,14 @@ fn action_discriminant_snake_case() {
     // serde wire format, even though variant_kinds() (TypedDispatcher)
     // emits the canonical kebab form.
     assert_eq!(Action::NoOp.discriminant(), "no_op");
-    assert_eq!(Action::CreateThenDelete.discriminant(), "create_then_delete");
-    assert_eq!(Action::DeleteThenCreate.discriminant(), "delete_then_create");
+    assert_eq!(
+        Action::CreateThenDelete.discriminant(),
+        "create_then_delete"
+    );
+    assert_eq!(
+        Action::DeleteThenCreate.discriminant(),
+        "delete_then_create"
+    );
     assert_eq!(Action::Create.discriminant(), "create");
 }
 
@@ -100,9 +108,8 @@ fn resource_kind_round_trip() {
         ResourceKind::Variable,
     ] {
         let kind = variant.discriminant();
-        let parsed = ResourceKind::from_str(kind).unwrap_or_else(|_| {
-            panic!("ResourceKind::from_str must accept {kind}")
-        });
+        let parsed = ResourceKind::from_str(kind)
+            .unwrap_or_else(|_| panic!("ResourceKind::from_str must accept {kind}"));
         assert_eq!(parsed.discriminant(), variant.discriminant());
     }
 }

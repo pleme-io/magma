@@ -44,11 +44,20 @@ impl ModulePath {
 }
 
 /// The kind of resource a `ResourceAddress` identifies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
-         gen_platform::TypedDispatcher,
-         gen_platform::Discriminant,
-         gen_platform::IsVariant,
-         gen_platform::FromStrKind)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    gen_platform::TypedDispatcher,
+    gen_platform::Discriminant,
+    gen_platform::IsVariant,
+    gen_platform::FromStrKind,
+)]
 #[serde(rename_all = "snake_case")]
 #[discriminant(case = "snake", also_display)]
 #[from_str_kind(case = "snake")]
@@ -128,7 +137,14 @@ pub struct NestedBlock {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
     gen_platform::Discriminant,
     gen_platform::IsVariant,
 )]
@@ -196,11 +212,20 @@ pub struct OutputChange {
     pub sensitive: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
-         gen_platform::TypedDispatcher,
-         gen_platform::Discriminant,
-         gen_platform::IsVariant,
-         gen_platform::FromStrKind)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    gen_platform::TypedDispatcher,
+    gen_platform::Discriminant,
+    gen_platform::IsVariant,
+    gen_platform::FromStrKind,
+)]
 #[serde(rename_all = "snake_case")]
 #[discriminant(case = "snake", also_display)]
 #[from_str_kind(case = "snake")]
@@ -221,10 +246,15 @@ pub enum Action {
 // typed-dispatcher catamorphism. See
 // theory/UNIFIED-COMPUTING-MODEL.md §VI.
 gen_platform::register_dispatcher!("magma.resource-kind", ResourceKind);
-gen_platform::register_dispatcher!("magma.action",        Action);
+gen_platform::register_dispatcher!("magma.action", Action);
 
 #[derive(
-    Debug, Clone, PartialEq, Eq, Serialize, Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
     gen_platform::Discriminant,
     gen_platform::IsVariant,
 )]
@@ -271,7 +301,14 @@ pub struct StateInstance {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
     gen_platform::Discriminant,
     gen_platform::IsVariant,
 )]
@@ -288,6 +325,124 @@ pub struct OutputValue {
     pub sensitive: bool,
 }
 
+// ── Import directives + results ────────────────────────────────────
+//
+// The typed channel through which an operator (pangea-operator) hands
+// magma per-resource import IDs. Two shapes, both declarative and
+// config-selected — never a hidden fallback:
+//
+//   1. `explicit` — an address → import-ID map. The operator's
+//      `spec.importHints`. Each entry says "adopt the live resource
+//      identified by this provider-specific id into this typed
+//      address." Cloudflare DNS records use the `<zoneid>/<recordid>`
+//      compound form; github_repository uses the repo name; an IAM
+//      role uses the role name; etc.  magma passes the string verbatim
+//      to `ImportResourceState`'s `id` field — the provider knows how
+//      to parse its own id syntax.
+//
+//   2. `auto_on_conflict` — the operator's `importPolicy.autoOnConflict`.
+//      When true, a create-plan that the provider rejects as
+//      already-exists is retried as an import using the resource's
+//      NATURAL id (the value the planner would otherwise create it
+//      under — e.g. `github_repository`'s id is the repo name). This
+//      is a config decision, made explicitly and logged, not a silent
+//      retry.
+
+/// Per-resource import directives carried from the operator into the
+/// magma apply pipeline. This is the typed border between the
+/// operator's `spec.importHints` / `importPolicy.autoOnConflict` and
+/// magma's import prepass. Serializable so it threads through the
+/// bundle / config / plan-input wire boundary.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportDirectives {
+    /// Explicit `resource-address → import-ID` map. The address is the
+    /// canonical Terraform address string (`cloudflare_zone.quero_cloud`,
+    /// `cloudflare_dns_record.api`, `github_repository.galho`). The
+    /// value is the provider-specific import id passed verbatim to
+    /// `ImportResourceState`.
+    #[serde(default)]
+    pub explicit: HashMap<String, String>,
+    /// When `true`, a create the provider rejects as already-exists is
+    /// retried as an import using the resource's natural id. Mirrors the
+    /// operator's `importPolicy.autoOnConflict`.
+    #[serde(default)]
+    pub auto_on_conflict: bool,
+}
+
+impl ImportDirectives {
+    /// An empty directive set — no explicit hints, no auto-on-conflict.
+    /// Equivalent to `Default::default()`; named for call-site clarity.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// True iff there's nothing to do: no explicit hints and
+    /// auto-on-conflict disabled. The prepass short-circuits on this.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.explicit.is_empty() && !self.auto_on_conflict
+    }
+
+    /// Look up the explicit import id for a canonical address string.
+    #[must_use]
+    pub fn explicit_id(&self, address: &str) -> Option<&str> {
+        self.explicit.get(address).map(String::as_str)
+    }
+
+    /// Insert an explicit `address → id` hint, builder-style.
+    #[must_use]
+    pub fn with_explicit(mut self, address: impl Into<String>, id: impl Into<String>) -> Self {
+        self.explicit.insert(address.into(), id.into());
+        self
+    }
+
+    /// Enable auto-on-conflict, builder-style.
+    #[must_use]
+    pub fn with_auto_on_conflict(mut self, on: bool) -> Self {
+        self.auto_on_conflict = on;
+        self
+    }
+}
+
+/// One resource state returned by the provider's `ImportResourceState`
+/// RPC, decoded from the wire `DynamicValue` into typed JSON
+/// attributes. The typed image of tfplugin6's
+/// `ImportResourceState.ImportedResource`.
+///
+/// A single import can return several `ImportedInstance`s (a provider
+/// may surface dependent resources alongside the target). The prepass
+/// absorbs each into state under the address its `type_name` + the
+/// requested name map to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportedInstance {
+    /// The provider-reported resource type (e.g. `aws_iam_role`).
+    pub type_name: String,
+    /// The decoded resource attributes (from the `DynamicValue` JSON).
+    pub attributes: serde_json::Value,
+    /// Opaque provider private state bytes carried verbatim into the
+    /// `StateInstance`.
+    pub private: Vec<u8>,
+}
+
+impl ImportedInstance {
+    /// Build a typed `StateInstance` from this imported result. The
+    /// imported resource is always `Ready` (it pre-exists in the
+    /// world); `schema_version` defaults to 0 — the planner's next
+    /// `ReadResource`/`PlanResourceChange` upgrades it if the provider
+    /// reports a newer schema.
+    #[must_use]
+    pub fn to_state_instance(&self) -> StateInstance {
+        StateInstance {
+            schema_version: 0,
+            attributes: self.attributes.clone(),
+            private: self.private.clone(),
+            dependencies: Vec::new(),
+            status: InstanceStatus::Ready,
+        }
+    }
+}
+
 // ── Diagnostics ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,7 +454,14 @@ pub struct Diagnostic {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
     gen_platform::Discriminant,
     gen_platform::IsVariant,
 )]
@@ -321,4 +483,57 @@ pub enum MagmaTypesError {
     SchemaViolation(String),
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+}
+
+// ── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn import_directives_builder_and_lookup() {
+        let d = ImportDirectives::none()
+            .with_explicit("cloudflare_zone.quero_cloud", "zoneid")
+            .with_auto_on_conflict(true);
+        assert!(!d.is_empty());
+        assert!(d.auto_on_conflict);
+        assert_eq!(d.explicit_id("cloudflare_zone.quero_cloud"), Some("zoneid"));
+        assert_eq!(d.explicit_id("absent"), None);
+    }
+
+    #[test]
+    fn empty_import_directives_is_empty() {
+        assert!(ImportDirectives::default().is_empty());
+        // auto_on_conflict alone makes it non-empty (there's work to do).
+        assert!(
+            !ImportDirectives::default()
+                .with_auto_on_conflict(true)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn import_directives_round_trip_through_serde() {
+        let d = ImportDirectives::none()
+            .with_explicit("github_repository.galho", "galho")
+            .with_auto_on_conflict(true);
+        let json = serde_json::to_value(&d).unwrap();
+        let back: ImportDirectives = serde_json::from_value(json).unwrap();
+        assert_eq!(d, back);
+    }
+
+    #[test]
+    fn imported_instance_to_state_instance_is_ready() {
+        let imported = ImportedInstance {
+            type_name: "aws_iam_role".into(),
+            attributes: serde_json::json!({"id": "role-1"}),
+            private: vec![1, 2, 3],
+        };
+        let inst = imported.to_state_instance();
+        assert_eq!(inst.attributes["id"], "role-1");
+        assert_eq!(inst.private, vec![1, 2, 3]);
+        assert_eq!(inst.status, InstanceStatus::Ready);
+        assert_eq!(inst.schema_version, 0);
+    }
 }

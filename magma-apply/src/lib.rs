@@ -10,7 +10,13 @@
 //! The typed shape matches §II.9 — every apply operation surfaces as
 //! a typed `ApplyChange` Job.
 
+pub mod import_prepass;
 pub mod shigoto_jobs;
+
+pub use import_prepass::{
+    FailedImport, ImportEnvironment, ImportPrepassOutcome, ImportedAddress,
+    PluginImportEnvironment, import_on_conflict, run_explicit_prepass,
+};
 
 use chrono::Utc;
 use magma_types::{

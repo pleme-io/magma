@@ -127,6 +127,41 @@ fn apply_bumps_serial_for_real_workspace() {
 
 // ── Property: import absorbs externally-discovered resources ───────
 
+// ── Property: the import prepass absorbs through an ImportEnvironment ─
+
+/// A mock `ImportEnvironment` for the prepass law: returns a canned
+/// state for any id except the sentinel `"missing"`, which it rejects
+/// with an error (so the failure-isolation arm is exercised).
+struct LawMockEnv;
+
+#[async_trait::async_trait]
+impl magma_apply::import_prepass::ImportEnvironment for LawMockEnv {
+    async fn import_resource_state(
+        &self,
+        type_name: &str,
+        id: &str,
+    ) -> Result<Vec<magma_types::ImportedInstance>, String> {
+        if id == "missing" {
+            return Err("mock: resource not found".into());
+        }
+        Ok(vec![magma_types::ImportedInstance {
+            type_name: type_name.to_string(),
+            attributes: serde_json::json!({"id": id, "name": id}),
+            private: vec![],
+        }])
+    }
+}
+
+#[tokio::test]
+async fn import_prepass_absorbs_obeys_the_universal_law() {
+    magma_test_laws::workspace::assert_import_prepass_absorbs(
+        || LawMockEnv,
+        ("cloudflare_zone.quero_cloud", "abc123zoneid"),
+        ("cloudflare_zone.bad", "missing"),
+    )
+    .await;
+}
+
 #[test]
 fn import_absorbs_a_preexisting_iam_role() {
     use magma_types::{
