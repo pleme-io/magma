@@ -8,5 +8,5 @@
 //! sibling convergence primitives in shigoto-types.
 
 pub use shigoto_types::decision::{
-    ClockNow, Decision, PoolDecisionDemo, PoolDecisionDemoImpl, PoolPolicyDemo, PoolStateDemo,
+    Decision, PoolDecisionCtx, PoolDecisionDemo, PoolDecisionDemoImpl,
 };

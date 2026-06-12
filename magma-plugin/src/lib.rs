@@ -58,6 +58,14 @@ pub mod schema;
 /// channel, speaking `magma-cty` values. The layer that makes apply real.
 pub mod provider;
 
+// The proactive import-prepass path: a free-function `ImportResourceState`
+// RPC over a re-exported tonic `Channel`. Coexists with the engine's
+// reactive on-conflict import (`provider::ProviderConn::import_resource_state`)
+// — both drive the same provider RPC at different points (prepass before
+// plan vs. on create-conflict during apply).
+pub mod import;
+pub use import::import_resource_state;
+
 /// Install the rustls process-default `CryptoProvider`. Required
 /// before any rustls operation in 0.23 — the ring feature flag alone
 /// isn't enough when tonic also pulls in rustls. Idempotent; ignores
@@ -284,6 +292,16 @@ pub enum PluginError {
     Io(#[from] std::io::Error),
     #[error("tls / cert error: {0}")]
     Tls(String),
+    #[error("ImportResourceState RPC error: {0}")]
+    ImportRpc(String),
+    #[error("provider rejected import of {type_name} (id {id:?}): {reason}")]
+    ImportRejected {
+        type_name: String,
+        id: String,
+        reason: String,
+    },
+    #[error("imported-state decode error: {0}")]
+    ImportDecode(String),
 }
 
 // ── Parent identity (cert + key for mTLS) ──────────────────────────

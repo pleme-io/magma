@@ -179,6 +179,86 @@ pub fn assert_import_absorbs(cfg: &Config, seed_state_with: impl FnOnce(&mut mag
     }
 }
 
+// ── Law 7: the import prepass absorbs through an ImportEnvironment ──
+
+/// Given any `ImportEnvironment` impl and an explicit
+/// `address → import-id` directive map, the import prepass:
+///
+///   1. absorbs each hinted resource into state (Create-free plan after);
+///   2. is idempotent — a second prepass over the same state absorbs
+///      nothing new and issues no further imports;
+///   3. isolates per-resource failures into typed `FailedImport`s
+///      rather than aborting.
+///
+/// This is the universal contract every real provider-backed
+/// `ImportEnvironment` (and any future mock) satisfies. `make_env`
+/// builds the environment fresh; `good` is an address→id pair the
+/// environment imports successfully; `bad` is an address→id pair the
+/// environment rejects (so the failure-isolation arm is exercised).
+///
+/// The helper is async because the prepass drives async RPC. Call it
+/// from a `#[tokio::test]`.
+pub async fn assert_import_prepass_absorbs<E, F>(make_env: F, good: (&str, &str), bad: (&str, &str))
+where
+    E: magma_apply::import_prepass::ImportEnvironment,
+    F: Fn() -> E,
+{
+    use magma_apply::run_explicit_prepass;
+    use magma_types::ImportDirectives;
+
+    // ── Sub-law 1: a good hint absorbs ──
+    let env = make_env();
+    let directives = ImportDirectives::default().with_explicit(good.0, good.1);
+    let mut state = empty_state();
+    let outcome = run_explicit_prepass(&env, &directives, &mut state)
+        .await
+        .expect("import prepass structural failure");
+    assert_eq!(
+        outcome.newly_absorbed(),
+        1,
+        "Workspace law violated: import prepass didn't absorb the good hint {good:?} — {outcome:?}",
+    );
+    assert!(
+        outcome.all_succeeded(),
+        "Workspace law violated: good-hint prepass reported failures — {outcome:?}",
+    );
+
+    // ── Sub-law 2: idempotent re-run ──
+    let second = run_explicit_prepass(&env, &directives, &mut state)
+        .await
+        .expect("idempotent re-run structural failure");
+    assert_eq!(
+        second.newly_absorbed(),
+        0,
+        "Workspace law violated: import prepass is not idempotent — second run absorbed {} — {second:?}",
+        second.newly_absorbed(),
+    );
+
+    // ── Sub-law 3: per-resource failure isolation ──
+    let env2 = make_env();
+    let mixed = ImportDirectives::default()
+        .with_explicit(good.0, good.1)
+        .with_explicit(bad.0, bad.1);
+    let mut state2 = empty_state();
+    let outcome2 = run_explicit_prepass(&env2, &mixed, &mut state2)
+        .await
+        .expect("mixed prepass must not abort on a per-resource failure");
+    assert_eq!(
+        outcome2.newly_absorbed(),
+        1,
+        "Workspace law violated: the good hint must still absorb when a sibling fails — {outcome2:?}",
+    );
+    assert_eq!(
+        outcome2.failed.len(),
+        1,
+        "Workspace law violated: the bad hint must be a typed FailedImport — {outcome2:?}",
+    );
+    assert_eq!(
+        outcome2.failed[0].address, bad.0,
+        "Workspace law violated: the FailedImport names the wrong address — {outcome2:?}",
+    );
+}
+
 // ── Composite ─────────────────────────────────────────────────────
 
 /// Run every workspace lifecycle law. Panics on the first violation

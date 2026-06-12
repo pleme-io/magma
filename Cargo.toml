@@ -43,7 +43,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT"
@@ -106,8 +106,8 @@ magma-repo      = { path = "magma-repo" }
 
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──
 shikumi          = { git = "https://github.com/pleme-io/shikumi" }
-shigoto          = { git = "https://github.com/pleme-io/shigoto", rev = "8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2" }
-shigoto-types    = { git = "https://github.com/pleme-io/shigoto", rev = "8ad52fc7f47d85e87bc05457e7009e3a7e5b92c2" }
+shigoto          = { git = "https://github.com/pleme-io/shigoto", rev = "c8792add60be360ff29788f87f3bd46a2b666af6" }
+shigoto-types    = { git = "https://github.com/pleme-io/shigoto", rev = "c8792add60be360ff29788f87f3bd46a2b666af6" }
 # samba light core (LeakyBucket pacer), NATS-free — the apply engine paces
 # provider mutation RPCs under GitHub's secondary rate limit.
 samba            = { git = "https://github.com/pleme-io/samba", rev = "29650485132f635429291b08c5b2cdc5f9293500", default-features = false }

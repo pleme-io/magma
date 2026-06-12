@@ -188,9 +188,46 @@ impl Provider for MockProvider {
 
     async fn import_resource_state(
         &self,
-        _req: Request<tfplugin6::import_resource_state::Request>,
+        req: Request<tfplugin6::import_resource_state::Request>,
     ) -> Result<Response<tfplugin6::import_resource_state::Response>, Status> {
-        Err(Status::unimplemented("mock: import_resource_state"))
+        // Exercise the real client → prepass → absorb flow. The mock
+        // adopts ANY (type_name, id) by returning a canned state whose
+        // attributes echo the requested id — exactly what a real
+        // provider's ImportResourceState does for a resource that
+        // exists. A sentinel id of "missing" yields an ERROR
+        // diagnostic so the per-resource-failure-isolation law can be
+        // exercised against the real wire path.
+        let r = req.into_inner();
+        if r.id == "missing" {
+            return Ok(Response::new(tfplugin6::import_resource_state::Response {
+                imported_resources: vec![],
+                diagnostics: vec![tfplugin6::Diagnostic {
+                    severity: tfplugin6::diagnostic::Severity::Error as i32,
+                    summary: "resource not found".into(),
+                    detail: format!("mock: no resource with id {:?}", r.id),
+                    attribute: None,
+                }],
+                deferred: None,
+            }));
+        }
+        let state_json = serde_json::json!({
+            "id":   r.id,
+            "name": r.id,
+            "imported_by": "mock_provider",
+        });
+        Ok(Response::new(tfplugin6::import_resource_state::Response {
+            imported_resources: vec![tfplugin6::import_resource_state::ImportedResource {
+                type_name: r.type_name,
+                state: Some(tfplugin6::DynamicValue {
+                    msgpack: vec![],
+                    json: serde_json::to_vec(&state_json).unwrap_or_default(),
+                }),
+                private: vec![],
+                identity: None,
+            }],
+            diagnostics: vec![],
+            deferred: None,
+        }))
     }
 
     async fn move_resource_state(
@@ -416,16 +453,19 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // 2. Validate parent cert env var. Decode base64 → PEM bytes that
-    // tonic's ServerTlsConfig consumes as client_ca_root.
-    let parent_cert_b64 = env::var("PLUGIN_CLIENT_CERT").unwrap_or_else(|_| {
-        eprintln!("mock_provider: missing PLUGIN_CLIENT_CERT");
-        std::process::exit(1);
-    });
-    let parent_pem_bytes = B64.decode(&parent_cert_b64).unwrap_or_else(|e| {
-        eprintln!("mock_provider: PLUGIN_CLIENT_CERT not valid base64: {e}");
-        std::process::exit(1);
-    });
+    // 2. Parent cert env var (AutoMTLS). OPTIONAL: `magma_plugin::Plugin::spawn`
+    // only sets `PLUGIN_CLIENT_CERT` when `PluginSpec.secure == true`; with
+    // `secure: false` (the mock's plaintext-h2c path) it is intentionally
+    // absent. Decode it when present so the mTLS-serving path can consume it;
+    // when absent, serve plain h2c (the mock never wires TLS regardless — see
+    // the `let _ = …` discard below). A *malformed* cert is still fatal.
+    let parent_pem_bytes = match env::var("PLUGIN_CLIENT_CERT") {
+        Ok(b64) => B64.decode(&b64).unwrap_or_else(|e| {
+            eprintln!("mock_provider: PLUGIN_CLIENT_CERT not valid base64: {e}");
+            std::process::exit(1);
+        }),
+        Err(_) => Vec::new(),
+    };
 
     // 3. Generate own cert via rcgen (CA:true so the cert can self-sign
     // for client validation purposes when peer trust uses webpki).
