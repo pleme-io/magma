@@ -192,11 +192,14 @@ impl<'a> Registry<'a> {
             .map_err(|e| EngineError::Locate(name.into(), e.to_string()))?;
         let mut plugin = Plugin::spawn(PluginSpec {
             binary,
-            // mTLS (go-plugin AutoMTLS) — real providers (github/SDKv2)
-            // serve TLS even without a client cert, so plaintext h2c isn't
-            // an option. `secure=false` remains available for providers
-            // that do serve plaintext.
-            secure: true,
+            // Plaintext h2c (PluginSpec default `secure: false`): a
+            // co-located subprocess provider serves plaintext over its
+            // process-local socket when PLUGIN_CLIENT_CERT is unset
+            // (standard go-plugin), and the socket is already the trust
+            // boundary. AutoMTLS is opt-in for remote providers — a real
+            // protocol-6 provider (cloudflare v5) closes the mTLS channel
+            // post-handshake today, which is why the default is plaintext;
+            // see magma-plugin PluginSpec.secure.
             ..Default::default()
         })
         .await
@@ -209,11 +212,22 @@ impl<'a> Registry<'a> {
             .await
             .map_err(|e| EngineError::Spawn(name.into(), e.to_string()))?
             .clone();
-        let mut conn = ProviderConn::new(channel, protocol);
+        let mut conn = ProviderConn::new(channel.clone(), protocol);
+        // When a provider RPC fails with an opaque transport error
+        // ("Service was not ready: channel closed"), the REAL cause is the
+        // h2 connection-close reason the driver task captured (TLS/mTLS
+        // rejection, provider crash, EOF). Fold it into the typed error so
+        // the failure is precise, not a dead-end "channel closed".
+        let rpc_err = |name: &str, e: String| -> EngineError {
+            match channel.close_reason() {
+                Some(why) => EngineError::Rpc(name.into(), format!("{e} (connection closed: {why})")),
+                None => EngineError::Rpc(name.into(), e),
+            }
+        };
         let schema = conn
             .get_schema()
             .await
-            .map_err(|e| EngineError::Rpc(name.into(), e.to_string()))?;
+            .map_err(|e| rpc_err(name, e.to_string()))?;
 
         // Configure: the provider-config-typed creds, or an empty object
         // (→ a provider-config object with all attributes null, which is
@@ -230,7 +244,7 @@ impl<'a> Registry<'a> {
             .map_err(|e| EngineError::Cty(e.to_string()))?;
         conn.configure(&config_dv, &self.ctx.terraform_version)
             .await
-            .map_err(|e| EngineError::Rpc(name.into(), e.to_string()))?;
+            .map_err(|e| rpc_err(name, e.to_string()))?;
 
         Ok(LiveProvider {
             _plugin: plugin,

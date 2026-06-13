@@ -98,6 +98,24 @@ fn err_chain(e: &dyn std::error::Error) -> String {
 #[derive(Clone)]
 pub struct H2Channel {
     inner: hyper::client::conn::http2::SendRequest<tonic::body::BoxBody>,
+    // The reason the underlying h2 connection died, captured by the
+    // connection-driver task. Without this, an RPC after the connection
+    // drops surfaces only tonic's opaque "Service was not ready: channel
+    // closed" — the REAL cause (TLS/mTLS rejection, provider crash, EOF)
+    // is logged at debug and lost. Callers read `close_reason()` to turn
+    // an opaque transport failure into a precise one.
+    close_reason: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl H2Channel {
+    /// The reason the underlying h2 connection closed, if it has. `None`
+    /// while the connection is healthy. Lets the apply engine surface the
+    /// true cause (e.g. "peer closed connection without sending TLS
+    /// close_notify" = mTLS rejection) instead of a generic channel error.
+    #[must_use]
+    pub fn close_reason(&self) -> Option<String> {
+        self.close_reason.lock().ok().and_then(|g| g.clone())
+    }
 }
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
@@ -187,12 +205,22 @@ where
         .handshake::<_, tonic::body::BoxBody>(io)
         .await
         .map_err(|e| PluginError::Transport(err_chain(&e)))?;
+    let close_reason = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let close_reason_w = std::sync::Arc::clone(&close_reason);
     tokio::spawn(async move {
         if let Err(e) = conn.await {
-            debug!("magma-plugin h2 connection closed: {}", err_chain(&e));
+            let chain = err_chain(&e);
+            debug!("magma-plugin h2 connection closed: {chain}");
+            // Capture the real cause so the next RPC failure isn't opaque.
+            if let Ok(mut g) = close_reason_w.lock() {
+                *g = Some(chain);
+            }
         }
     });
-    Ok(H2Channel { inner: send_req })
+    Ok(H2Channel {
+        inner: send_req,
+        close_reason,
+    })
 }
 
 fn ensure_crypto_provider() {
@@ -451,12 +479,20 @@ pub struct PluginSpec {
     pub min_port: u16,
     pub max_port: u16,
     pub kill_grace: Duration,
-    /// When `true` (default), `Plugin::dial` layers mTLS on the gRPC
-    /// channel using rustls + the rcgen-generated parent identity +
-    /// custom verifier for the provider's handshake cert. Set to
-    /// `false` for offline tests against plain h2c mocks — magma's
-    /// mTLS code path is fully exercised against the real null
-    /// provider's integration suite, not the mock lifecycle suite.
+    /// When `true`, `Plugin::dial` layers mTLS (go-plugin AutoMTLS) on the
+    /// gRPC channel: it sets `PLUGIN_CLIENT_CERT` (making the provider serve
+    /// TLS), then connects with rustls + the rcgen parent identity + a
+    /// verifier trusting the provider's handshake cert. When `false`
+    /// (DEFAULT), `PLUGIN_CLIENT_CERT` is unset so the provider serves
+    /// plaintext h2c over its local socket, and `dial` uses the plain h2c
+    /// path. For a co-located subprocess provider talking over a
+    /// process-local unix socket / loopback in the SAME pod, plaintext is
+    /// both the secure boundary (the socket is filesystem- + namespace-
+    /// scoped) and the known-good transport; AutoMTLS is defense-in-depth
+    /// for *remote/untrusted* providers and is opt-in until the
+    /// custom-connector h2-over-mTLS path is verified against the full
+    /// provider matrix (a real protocol-6 provider closes the mTLS channel
+    /// post-handshake today — surfaced precisely via `H2Channel::close_reason`).
     pub secure: bool,
 }
 
@@ -475,7 +511,12 @@ impl Default for PluginSpec {
             min_port: 10_000,
             max_port: 25_000,
             kill_grace: Duration::from_secs(5),
-            secure: true,
+            // Plaintext h2c by default — co-located subprocess providers
+            // serve plaintext when PLUGIN_CLIENT_CERT is unset (standard
+            // go-plugin), and the local socket is already the trust
+            // boundary. mTLS (`secure: true`) is opt-in for remote
+            // providers; see the field doc.
+            secure: false,
         }
     }
 }
