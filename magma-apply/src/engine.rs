@@ -404,12 +404,36 @@ pub async fn run_plan_with_providers(
         }
     }
 
-    // Read each data source + fold its result into state_map under the `data`
-    // head, so `${data.<type>.<name>.<attr>}` references resolve in the managed
-    // pass below. (Data sources are not graph-ordered — they have no computed
-    // deps on managed resources; ref_target deliberately returns None for them.)
+    // Resolve each data source + fold its result into state_map under the
+    // `data` head, so `${data.<type>.<name>.<attr>}` references resolve in the
+    // managed pass below. (Data sources are not graph-ordered — they have no
+    // computed deps on managed resources; ref_target deliberately returns None
+    // for them.)
     for change in &datas {
-        // Resolve any refs in the data-source config first (usually literal).
+        // A NoOp data source whose value is ALREADY resolved in `before`
+        // carries that value forward — terraform does not re-read a data
+        // source whose config was fully known + read at plan time. Re-reading
+        // it at apply is not just wasteful: the plan's `after` for a NoOp data
+        // source is null, so a re-read would hand the provider a null/empty
+        // config (e.g. a null `name` filter) and some providers nil-deref on
+        // it (the live cloudflare 5.13.0 `cloudflare_zones`/`cloudflare_accounts`
+        // SIGSEGV). Reuse the resolved `before` state instead — the planned
+        // read result the data source already holds.
+        if change.action == Action::NoOp {
+            if let Some(before) = change.before.as_ref().filter(|b| !b.is_null()) {
+                sm_insert_data(&mut state_map, &change.address, before);
+                applied.push(AppliedChange {
+                    address: change.address.clone(),
+                    action: change.action,
+                    before: Some(before.clone()),
+                    after: Some(before.clone()),
+                });
+                continue;
+            }
+        }
+        // A genuinely-unread data source (deferred read: config depended on a
+        // resource only now created) IS read via RPC — resolve refs in its
+        // config first (usually literal).
         let mut resolved = (*change).clone();
         if let Some(after) = resolved.after.as_mut() {
             substitute_refs(after, &state_map);
@@ -1621,6 +1645,72 @@ mod tests {
         // The real create is routed for dependency-ordered apply.
         assert_eq!(reals.len(), 1);
         assert_eq!(reals[0].address.name, "grafana");
+    }
+
+    /// The cloudflare 5.13.0 SIGSEGV root cause: a NoOp data source whose
+    /// value is already resolved in `before` must be carried forward, NOT
+    /// re-read. Re-reading sends the provider the plan's null `after` config
+    /// (null `name` filter) and the provider nil-derefs. Proof: a plan with
+    /// ONLY a resolved NoOp data source applies cleanly with NO provider
+    /// reachable (empty workspace, no `$MAGMA_PROVIDER_DIR`) — if the engine
+    /// tried to re-read it, the spawn would fail and it'd land in `failed`.
+    #[tokio::test]
+    async fn noop_data_source_with_before_is_carried_forward_without_a_read() {
+        use magma_types::{ModulePath, PlanId, ResourceAddress, ResourceTypeId};
+        // SAFETY: single-threaded test; no other thread reads this var.
+        unsafe { std::env::remove_var("MAGMA_PROVIDER_DIR") };
+
+        let resolved = serde_json::json!({
+            "name": "quero.cloud",
+            "result": [{ "id": "zone-abc", "name": "quero.cloud" }],
+        });
+        let plan = Plan {
+            id: PlanId([0u8; 32]),
+            created_at: Utc::now(),
+            config_root: PathBuf::from("/ws"),
+            variables: Default::default(),
+            resource_changes: vec![ResourceChange {
+                address: ResourceAddress {
+                    module: ModulePath::root(),
+                    kind: ResourceKind::Data,
+                    type_id: ResourceTypeId("cloudflare_zones".into()),
+                    name: "rio_zone".into(),
+                    key: None,
+                },
+                action: Action::NoOp,
+                before: Some(resolved.clone()),
+                after: None, // exactly the live plan shape that triggered the bug
+                reasons: vec![],
+            }],
+            output_changes: vec![],
+        };
+        let mut state = State {
+            version: 4,
+            terraform_version: "1.9.0".into(),
+            serial: 1,
+            lineage: uuid::Uuid::nil(),
+            outputs: Default::default(),
+            resources: vec![],
+        };
+        let td = tempfile::tempdir().unwrap();
+        let ctx = ApplyContext::new(td.path().to_path_buf());
+
+        let outcome = run_plan_with_providers(&plan, &mut state, &ctx).await;
+
+        assert!(
+            outcome.failed.is_empty(),
+            "a resolved NoOp data source must not be re-read (would spawn a \
+             provider that isn't there): {:?}",
+            outcome.failed
+        );
+        assert_eq!(outcome.applied.len(), 1, "the data source carried forward");
+        let a = &outcome.applied[0];
+        assert_eq!(a.address.type_id.0, "cloudflare_zones");
+        assert_eq!(
+            a.after.as_ref().and_then(|v| v["result"][0]["id"].as_str()),
+            Some("zone-abc"),
+            "the resolved `before` value is what's carried forward",
+        );
     }
 
     #[test]
