@@ -282,20 +282,12 @@ pub async fn run_plan_with_providers(
         }
     }
 
-    // NoOp (matched) changes pass through with no provider call and no
-    // ordering; real changes (Create/Update/Delete/…) get dependency-ordered
-    // + reference-substituted apply below.
-    let (noops, rest): (Vec<&ResourceChange>, Vec<&ResourceChange>) = plan
-        .resource_changes
-        .iter()
-        .partition(|c| c.action == Action::NoOp);
-    // Data sources are evaluated up front (ReadDataSource) so their results
-    // populate the resolution map under `data.<type>.<name>` BEFORE any managed
-    // resource that references them is applied. Without this the `${data.*}`
-    // strings leaked verbatim into the provider RPC (the rio-drive 400).
-    let (datas, reals): (Vec<&ResourceChange>, Vec<&ResourceChange>) = rest
-        .into_iter()
-        .partition(|c| c.address.kind == ResourceKind::Data);
+    // Split the plan into (data sources, NoOp managed, real managed). Data
+    // sources are evaluated up front (ReadDataSource) so their results populate
+    // the resolution map under `data.<type>.<name>` BEFORE any managed resource
+    // that references them is applied. See `partition_changes` for why the
+    // data-kind split MUST precede the NoOp split.
+    let (datas, noops, reals) = partition_changes(&plan.resource_changes);
 
     for change in noops {
         match apply_one(change, state, &mut registry).await {
@@ -1066,6 +1058,34 @@ async fn read_data_source_one(
         .map_err(|e| EngineError::Cty(e.to_string()))
 }
 
+/// Split a plan's changes into `(data sources, NoOp managed, real managed)`.
+///
+/// The data-kind split MUST come BEFORE the NoOp split. A data source is
+/// frequently planned as `NoOp` (its config is unchanged), but its result
+/// still has to be *read* (`ReadDataSource`) and folded into the resolution
+/// map every apply — otherwise a managed resource's
+/// `${data.<type>.<name>.<attr>}` reference leaks the literal string into the
+/// provider RPC (the rio-drive grafana `zone_id =
+/// ${data.cloudflare_zones.rio_zone.result[0].id}` → Cloudflare 400 7003).
+/// Routing ALL data-kind changes through the read path regardless of action is
+/// the terraform-correct behavior (data sources are read on every apply) and
+/// makes the leaked-data-reference class unrepresentable.
+fn partition_changes<'a>(
+    changes: &'a [ResourceChange],
+) -> (
+    Vec<&'a ResourceChange>,
+    Vec<&'a ResourceChange>,
+    Vec<&'a ResourceChange>,
+) {
+    let (datas, non_datas): (Vec<&ResourceChange>, Vec<&ResourceChange>) = changes
+        .iter()
+        .partition(|c| c.address.kind == ResourceKind::Data);
+    let (noops, reals): (Vec<&ResourceChange>, Vec<&ResourceChange>) = non_datas
+        .into_iter()
+        .partition(|c| c.action == Action::NoOp);
+    (datas, noops, reals)
+}
+
 /// Collect every `${…}` reference path (inner, no wrapper) found anywhere in
 /// a config value.
 fn collect_refs(v: &serde_json::Value) -> Vec<String> {
@@ -1300,6 +1320,49 @@ mod tests {
         assert_eq!(after["zone_id"], json!("0da42c8d2132a9ddaf714f9e7c920711"));
         assert_eq!(after["account_id"], json!("acct-9f3"));
         assert_eq!(after["comment"], json!("tunnel for quero.cloud"));
+    }
+
+    #[test]
+    fn noop_data_source_routes_to_read_path_not_noops() {
+        use magma_types::{ModulePath, ResourceKind, ResourceTypeId};
+        // The rio-drive grafana regression: a data source planned as NoOp (its
+        // config unchanged) must still be ROUTED THROUGH THE READ PATH so its
+        // result lands in the resolution map. Before the fix it fell into the
+        // `noops` bucket (action == NoOp swept first) and was never read, so a
+        // dependent managed Create leaked `${data.*}` verbatim → Cloudflare 400.
+        let mk = |kind, ty: &str, name: &str, action| ResourceChange {
+            address: ResourceAddress {
+                module: ModulePath::root(),
+                kind,
+                type_id: ResourceTypeId(ty.into()),
+                name: name.into(),
+                key: None,
+            },
+            action,
+            before: None,
+            after: None,
+            reasons: vec![],
+        };
+        let changes = vec![
+            // a data source the planner marked NoOp (the bug trigger)
+            mk(ResourceKind::Data, "cloudflare_zones", "rio_zone", Action::NoOp),
+            // the dependent managed create (grafana CNAME)
+            mk(ResourceKind::Managed, "cloudflare_dns_record", "grafana", Action::Create),
+            // an unrelated NoOp managed resource (must stay in noops)
+            mk(ResourceKind::Managed, "cloudflare_dns_record", "auth", Action::NoOp),
+        ];
+        let (datas, noops, reals) = partition_changes(&changes);
+        // The NoOp data source is in `datas` (read path), NOT `noops`.
+        assert_eq!(datas.len(), 1);
+        assert_eq!(datas[0].address.type_id.0, "cloudflare_zones");
+        assert!(datas.iter().all(|c| c.address.kind == ResourceKind::Data));
+        // NoOp managed stays in noops; the data source is absent from it.
+        assert_eq!(noops.len(), 1);
+        assert_eq!(noops[0].address.name, "auth");
+        assert!(noops.iter().all(|c| c.address.kind != ResourceKind::Data));
+        // The real create is routed for dependency-ordered apply.
+        assert_eq!(reals.len(), 1);
+        assert_eq!(reals[0].address.name, "grafana");
     }
 
     #[test]
