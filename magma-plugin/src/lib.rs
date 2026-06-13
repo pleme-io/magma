@@ -118,6 +118,87 @@ impl H2Channel {
     }
 }
 
+// ── Provider crash capture ─────────────────────────────────────────
+//
+// A Go provider that SIGSEGVs (e.g. cloudflare 5.13.0 nil-deref during
+// ReadDataSource) writes its panic + `[signal SIGSEGV]` + goroutine
+// backtrace to STDERR (Go runtime fatals go to fd 2). The stderr drain
+// task previously logged those lines at `trace!` only, so the crash was
+// invisible at INFO and the downstream RPC surfaced just the opaque
+// tonic "channel closed". `CrashRing` captures ONLY the crash-signal
+// lines into a bounded ring the `Plugin` exposes, so every RPC failure
+// path can turn "channel closed" into "provider crashed (SIGSEGV
+// nil-deref): <panic line>".
+
+/// A typed summary of a provider subprocess crash, assembled from the
+/// captured stderr/stdout crash-signal lines (and, best-effort, the
+/// process exit signal). Returned by [`Plugin::crash_summary`] iff any
+/// crash-signal line was seen. The operator's anomaly classifier matches
+/// the typed `EngineError::ProviderCrashed` this enriches, never a
+/// substring.
+#[derive(Debug, Clone, Default)]
+pub struct ProviderCrash {
+    /// The crash-signal lines captured from the provider's stderr/stdout,
+    /// in arrival order (e.g. `panic: runtime error: ...`,
+    /// `goroutine 1 [running]:`).
+    pub lines: Vec<String>,
+    /// The unix signal the subprocess died from, if observed via
+    /// `try_wait()` before Drop reaped it (`11` = SIGSEGV). Best-effort
+    /// confirmation; `None` when unobserved or non-unix.
+    pub signal: Option<i32>,
+}
+
+/// Does a provider output line look like a runtime crash / fatal panic?
+/// Matches the documented Go-runtime fatal markers (case-insensitive).
+/// Used by the stderr/stdout drain tasks to route ONLY crash lines into
+/// the [`CrashRing`] (ordinary provider info logs stay at `trace!`).
+#[must_use]
+pub fn is_crash_line(l: &str) -> bool {
+    let lower = l.to_ascii_lowercase();
+    const MARKERS: &[&str] = &[
+        "panic:",
+        "signal sigsegv",
+        "sigsegv",
+        "fatal error",
+        "runtime error",
+        "nil pointer dereference",
+        "goroutine ",
+        "[signal ",
+    ];
+    MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// A bounded FIFO ring of captured crash-signal lines. Caps at `cap`
+/// lines (oldest evicted first) so a runaway backtrace can't grow
+/// unbounded. Shared across the stderr + stdout drain tasks via
+/// `Arc<Mutex<_>>`.
+struct CrashRing {
+    buf: std::collections::VecDeque<String>,
+    cap: usize,
+}
+
+impl CrashRing {
+    fn new(cap: usize) -> Self {
+        Self {
+            buf: std::collections::VecDeque::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    /// Append a crash line, evicting the oldest if at capacity.
+    fn push(&mut self, line: String) {
+        if self.buf.len() >= self.cap {
+            self.buf.pop_front();
+        }
+        self.buf.push_back(line);
+    }
+
+    /// Snapshot the captured lines in arrival order.
+    fn snapshot(&self) -> Vec<String> {
+        self.buf.iter().cloned().collect()
+    }
+}
+
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
 impl tower::Service<http::Request<tonic::body::BoxBody>> for H2Channel {
@@ -532,6 +613,12 @@ pub struct Plugin {
     spec: PluginSpec,
     identity: ParentIdentity,
     channel: Option<H2Channel>,
+    /// Crash-signal lines captured from the provider subprocess's
+    /// stderr/stdout drain tasks. Read via [`Plugin::crash_lines`] /
+    /// [`Plugin::crash_summary`] at every RPC failure site so a provider
+    /// SIGSEGV becomes a precise typed error instead of an opaque
+    /// "channel closed".
+    crash: Arc<std::sync::Mutex<CrashRing>>,
 }
 
 impl Plugin {
@@ -589,7 +676,11 @@ impl Plugin {
         debug!(binary = ?spec.binary, "spawning provider plugin");
         let mut child = cmd.spawn()?;
 
-        let stdout = child.stdout.take().expect("piped stdout requested above");
+        let stdout = child.stdout.take().ok_or_else(|| {
+            PluginError::Io(std::io::Error::other(
+                "stdout pipe missing after spawn (Stdio::piped requested above)",
+            ))
+        })?;
         let mut reader = BufReader::new(stdout).lines();
         let line = match reader.next_line().await? {
             Some(line) => line,
@@ -613,20 +704,45 @@ impl Plugin {
         // real cause of the long-standing "provider RPC stalls" — NOT the h2
         // transport.) Forward both streams to tracing so the pipe never fills
         // and provider diagnostics are still observable.
+        // Shared crash ring written by BOTH drain tasks. A SIGSEGV
+        // backtrace lands on stderr, but providers occasionally mis-route
+        // fatal output to stdout, so both tasks classify each line and
+        // push crash-signal lines here. Bounded so a runaway backtrace
+        // can't grow without limit.
+        let crash = Arc::new(std::sync::Mutex::new(CrashRing::new(256)));
         let bin = spec.binary.clone();
         if let Some(stderr) = child.stderr.take() {
             let bin = bin.clone();
+            let crash_w = Arc::clone(&crash);
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(l)) = lines.next_line().await {
-                    tracing::trace!(provider = ?bin, "{l}");
+                    if is_crash_line(&l) {
+                        // Bump to error! so the panic + SIGSEGV are visible
+                        // at INFO (they were invisible at trace!), and
+                        // capture into the ring the RPC error paths read.
+                        tracing::error!(provider = ?bin, stream = "stderr", "{l}");
+                        if let Ok(mut g) = crash_w.lock() {
+                            g.push(l);
+                        }
+                    } else {
+                        tracing::trace!(provider = ?bin, "{l}");
+                    }
                 }
             });
         }
+        let crash_w = Arc::clone(&crash);
         tokio::spawn(async move {
             // `reader` owns the rest of stdout after the handshake line.
             while let Ok(Some(l)) = reader.next_line().await {
-                tracing::trace!(provider = ?bin, stream = "stdout", "{l}");
+                if is_crash_line(&l) {
+                    tracing::error!(provider = ?bin, stream = "stdout", "{l}");
+                    if let Ok(mut g) = crash_w.lock() {
+                        g.push(l);
+                    }
+                } else {
+                    tracing::trace!(provider = ?bin, stream = "stdout", "{l}");
+                }
             }
         });
 
@@ -648,6 +764,7 @@ impl Plugin {
             spec,
             identity,
             channel: None,
+            crash,
         })
     }
 
@@ -664,10 +781,28 @@ impl Plugin {
     /// tokio_rustls TlsStream, then drives a `hyper` HTTP/2 connection over
     /// it directly (see [`H2Channel`] for why not tonic `Channel`).
     pub async fn dial(&mut self) -> Result<&H2Channel, PluginError> {
-        if self.channel.is_some() {
-            return Ok(self.channel.as_ref().unwrap());
+        // Compute the channel into a local only when it isn't already
+        // cached (`is_some()` is a `bool` — it holds no borrow, so the
+        // tail return below can take a fresh borrow without conflicting
+        // with this guard, unlike an early `as_ref()` return). All paths
+        // funnel to a single unwrap-free tail return.
+        if self.channel.is_none() {
+            let channel = self.dial_channel().await?;
+            self.channel = Some(channel);
         }
+        // By construction `self.channel` is `Some` here (just set, or was
+        // already cached). `ok_or_else` keeps this unwrap-free and honest:
+        // the `None` arm is logically unreachable but yields a typed error
+        // rather than a panic if that invariant is ever broken.
+        self.channel.as_ref().ok_or_else(|| {
+            PluginError::Transport("internal: channel vanished after dial".into())
+        })
+    }
 
+    /// Dial a fresh [`H2Channel`] to the provider (no caching — `dial`
+    /// owns the `self.channel` cache). Splitting this out lets `dial`
+    /// store-then-return in one unwrap-free tail.
+    async fn dial_channel(&self) -> Result<H2Channel, PluginError> {
         let network = self.handshake.network.clone();
         let address = self.handshake.address.clone();
 
@@ -694,8 +829,7 @@ impl Plugin {
                     )));
                 }
             };
-            self.channel = Some(channel);
-            return Ok(self.channel.as_ref().unwrap());
+            return Ok(channel);
         }
 
         // Build the mTLS ClientConfig once for this dial.
@@ -749,8 +883,7 @@ impl Plugin {
                 )));
             }
         };
-        self.channel = Some(channel);
-        Ok(self.channel.as_ref().unwrap())
+        Ok(channel)
     }
 
     /// The negotiated handshake (protocol version, transport, address, cert).
@@ -770,6 +903,60 @@ impl Plugin {
     #[must_use]
     pub fn channel(&self) -> Option<&H2Channel> {
         self.channel.as_ref()
+    }
+
+    /// Snapshot of the crash-signal lines captured from the provider's
+    /// stderr/stdout (panic / SIGSEGV / fatal-error backtrace). Empty
+    /// while the provider is healthy. Read at every RPC failure site so a
+    /// subprocess crash surfaces as a precise typed error.
+    #[must_use]
+    pub fn crash_lines(&self) -> Vec<String> {
+        self.crash
+            .lock()
+            .map(|g| g.snapshot())
+            .unwrap_or_default()
+    }
+
+    /// A typed [`ProviderCrash`] summary, `Some` iff any crash-signal line
+    /// was captured. Best-effort: the backtrace may still be draining when
+    /// an RPC error returns (the panic + the h2 broken-pipe arrive on
+    /// separate tasks), so this returns whatever has been seen so far.
+    /// `signal` is read via the non-blocking [`Plugin::exit_signal`]
+    /// (`&mut`) confirmation when available; from behind a shared borrow
+    /// it stays `None` and the captured panic lines carry the meaning.
+    #[must_use]
+    pub fn crash_summary(&self) -> Option<ProviderCrash> {
+        let lines = self.crash_lines();
+        if lines.is_empty() {
+            None
+        } else {
+            Some(ProviderCrash {
+                lines,
+                signal: None,
+            })
+        }
+    }
+
+    /// Best-effort: the unix signal the subprocess died from, if it has
+    /// already exited and not yet been reaped by Drop. `11` = SIGSEGV.
+    /// Non-blocking (`try_wait`), so `None` while the process is still
+    /// alive, on a non-unix target, or if the exit carried no signal. A
+    /// numeric confirmation of the stderr-captured panic — never
+    /// load-bearing; the captured panic lines are the meaning.
+    pub fn exit_signal(&mut self) -> Option<i32> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            self.process
+                .try_wait()
+                .ok()
+                .flatten()
+                .and_then(|s| s.signal())
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 }
 
@@ -840,6 +1027,100 @@ mod tests {
         // the cert.
         let decoded = B64.decode(&identity.base64_cert).unwrap();
         assert_eq!(decoded, identity.cert_pem.as_bytes());
+    }
+
+    #[test]
+    fn is_crash_line_matches_the_live_sigsegv_evidence() {
+        // The exact line the cloudflare 5.13.0 provider emitted on rio.
+        assert!(is_crash_line(
+            "panic: runtime error: invalid memory address or nil pointer dereference [signal SIGSEGV]"
+        ));
+        // The signal/addr second line Go emits.
+        assert!(is_crash_line(
+            "[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x...]"
+        ));
+        // The goroutine backtrace frames.
+        assert!(is_crash_line("goroutine 1 [running]:"));
+        // Other Go fatals.
+        assert!(is_crash_line("fatal error: concurrent map writes"));
+        // Case-insensitive.
+        assert!(is_crash_line("PANIC: something blew up"));
+    }
+
+    #[test]
+    fn is_crash_line_ignores_ordinary_provider_logs() {
+        assert!(!is_crash_line(
+            "2026-06-12T00:00:00Z [INFO] provider: configuring client: host=api.cloudflare.com"
+        ));
+        assert!(!is_crash_line("[DEBUG] ReadDataSource: cloudflare_accounts"));
+        assert!(!is_crash_line(""));
+        // The word "panic" only as a substring of an unrelated word must
+        // not trip — we anchor on "panic:" (with the colon Go emits).
+        assert!(!is_crash_line("the operation did not panic and succeeded"));
+    }
+
+    #[test]
+    fn crash_ring_evicts_oldest_at_capacity() {
+        let mut ring = CrashRing::new(2);
+        ring.push("first".to_string());
+        ring.push("second".to_string());
+        ring.push("third".to_string());
+        // Oldest ("first") evicted; the two most-recent survive in order.
+        assert_eq!(ring.snapshot(), vec!["second".to_string(), "third".to_string()]);
+    }
+
+    #[test]
+    fn crash_ring_zero_cap_is_clamped_to_one() {
+        // A zero cap would deadlock the push (evict-then-push of nothing);
+        // `CrashRing::new` clamps to >=1 so the ring always holds the most
+        // recent line.
+        let mut ring = CrashRing::new(0);
+        ring.push("only".to_string());
+        assert_eq!(ring.snapshot(), vec!["only".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn crash_capture_surfaces_panic_from_a_fake_stderr_stream() {
+        // Mirror the spawn() stderr drain task exactly: classify each line,
+        // push crash-signal lines into the shared ring. Drives the same
+        // `is_crash_line` + `CrashRing` path the real drain uses, over an
+        // in-memory stderr stream carrying the live SIGSEGV evidence — no
+        // subprocess needed.
+        let stderr_bytes = concat!(
+            "[INFO] provider: starting up\n",
+            "panic: runtime error: invalid memory address or nil pointer dereference [signal SIGSEGV]\n",
+            "[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0xabc]\n",
+            "goroutine 17 [running]:\n",
+            "github.com/cloudflare/.../provider.(*Client).ReadDataSource(...)\n",
+        )
+        .as_bytes()
+        .to_vec();
+
+        let crash = Arc::new(std::sync::Mutex::new(CrashRing::new(256)));
+        let crash_w = Arc::clone(&crash);
+        let mut lines = BufReader::new(std::io::Cursor::new(stderr_bytes)).lines();
+        while let Ok(Some(l)) = lines.next_line().await {
+            if is_crash_line(&l) {
+                if let Ok(mut g) = crash_w.lock() {
+                    g.push(l);
+                }
+            }
+        }
+
+        let captured = crash.lock().unwrap().snapshot();
+        // The two ordinary frames that match a marker (panic/[signal]/
+        // goroutine) are captured; the "[INFO] starting up" line is not.
+        assert!(
+            captured
+                .iter()
+                .any(|l| l.contains("nil pointer dereference") && l.contains("SIGSEGV")),
+            "captured crash lines must include the nil-deref panic: {captured:?}"
+        );
+        assert!(captured.iter().any(|l| l.contains("goroutine 17")));
+        assert!(
+            !captured.iter().any(|l| l.contains("starting up")),
+            "ordinary info logs must NOT be captured as crash lines"
+        );
     }
 
     #[test]

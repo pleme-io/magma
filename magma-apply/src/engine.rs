@@ -23,7 +23,7 @@ use samba::LeakyBucket;
 use magma_cty::DynamicValue;
 use magma_graph::ResourceGraph;
 use magma_plugin::provider::{ProviderConn, ProviderSchema, is_retryable};
-use magma_plugin::{Plugin, PluginSpec};
+use magma_plugin::{Plugin, PluginSpec, ProviderCrash};
 use magma_types::{
     Action, Plan, ResourceAddress, ResourceChange, ResourceKind, State, StateInstance,
     StateResource,
@@ -80,10 +80,85 @@ pub enum EngineError {
     Spawn(String, String),
     #[error("provider {0:?} RPC: {1}")]
     Rpc(String, String),
+    /// The provider SUBPROCESS crashed (e.g. SIGSEGV nil-deref) during an
+    /// RPC. Distinct from [`EngineError::Rpc`] so the operator's anomaly
+    /// classifier matches a TYPED crash structurally — never by
+    /// substring-guessing an opaque "channel closed". `detail` carries the
+    /// captured panic line (+ the originating RPC error) so the cause is
+    /// precise, not a dead-end transport string.
+    #[error("provider {provider:?} crashed during {op}: {detail}")]
+    ProviderCrashed {
+        provider: String,
+        op: String,
+        detail: String,
+    },
     #[error("provider {1:?} has no schema for resource type {0:?}")]
     NoResourceSchema(String, String),
     #[error("cty encode/decode: {0}")]
     Cty(String),
+}
+
+/// Build a crash-aware [`EngineError`] from a failed provider RPC. ONE
+/// place all six provider RPC kinds (get_schema, configure, plan, apply,
+/// read_data_source, import) funnel their transport failures through, so
+/// every one gets identical treatment:
+///
+/// 1. If the provider subprocess CRASHED (its stderr captured a
+///    panic/SIGSEGV/fatal line — `crash` is `Some`), return the TYPED
+///    [`EngineError::ProviderCrashed`] carrying the panic line + the
+///    originating RPC error. The operator's anomaly classifier matches
+///    this variant structurally.
+/// 2. Else if the h2 connection recorded a close reason (TLS/mTLS
+///    rejection, EOF, broken pipe), fold it into the [`EngineError::Rpc`]
+///    message so "channel closed" gains its real cause.
+/// 3. Else a plain [`EngineError::Rpc`] with the op + error.
+///
+/// Takes the crash summary + close reason as plain `Option`s (read off
+/// the `Plugin` at the call site) rather than borrowing the `Plugin`, so
+/// it is unit-testable without a live provider and free of borrow-order
+/// friction.
+fn rpc_error(
+    provider: &str,
+    op: &str,
+    crash: Option<ProviderCrash>,
+    close_reason: Option<String>,
+    err: &str,
+) -> EngineError {
+    if let Some(c) = crash {
+        // Prefer the human-meaningful panic frame; fall back to the first
+        // captured line, then to the raw error.
+        let panic = c
+            .lines
+            .iter()
+            .find(|l| l.contains("panic:") || l.contains("[signal"))
+            .or_else(|| c.lines.first())
+            .cloned()
+            .unwrap_or_else(|| err.to_string());
+        let sig = c
+            .signal
+            .map(|s| format!(" (signal {s})"))
+            .unwrap_or_default();
+        return EngineError::ProviderCrashed {
+            provider: provider.to_string(),
+            op: op.to_string(),
+            detail: format!("{panic}{sig} (rpc error: {err})"),
+        };
+    }
+    match close_reason {
+        Some(why) => EngineError::Rpc(
+            provider.to_string(),
+            format!("{op}: {err} (connection closed: {why})"),
+        ),
+        None => EngineError::Rpc(provider.to_string(), format!("{op}: {err}")),
+    }
+}
+
+/// Read the crash summary + h2 close reason off a [`LiveProvider`]'s
+/// plugin handle. Both are best-effort enrichment; either may be `None`.
+fn provider_failure_signals(lp: &LiveProvider) -> (Option<ProviderCrash>, Option<String>) {
+    let crash = lp._plugin.crash_summary();
+    let close = lp._plugin.channel().and_then(|c| c.close_reason());
+    (crash, close)
 }
 
 /// What the apply needs beyond `(plan, state)`: where the provider
@@ -184,7 +259,17 @@ impl<'a> Registry<'a> {
             let lp = self.spawn(name).await?;
             self.live.insert(name.to_string(), lp);
         }
-        Ok(self.live.get_mut(name).expect("just inserted"))
+        // The provider is in the map (just inserted, or already present).
+        // `ok_or_else` keeps this unwrap-free: the `None` arm is logically
+        // unreachable but yields a typed error rather than a panic if that
+        // invariant is ever broken (a provider on the apply path must never
+        // panic magma).
+        self.live.get_mut(name).ok_or_else(|| {
+            EngineError::Spawn(
+                name.to_string(),
+                "internal: provider missing from registry after insert".to_string(),
+            )
+        })
     }
 
     async fn spawn(&self, name: &str) -> Result<LiveProvider, EngineError> {
@@ -214,20 +299,27 @@ impl<'a> Registry<'a> {
             .clone();
         let mut conn = ProviderConn::new(channel.clone(), protocol);
         // When a provider RPC fails with an opaque transport error
-        // ("Service was not ready: channel closed"), the REAL cause is the
-        // h2 connection-close reason the driver task captured (TLS/mTLS
-        // rejection, provider crash, EOF). Fold it into the typed error so
-        // the failure is precise, not a dead-end "channel closed".
-        let rpc_err = |name: &str, e: String| -> EngineError {
-            match channel.close_reason() {
-                Some(why) => EngineError::Rpc(name.into(), format!("{e} (connection closed: {why})")),
-                None => EngineError::Rpc(name.into(), e),
-            }
+        // ("Service was not ready: channel closed"), the REAL cause is
+        // either the provider subprocess CRASHING (stderr panic/SIGSEGV
+        // captured on the plugin) or the h2 connection-close reason the
+        // driver task recorded (TLS/mTLS rejection, EOF). Fold BOTH into
+        // the typed error via the shared `rpc_error` helper so the failure
+        // is precise, not a dead-end "channel closed". (Spawn-time has no
+        // `LiveProvider` yet, so read the signals off `plugin` + `channel`
+        // directly.)
+        let spawn_err = |op: &str, e: String| -> EngineError {
+            rpc_error(
+                name,
+                op,
+                plugin.crash_summary(),
+                channel.close_reason(),
+                &e,
+            )
         };
         let schema = conn
             .get_schema()
             .await
-            .map_err(|e| rpc_err(name, e.to_string()))?;
+            .map_err(|e| spawn_err("get_schema", e.to_string()))?;
 
         // Configure: the provider-config-typed creds, or an empty object
         // (→ a provider-config object with all attributes null, which is
@@ -244,7 +336,7 @@ impl<'a> Registry<'a> {
             .map_err(|e| EngineError::Cty(e.to_string()))?;
         conn.configure(&config_dv, &self.ctx.terraform_version)
             .await
-            .map_err(|e| rpc_err(name, e.to_string()))?;
+            .map_err(|e| spawn_err("configure", e.to_string()))?;
 
         Ok(LiveProvider {
             _plugin: plugin,
@@ -881,10 +973,22 @@ async fn apply_one(
         Action::Delete | Action::Forget => {
             let null_dv = DynamicValue::from_json(&null_json, &implied)
                 .map_err(|e| EngineError::Cty(e.to_string()))?;
-            rpc_retry!(pacer.as_deref(), lp
+            if let Err(e) = rpc_retry!(pacer.as_deref(), lp
                 .conn
                 .apply_resource_change(&type_name, &prior_dv, &null_dv, &null_dv))
-            .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
+            {
+                // RPC future has resolved → the mutable conn borrow is over;
+                // read the crash/close signals off the same `lp` and build a
+                // crash-aware error.
+                let (crash, close) = provider_failure_signals(lp);
+                return Err(rpc_error(
+                    &provider_name,
+                    "apply_resource_change",
+                    crash,
+                    close,
+                    &e.to_string(),
+                ));
+            }
             remove_resource(state, &change.address);
             Ok(AppliedChange {
                 address: change.address.clone(),
@@ -901,13 +1005,24 @@ async fn apply_one(
             // Provider normalizes the proposed state (computes defaults +
             // marks computed attributes unknown). Terraform requires the
             // planned state to flow from plan → apply.
-            let planned_dv = rpc_retry!(pacer.as_deref(), lp.conn.plan_resource_change(
+            let planned_dv = match rpc_retry!(pacer.as_deref(), lp.conn.plan_resource_change(
                 &type_name,
                 &prior_dv,
                 &config_dv,
                 &config_dv
-            ))
-            .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
+            )) {
+                Ok(dv) => dv,
+                Err(e) => {
+                    let (crash, close) = provider_failure_signals(lp);
+                    return Err(rpc_error(
+                        &provider_name,
+                        "plan_resource_change",
+                        crash,
+                        close,
+                        &e.to_string(),
+                    ));
+                }
+            };
             let new_dv = match rpc_retry!(pacer.as_deref(), lp.conn.apply_resource_change(
                 &type_name,
                 &prior_dv,
@@ -967,7 +1082,19 @@ async fn apply_one(
                             }
                         }
                     }
-                    return Err(EngineError::Rpc(provider_name.clone(), msg));
+                    // Not an adoptable conflict → a genuine apply failure.
+                    // Read the crash/close signals off `lp` (the import/read
+                    // RPCs above have resolved, so the conn borrow is over)
+                    // so a SIGSEGV during apply becomes a typed crash, not
+                    // an opaque "channel closed".
+                    let (crash, close) = provider_failure_signals(lp);
+                    return Err(rpc_error(
+                        &provider_name,
+                        "apply_resource_change",
+                        crash,
+                        close,
+                        &msg,
+                    ));
                 }
             };
             let new_attrs = new_dv
@@ -1056,17 +1183,32 @@ async fn read_data_source_one(
     let config_json = change.after.clone().unwrap_or(serde_json::Value::Null);
     let config_dv = DynamicValue::from_json(&config_json, &implied)
         .map_err(|e| EngineError::Cty(e.to_string()))?;
-    let state_dv = lp
-        .conn
-        .read_data_source(&type_name, &config_dv)
-        .await
-        .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?
-        .ok_or_else(|| {
-            EngineError::Rpc(
-                provider_name.clone(),
-                format!("data source {type_name} returned null state"),
-            )
-        })?;
+    // THE cloudflare_accounts ReadDataSource path: the live SIGSEGV hit
+    // here. On RPC error, read the crash/close signals off `lp` (the conn
+    // borrow ended when the future resolved) so a provider crash surfaces
+    // as a typed `ProviderCrashed`, not the opaque "channel closed".
+    let read_result = lp.conn.read_data_source(&type_name, &config_dv).await;
+    let state_opt = match read_result {
+        Ok(v) => v,
+        Err(e) => {
+            let (crash, close) = provider_failure_signals(lp);
+            return Err(rpc_error(
+                &provider_name,
+                "read_data_source",
+                crash,
+                close,
+                &e.to_string(),
+            ));
+        }
+    };
+    // Provider ANSWERED but with null state — not a crash, a contract
+    // miss. Keep it a plain `Rpc`.
+    let state_dv = state_opt.ok_or_else(|| {
+        EngineError::Rpc(
+            provider_name.clone(),
+            format!("data source {type_name} returned null state"),
+        )
+    })?;
     state_dv
         .to_json(&implied)
         .map_err(|e| EngineError::Cty(e.to_string()))
@@ -1193,6 +1335,106 @@ fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rpc_error_folds_provider_crash_into_typed_variant() {
+        // The live rio evidence: cloudflare 5.13.0 SIGSEGVs during
+        // ReadDataSource. The drain captured the panic; the helper must
+        // produce a TYPED `ProviderCrashed` (the operator's classifier
+        // matches the variant, not a substring), carrying the panic line
+        // AND the originating opaque RPC error.
+        let crash = ProviderCrash {
+            lines: vec![
+                "panic: runtime error: invalid memory address or nil pointer dereference [signal SIGSEGV]".to_string(),
+                "goroutine 17 [running]:".to_string(),
+            ],
+            signal: Some(11),
+        };
+        let err = rpc_error(
+            "cloudflare",
+            "read_data_source",
+            Some(crash),
+            Some("connection closed because of a broken pipe".to_string()),
+            "Service was not ready: channel closed",
+        );
+        match err {
+            EngineError::ProviderCrashed {
+                provider,
+                op,
+                detail,
+            } => {
+                assert_eq!(provider, "cloudflare");
+                assert_eq!(op, "read_data_source");
+                // The panic frame is surfaced (not the goroutine line).
+                assert!(detail.contains("nil pointer dereference"));
+                assert!(detail.contains("[signal SIGSEGV]"));
+                // The exit-signal confirmation is folded in.
+                assert!(detail.contains("signal 11"));
+                // The originating opaque RPC error is preserved for context.
+                assert!(detail.contains("channel closed"));
+            }
+            other => panic!("expected ProviderCrashed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_error_folds_close_reason_when_no_crash() {
+        // Provider didn't crash (no captured panic) but the h2 connection
+        // recorded a close reason — fold it into an enriched `Rpc` so
+        // "channel closed" gains its real cause.
+        let err = rpc_error(
+            "github",
+            "plan_resource_change",
+            None,
+            Some("peer closed connection without sending TLS close_notify".to_string()),
+            "Service was not ready: channel closed",
+        );
+        match err {
+            EngineError::Rpc(provider, msg) => {
+                assert_eq!(provider, "github");
+                assert!(msg.contains("plan_resource_change"));
+                assert!(msg.contains("channel closed"));
+                assert!(msg.contains("connection closed: peer closed connection"));
+            }
+            other => panic!("expected enriched Rpc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_error_plain_when_no_crash_and_no_close_reason() {
+        // No crash, no close reason → a plain `Rpc` with the op prefix.
+        let err = rpc_error("aws", "configure", None, None, "invalid credentials");
+        match err {
+            EngineError::Rpc(provider, msg) => {
+                assert_eq!(provider, "aws");
+                assert_eq!(msg, "configure: invalid credentials");
+            }
+            other => panic!("expected plain Rpc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_error_prefers_panic_line_over_first_captured_line() {
+        // When the first captured line is a non-panic frame (e.g. a stray
+        // "runtime error" log without "panic:"), but a later line IS the
+        // panic, the helper surfaces the panic frame.
+        let crash = ProviderCrash {
+            lines: vec![
+                "goroutine 1 [running]:".to_string(),
+                "panic: send on closed channel".to_string(),
+            ],
+            signal: None,
+        };
+        let err = rpc_error("p", "apply_resource_change", Some(crash), None, "boom");
+        match err {
+            EngineError::ProviderCrashed { detail, .. } => {
+                assert!(detail.contains("panic: send on closed channel"));
+                // No signal observed → no "(signal N)" fragment.
+                assert!(!detail.contains("signal "));
+            }
+            other => panic!("expected ProviderCrashed, got {other:?}"),
+        }
+    }
 
     #[test]
     fn mass_drop_guard_suppresses_systemic_read_failure() {
