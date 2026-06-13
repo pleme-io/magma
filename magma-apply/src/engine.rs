@@ -125,23 +125,25 @@ fn rpc_error(
     err: &str,
 ) -> EngineError {
     if let Some(c) = crash {
-        // Prefer the human-meaningful panic frame; fall back to the first
-        // captured line, then to the raw error.
-        let panic = c
-            .lines
-            .iter()
-            .find(|l| l.contains("panic:") || l.contains("[signal"))
-            .or_else(|| c.lines.first())
-            .cloned()
-            .unwrap_or_else(|| err.to_string());
+        // Prefer the human-meaningful panic header; fall back to the raw
+        // error when nothing was captured.
+        let panic = c.headline().map(str::to_string).unwrap_or_else(|| err.to_string());
         let sig = c
             .signal
             .map(|s| format!(" (signal {s})"))
             .unwrap_or_default();
+        // The crash SITE (`…/file.go:NNN`) names the exact provider line
+        // that faulted — the single most actionable diagnostic. Surface it
+        // inline so the operator log roots-causes the panic without a
+        // separate trace-level archaeology pass.
+        let site = c
+            .crash_site()
+            .map(|s| format!(" at {s}"))
+            .unwrap_or_default();
         return EngineError::ProviderCrashed {
             provider: provider.to_string(),
             op: op.to_string(),
-            detail: format!("{panic}{sig} (rpc error: {err})"),
+            detail: format!("{panic}{sig}{site} (rpc error: {err})"),
         };
     }
     match close_reason {

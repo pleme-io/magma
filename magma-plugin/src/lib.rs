@@ -148,6 +148,36 @@ pub struct ProviderCrash {
     pub signal: Option<i32>,
 }
 
+impl ProviderCrash {
+    /// The first captured backtrace frame that names a Go source location
+    /// (`…/file.go:NNN`) — the actual crash SITE. This is the single most
+    /// useful line for root-causing a provider panic: it names the file +
+    /// line that nil-deref'd (e.g. a data source's `Read` whose API client
+    /// was never built). `None` when only the header was captured (no
+    /// backtrace, or frames arrived past the ring window). The leading
+    /// `+0x…` PC offset is trimmed — the file:line is the meaning.
+    #[must_use]
+    pub fn crash_site(&self) -> Option<String> {
+        self.lines
+            .iter()
+            .map(|l| l.trim())
+            .find(|l| l.contains(".go:"))
+            .map(|l| l.split(" +0x").next().unwrap_or(l).trim().to_string())
+    }
+
+    /// The most human-meaningful single line: the `panic:` / `[signal …]`
+    /// header if present, else the first captured line. Used by the RPC
+    /// error builder; `None` only when no line was captured at all.
+    #[must_use]
+    pub fn headline(&self) -> Option<&str> {
+        self.lines
+            .iter()
+            .find(|l| l.contains("panic:") || l.contains("[signal"))
+            .or_else(|| self.lines.first())
+            .map(String::as_str)
+    }
+}
+
 /// Does a provider output line look like a runtime crash / fatal panic?
 /// Matches the documented Go-runtime fatal markers (case-insensitive).
 /// Used by the stderr/stdout drain tasks to route ONLY crash lines into
@@ -166,6 +196,36 @@ pub fn is_crash_line(l: &str) -> bool {
         "[signal ",
     ];
     MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// How many lines following a crash MARKER to keep capturing as part of
+/// the backtrace. A Go fatal emits `panic:` → `[signal …]` → a blank line
+/// → the goroutine frames contiguously; the frames that name the crash
+/// SITE (`…/file.go:NNN +0x…`) carry NO marker of their own, so without a
+/// capture window they drop to `trace!` and the single most useful
+/// diagnostic — the file:line that nil-deref'd — is lost. Refreshed each
+/// time a new marker (e.g. a fresh `goroutine N [running]:`) appears, so a
+/// long multi-goroutine dump keeps flowing; bounded so a healthy provider
+/// log line that merely follows a transient marker can't capture forever.
+const BACKTRACE_WINDOW: usize = 64;
+
+/// Classify one drained provider line for crash capture, advancing the
+/// backtrace-capture `budget`. Returns `true` when the line should be
+/// captured into the [`CrashRing`] + logged at `error!` — either a crash
+/// header ([`is_crash_line`]) OR a non-blank frame within the post-marker
+/// window. Returns `false` for ordinary provider logs (`trace!`) and for
+/// blank lines (which advance the window but aren't worth keeping). One
+/// function so the stderr + stdout drain tasks classify identically.
+fn classify_crash_capture(l: &str, budget: &mut usize) -> bool {
+    if is_crash_line(l) {
+        *budget = BACKTRACE_WINDOW;
+        return true;
+    }
+    if *budget > 0 {
+        *budget -= 1;
+        return !l.trim().is_empty();
+    }
+    false
 }
 
 /// A bounded FIFO ring of captured crash-signal lines. Caps at `cap`
@@ -716,11 +776,16 @@ impl Plugin {
             let crash_w = Arc::clone(&crash);
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
+                // Per-task backtrace-capture window: a crash MARKER opens it;
+                // the following stack frames (which carry no marker) are kept
+                // until it closes, so the `…/file.go:NNN` crash SITE survives.
+                let mut budget = 0usize;
                 while let Ok(Some(l)) = lines.next_line().await {
-                    if is_crash_line(&l) {
-                        // Bump to error! so the panic + SIGSEGV are visible
-                        // at INFO (they were invisible at trace!), and
-                        // capture into the ring the RPC error paths read.
+                    if classify_crash_capture(&l, &mut budget) {
+                        // Bump to error! so the panic + SIGSEGV + the stack
+                        // frames are visible at INFO (they were invisible at
+                        // trace!), and capture into the ring the RPC error
+                        // paths read.
                         tracing::error!(provider = ?bin, stream = "stderr", "{l}");
                         if let Ok(mut g) = crash_w.lock() {
                             g.push(l);
@@ -734,8 +799,9 @@ impl Plugin {
         let crash_w = Arc::clone(&crash);
         tokio::spawn(async move {
             // `reader` owns the rest of stdout after the handshake line.
+            let mut budget = 0usize;
             while let Ok(Some(l)) = reader.next_line().await {
-                if is_crash_line(&l) {
+                if classify_crash_capture(&l, &mut budget) {
                     tracing::error!(provider = ?bin, stream = "stdout", "{l}");
                     if let Ok(mut g) = crash_w.lock() {
                         g.push(l);
@@ -1081,17 +1147,20 @@ mod tests {
 
     #[tokio::test]
     async fn crash_capture_surfaces_panic_from_a_fake_stderr_stream() {
-        // Mirror the spawn() stderr drain task exactly: classify each line,
-        // push crash-signal lines into the shared ring. Drives the same
-        // `is_crash_line` + `CrashRing` path the real drain uses, over an
-        // in-memory stderr stream carrying the live SIGSEGV evidence — no
-        // subprocess needed.
+        // Mirror the spawn() stderr drain task exactly: classify each line
+        // via `classify_crash_capture`, push captured lines into the shared
+        // ring. Drives the same path the real drain uses, over an in-memory
+        // stderr stream carrying the live SIGSEGV evidence — no subprocess.
+        // Crucially this includes the blank line + `.go:NNN` frame Go emits;
+        // the WINDOW must keep those frames even though they carry no marker.
         let stderr_bytes = concat!(
             "[INFO] provider: starting up\n",
             "panic: runtime error: invalid memory address or nil pointer dereference [signal SIGSEGV]\n",
             "[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0xabc]\n",
+            "\n",
             "goroutine 17 [running]:\n",
-            "github.com/cloudflare/.../provider.(*Client).ReadDataSource(...)\n",
+            "github.com/cloudflare/terraform-provider-cloudflare/internal/services/zones.(*ZonesDataSource).Read(0xc0001)\n",
+            "\t/home/runner/work/terraform-provider-cloudflare/internal/services/zones/list_data_source.go:103 +0x2a4\n",
         )
         .as_bytes()
         .to_vec();
@@ -1099,8 +1168,9 @@ mod tests {
         let crash = Arc::new(std::sync::Mutex::new(CrashRing::new(256)));
         let crash_w = Arc::clone(&crash);
         let mut lines = BufReader::new(std::io::Cursor::new(stderr_bytes)).lines();
+        let mut budget = 0usize;
         while let Ok(Some(l)) = lines.next_line().await {
-            if is_crash_line(&l) {
+            if classify_crash_capture(&l, &mut budget) {
                 if let Ok(mut g) = crash_w.lock() {
                     g.push(l);
                 }
@@ -1108,8 +1178,6 @@ mod tests {
         }
 
         let captured = crash.lock().unwrap().snapshot();
-        // The two ordinary frames that match a marker (panic/[signal]/
-        // goroutine) are captured; the "[INFO] starting up" line is not.
         assert!(
             captured
                 .iter()
@@ -1117,10 +1185,49 @@ mod tests {
             "captured crash lines must include the nil-deref panic: {captured:?}"
         );
         assert!(captured.iter().any(|l| l.contains("goroutine 17")));
+        // THE regression this fix closes: the frame that names the crash
+        // SITE (`list_data_source.go:103`) carries no marker, yet must be
+        // captured via the backtrace window — it was dropped at trace! before.
+        assert!(
+            captured.iter().any(|l| l.contains("list_data_source.go:103")),
+            "the .go:NNN crash-site frame must be captured: {captured:?}"
+        );
         assert!(
             !captured.iter().any(|l| l.contains("starting up")),
             "ordinary info logs must NOT be captured as crash lines"
         );
+
+        // And the typed summary distills that frame into the crash SITE.
+        let pc = ProviderCrash { lines: captured, signal: Some(11) };
+        let site = pc.crash_site().expect("crash_site from the .go: frame");
+        assert!(site.contains("list_data_source.go:103"), "site: {site}");
+        assert!(!site.contains("+0x"), "PC offset trimmed from site: {site}");
+        assert!(pc.headline().unwrap().contains("nil pointer dereference"));
+    }
+
+    #[test]
+    fn classify_crash_capture_window_spans_blank_then_frames() {
+        // A bare frame with NO preceding marker is NOT captured (budget 0).
+        let mut budget = 0usize;
+        assert!(!classify_crash_capture(
+            "\t/some/file.go:1 +0x0",
+            &mut budget
+        ));
+        // After a marker the window opens; a blank line passes through
+        // (advances but isn't captured) and the following frame is captured.
+        assert!(classify_crash_capture("panic: boom", &mut budget));
+        assert!(!classify_crash_capture("", &mut budget)); // blank: not kept
+        assert!(classify_crash_capture("\t/some/file.go:42 +0x0", &mut budget));
+    }
+
+    #[test]
+    fn crash_site_is_none_without_a_go_frame() {
+        let pc = ProviderCrash {
+            lines: vec!["panic: boom".into(), "goroutine 1 [running]:".into()],
+            signal: None,
+        };
+        assert!(pc.crash_site().is_none());
+        assert_eq!(pc.headline(), Some("panic: boom"));
     }
 
     #[test]
