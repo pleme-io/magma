@@ -10,6 +10,7 @@
 //! The typed shape matches §II.9 — every apply operation surfaces as
 //! a typed `ApplyChange` Job.
 
+pub mod adopt;
 pub mod engine;
 pub mod import_prepass;
 pub mod shigoto_jobs;

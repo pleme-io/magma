@@ -957,6 +957,92 @@ fn natural_import_id(change: &ResourceChange) -> Option<String> {
         .or_else(|| Some(change.address.name.clone()))
 }
 
+/// Resolve the provider-native import id for adopting a create-conflicted
+/// resource (an `is_already_exists` Create). Most providers key import on the
+/// `name` attribute, so [`natural_import_id`] suffices. Some assign an OPAQUE
+/// server id that is absent from config and only knowable by DISCOVERY — e.g.
+/// `cloudflare_dns_record`'s import id is `<zone_id>/<record_id>`, and
+/// `record_id` can only be found by listing the zone and matching the natural
+/// key (name + type). This is the generic adopt-by-identity resolver: per-type
+/// discovery via a provider read, falling back to the natural `name` id. A
+/// discovery failure returns `None` so the caller falls through to the genuine
+/// create-conflict failure — never an adoption with a wrong id.
+///
+/// New opaque-id resource types register a discovery arm here; this is the
+/// extension point for the generic ObjectExistsUntracked → adopt reaction.
+async fn resolve_import_id(
+    change: &ResourceChange,
+    type_name: &str,
+    lp: &mut LiveProvider,
+) -> Option<String> {
+    // An opaque-id type registers an `AdoptionSpec`; the generic interpreter
+    // discovers its id via a list-data-source read. Everything else keys
+    // import on the natural `name`.
+    match crate::adopt::spec_for(type_name) {
+        Some(spec) => match discover_via_spec(&spec, change, lp).await {
+            Ok(opt) => opt,
+            Err(e) => {
+                tracing::warn!(
+                    address = ?change.address,
+                    resource_type = %type_name,
+                    error = %e,
+                    "magma adopt: import-id discovery failed; cannot adopt"
+                );
+                None
+            }
+        },
+        None => natural_import_id(change),
+    }
+}
+
+/// The generic adoption interpreter: discover a create-conflicted resource's
+/// opaque provider import id by reading the spec's list data source with a
+/// filter derived from the resource config, matching the natural key, and
+/// formatting the import id. Provider-agnostic — every [`crate::adopt::AdoptionSpec`]
+/// drives the SAME read here; a new adoptable type is a new spec value, not a
+/// branch. The data-source config is fully populated (the spec's required
+/// filter fields), so it never hits the null-filter nil-deref class
+/// ApplyRpcContract part 7 fixed.
+async fn discover_via_spec(
+    spec: &crate::adopt::AdoptionSpec,
+    change: &ResourceChange,
+    lp: &mut LiveProvider,
+) -> Result<Option<String>, EngineError> {
+    let Some(after) = change.after.as_ref() else {
+        return Ok(None);
+    };
+    // The provider must expose the list data source to discover the id.
+    let Some(ds_schema) = lp.schema.data_source(&spec.list_data_source).cloned() else {
+        return Ok(None);
+    };
+    let filter = crate::adopt::render_filter(&spec.filter_template, after);
+    let filter_dv =
+        DynamicValue::from_json(&filter, &ds_schema).map_err(|e| EngineError::Cty(e.to_string()))?;
+    let Some(result_dv) = lp
+        .conn
+        .read_data_source(&spec.list_data_source, &filter_dv)
+        .await
+        .map_err(|e| {
+            EngineError::Rpc(
+                provider_local_name(&spec.resource_type),
+                format!("{} discovery: {e}", spec.list_data_source),
+            )
+        })?
+    else {
+        return Ok(None);
+    };
+    let result_json = result_dv
+        .to_json(&ds_schema)
+        .map_err(|e| EngineError::Cty(e.to_string()))?;
+    let Some(rows) = result_json.get("result").and_then(|v| v.as_array()) else {
+        return Ok(None);
+    };
+    let matched = rows
+        .iter()
+        .find(|row| crate::adopt::row_matches(row, after, &spec.match_keys));
+    Ok(matched.and_then(|row| crate::adopt::render_import_id(&spec.id_template, after, row)))
+}
+
 async fn apply_one(
     change: &ResourceChange,
     state: &mut State,
@@ -1067,7 +1153,11 @@ async fn apply_one(
                     // created:0 / all-422 wedge). This is the magma analog of
                     // tofu's importPolicy.autoOnConflict.
                     if change.action == Action::Create && is_already_exists(&msg) {
-                        if let Some(id) = natural_import_id(change) {
+                        // Resolve the import id: the natural `name` for
+                        // name-keyed providers (github), or a discovered
+                        // `<zone_id>/<record_id>` for opaque-id resources
+                        // (cloudflare_dns_record) via the per-type resolver.
+                        if let Some(id) = resolve_import_id(change, &type_name, lp).await {
                             if let Ok(Some(imp_dv)) =
                                 lp.conn.import_resource_state(&type_name, &id).await
                             {
