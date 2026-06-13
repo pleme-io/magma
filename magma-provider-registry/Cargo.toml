@@ -1,0 +1,36 @@
+[package]
+name        = "magma-provider-registry"
+description = "magma — the Dynamic Provider Plane: a typed ProviderRegistry resolving provider binaries from a directory mirror (MAGMA_PROVIDER_DIR), a Postgres registry, or a DB-then-dir fallback chain. Per theory/MAGMA-PROVIDER-PLANE.md."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[features]
+# Default is dir-only resolution — compiles with zero DB deps so the
+# crate builds (and tests) without a live Postgres or libpq.
+default = []
+# `postgres` pulls in sqlx + the PgRegistry impl. The migration in
+# migrations/001_providers_table.sql is the schema it SELECTs against.
+postgres = ["dep:sqlx"]
+
+[dependencies]
+magma-types = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+async-trait = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+blake3      = { workspace = true }
+hex         = { workspace = true }
+sqlx        = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio    = { workspace = true }
+tempfile = { workspace = true }

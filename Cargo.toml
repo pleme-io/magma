@@ -40,6 +40,7 @@ members = [
     "magma-nix",
     "magma-tfmod",
     "magma-repo",
+    "magma-provider-registry",
 ]
 
 [workspace.package]
@@ -103,6 +104,7 @@ magma-rubygems  = { path = "magma-rubygems" }
 magma-nix       = { path = "magma-nix" }
 magma-tfmod     = { path = "magma-tfmod" }
 magma-repo      = { path = "magma-repo" }
+magma-provider-registry = { path = "magma-provider-registry" }
 
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──
 shikumi          = { git = "https://github.com/pleme-io/shikumi" }
@@ -163,6 +165,12 @@ base64 = "0.22"
 rand   = "0.8"
 which  = "6"
 hex    = "0.4"
+
+# ── Database (optional, feature-gated in consumers) ─────────────────────────
+# Postgres driver for the dynamic provider registry. Pure-Rust TLS
+# (rustls) so it builds without a system libpq; runtime-tokio so it
+# shares the apply engine's tokio runtime.
+sqlx   = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "macros", "chrono"] }
 
 # ── Protobuf / gRPC (plugin protocol) ────────────────────────
 prost       = "0.13"
