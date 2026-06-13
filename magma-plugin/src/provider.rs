@@ -37,6 +37,32 @@ enum Client {
     V6(Client6),
 }
 
+/// The client capabilities magma announces on every protocol request that
+/// carries a `ClientCapabilities` field (`ConfigureProvider`, `ReadResource`,
+/// `PlanResourceChange`, `ImportResourceState`, `ReadDataSource`, …).
+///
+/// Modern providers built on terraform-plugin-framework v1.15+ read this
+/// field; an ABSENT (`None`) `ClientCapabilities` drives some framework
+/// data-source / resource paths into a nil dereference — the provider logs
+/// "No announced client capabilities" then SIGSEGVs (observed live: cloudflare
+/// 5.13.0 nil-deref in `server_readdatasource.go` on `cloudflare_accounts`).
+/// We announce explicit capabilities so the field is always PRESENT. magma
+/// does not yet implement provider response *deferral* or *write-only*
+/// attributes, so both are `false` — present-and-false, never absent.
+pub(crate) fn client_caps_v6() -> Option<tfplugin6::ClientCapabilities> {
+    Some(tfplugin6::ClientCapabilities {
+        deferral_allowed: false,
+        write_only_attributes_allowed: false,
+    })
+}
+
+fn client_caps_v5() -> Option<tfplugin5::ClientCapabilities> {
+    Some(tfplugin5::ClientCapabilities {
+        deferral_allowed: false,
+        write_only_attributes_allowed: false,
+    })
+}
+
 /// A connected provider — the protocol-matched client over a dialed channel.
 pub struct ProviderConn {
     client: Client,
@@ -233,6 +259,7 @@ impl ProviderConn {
                     .configure_provider(tfplugin6::configure_provider::Request {
                         terraform_version: terraform_version.to_string(),
                         config: Some(to_pb6(config)),
+                        client_capabilities: client_caps_v6(),
                         ..Default::default()
                     })
                     .await
@@ -245,6 +272,7 @@ impl ProviderConn {
                     .configure(tfplugin5::configure::Request {
                         terraform_version: terraform_version.to_string(),
                         config: Some(to_pb5(config)),
+                        client_capabilities: client_caps_v5(),
                         ..Default::default()
                     })
                     .await
@@ -271,6 +299,7 @@ impl ProviderConn {
                         prior_state: Some(to_pb6(prior_state)),
                         proposed_new_state: Some(to_pb6(proposed_new_state)),
                         config: Some(to_pb6(config)),
+                        client_capabilities: client_caps_v6(),
                         ..Default::default()
                     })
                     .await
@@ -288,6 +317,7 @@ impl ProviderConn {
                         prior_state: Some(to_pb5(prior_state)),
                         proposed_new_state: Some(to_pb5(proposed_new_state)),
                         config: Some(to_pb5(config)),
+                        client_capabilities: client_caps_v5(),
                         ..Default::default()
                     })
                     .await
@@ -363,6 +393,7 @@ impl ProviderConn {
                     .read_resource(tfplugin6::read_resource::Request {
                         type_name: type_name.to_string(),
                         current_state: Some(to_pb6(current_state)),
+                        client_capabilities: client_caps_v6(),
                         ..Default::default()
                     })
                     .await
@@ -376,6 +407,7 @@ impl ProviderConn {
                     .read_resource(tfplugin5::read_resource::Request {
                         type_name: type_name.to_string(),
                         current_state: Some(to_pb5(current_state)),
+                        client_capabilities: client_caps_v5(),
                         ..Default::default()
                     })
                     .await
@@ -403,6 +435,7 @@ impl ProviderConn {
                     .read_data_source(tfplugin6::read_data_source::Request {
                         type_name: type_name.to_string(),
                         config: Some(to_pb6(config)),
+                        client_capabilities: client_caps_v6(),
                         ..Default::default()
                     })
                     .await
@@ -416,6 +449,7 @@ impl ProviderConn {
                     .read_data_source(tfplugin5::read_data_source::Request {
                         type_name: type_name.to_string(),
                         config: Some(to_pb5(config)),
+                        client_capabilities: client_caps_v5(),
                         ..Default::default()
                     })
                     .await
@@ -445,6 +479,7 @@ impl ProviderConn {
                     .import_resource_state(tfplugin6::import_resource_state::Request {
                         type_name: type_name.to_string(),
                         id: id.to_string(),
+                        client_capabilities: client_caps_v6(),
                         ..Default::default()
                     })
                     .await
@@ -464,6 +499,7 @@ impl ProviderConn {
                     .import_resource_state(tfplugin5::import_resource_state::Request {
                         type_name: type_name.to_string(),
                         id: id.to_string(),
+                        client_capabilities: client_caps_v5(),
                         ..Default::default()
                     })
                     .await

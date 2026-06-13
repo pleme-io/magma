@@ -98,7 +98,7 @@ pub async fn import_resource_state(
     let req = tfplugin6::import_resource_state::Request {
         type_name: type_name.to_string(),
         id: id.to_string(),
-        client_capabilities: None,
+        client_capabilities: crate::provider::client_caps_v6(),
         identity: None,
     };
 
