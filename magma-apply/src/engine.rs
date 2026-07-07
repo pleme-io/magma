@@ -947,13 +947,43 @@ fn is_already_exists(msg: &str) -> bool {
 /// The provider-native import id for a create-conflict adoption. Most
 /// providers key import on the `name` attribute (github_repository's id IS
 /// its name); fall back to the resource's address name.
+///
+/// COMPOSITE-KEYED types (2026-07-07): GitHub sub-resources do NOT key import
+/// on a bare `name` — they key on `<parent>:<subkey>` (e.g.
+/// `github_branch_protection` imports by `<repo>:<pattern>`, NOT its address
+/// name "akeyless_stack_main"). Without the composite id, adopt-on-conflict
+/// resolves the wrong import id, `import_resource_state` fails, and the
+/// create-that-exists never adopts — the pleme-io-opensource "8 stuck creates /
+/// all-422" wedge. These arms mirror the pangea-operator import.rs
+/// `bundled_natural_ids` templates so magma's in-engine reactive adopt matches
+/// the operator's proactive prepass. Non-github / name-keyed types fall through
+/// to the original `name`/address-name behavior unchanged.
 fn natural_import_id(change: &ResourceChange) -> Option<String> {
-    change
-        .after
-        .as_ref()
-        .and_then(|a| a.get("name"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
+    let get = |k: &str| {
+        change
+            .after
+            .as_ref()
+            .and_then(|a| a.get(k))
+            .and_then(|v| v.as_str())
+    };
+    let pair = |a: &str, b: &str| match (get(a), get(b)) {
+        (Some(x), Some(y)) => Some(format!("{x}:{y}")),
+        _ => None,
+    };
+    let composite = match change.address.type_id.0.as_str() {
+        "github_branch_protection" => pair("repository_id", "pattern"),
+        "github_actions_secret" => pair("repository", "secret_name"),
+        "github_actions_variable" => pair("repository", "variable_name"),
+        "github_repository_environment" => pair("repository", "environment"),
+        "github_issue_label" => pair("repository", "name"),
+        // Repo-scoped singletons import by the parent repo name.
+        "github_repository_topics" | "github_repository_collaborators" => {
+            get("repository").map(str::to_string)
+        }
+        _ => None,
+    };
+    composite
+        .or_else(|| get("name").map(str::to_string))
         .or_else(|| Some(change.address.name.clone()))
 }
 
@@ -1692,6 +1722,90 @@ mod tests {
         assert_eq!(after["zone_id"], json!("0da42c8d2132a9ddaf714f9e7c920711"));
         assert_eq!(after["account_id"], json!("acct-9f3"));
         assert_eq!(after["comment"], json!("tunnel for quero.cloud"));
+    }
+
+    /// COMPOSITE-KEY IMPORT IDS (2026-07-07): the github sub-resource adopt
+    /// fix. Without composite ids, `github_branch_protection.akeyless_stack_main`
+    /// would adopt by the WRONG id "akeyless_stack_main" (its address name) →
+    /// import_resource_state fails → the create-that-exists never adopts (the
+    /// pleme-io-opensource 8-stuck-creates / all-422 wedge). Name-keyed
+    /// (github_repository) and non-github types are unchanged.
+    #[test]
+    fn natural_import_id_builds_composite_keys_for_github_sub_resources() {
+        use magma_types::{ModulePath, ResourceKind, ResourceTypeId};
+        let mk = |ty: &str, name: &str, after: serde_json::Value| ResourceChange {
+            address: ResourceAddress {
+                module: ModulePath::root(),
+                kind: ResourceKind::Managed,
+                type_id: ResourceTypeId(ty.into()),
+                name: name.into(),
+                key: None,
+            },
+            action: Action::Create,
+            before: None,
+            after: Some(after),
+            reasons: vec![],
+        };
+        // Composite <parent>:<subkey>, NOT the bare address name.
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_branch_protection",
+                "akeyless_stack_main",
+                serde_json::json!({ "repository_id": "akeyless_stack", "pattern": "main" })
+            )),
+            Some("akeyless_stack:main".to_string())
+        );
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_actions_secret",
+                "breathe_token",
+                serde_json::json!({ "repository": "breathe", "secret_name": "TOKEN" })
+            )),
+            Some("breathe:TOKEN".to_string())
+        );
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_repository_environment",
+                "breathe_prod",
+                serde_json::json!({ "repository": "breathe", "environment": "prod" })
+            )),
+            Some("breathe:prod".to_string())
+        );
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_issue_label",
+                "breathe_bug",
+                serde_json::json!({ "repository": "breathe", "name": "bug" })
+            )),
+            Some("breathe:bug".to_string())
+        );
+        // Repo-scoped singleton imports by the parent repo name.
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_repository_topics",
+                "breathe",
+                serde_json::json!({ "repository": "breathe", "topics": ["rust"] })
+            )),
+            Some("breathe".to_string())
+        );
+        // Name-keyed github_repository unchanged: the id IS the name.
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_repository",
+                "breathe",
+                serde_json::json!({ "name": "breathe" })
+            )),
+            Some("breathe".to_string())
+        );
+        // A composite type missing a key falls back to name/address-name (no panic).
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_actions_secret",
+                "orphan",
+                serde_json::json!({ "repository": "breathe" })
+            )),
+            Some("orphan".to_string())
+        );
     }
 
     #[test]
