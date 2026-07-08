@@ -1231,17 +1231,53 @@ async fn apply_one(
                                 // fail with "Could not resolve to a node with the
                                 // global id of ''". Refresh the stub; fall back
                                 // to it only if the read can't confirm.
-                                let full_dv = match lp
-                                    .conn
-                                    .read_resource(&type_name, &imp_dv)
-                                    .await
-                                {
+                                // RETRY the confirming ReadResource. Every other
+                                // read path uses rpc_retry!; this one didn't, so
+                                // a TRANSIENT read failure (RPC hiccup, rate
+                                // limit, momentary provider crash) fell straight
+                                // through to `imp_dv` — the bare import STUB (id
+                                // only). For a name-keyed github_repository that
+                                // persists `attributes.name = null`, and every
+                                // dependent `${github_repository.X.name}` then
+                                // resolves to null → empty-URL 404. This is the
+                                // izumi/asobi 2/831 corruption: not a legacy
+                                // entry, but two adopts whose confirming read
+                                // hiccupped with no retry.
+                                let full_dv = match rpc_retry!(
+                                    pacer.as_deref(),
+                                    lp.conn.read_resource(&type_name, &imp_dv)
+                                ) {
                                     Ok(Some(read_dv)) => read_dv,
                                     _ => imp_dv,
                                 };
-                                let attrs = full_dv
+                                let mut attrs = full_dv
                                     .to_json(&implied)
                                     .map_err(|e| EngineError::Cty(e.to_string()))?;
+                                // Defense-in-depth: if even the retried read
+                                // couldn't confirm and we fell back to the stub,
+                                // the import id IS the name for a name-keyed
+                                // github_repository — backfill it so the adopted
+                                // state is NEVER identity-less (computed attrs may
+                                // still be incomplete; a refresh reconciles them,
+                                // and the ${…name} fallback in substitute_refs
+                                // covers references either way).
+                                if change.address.type_id.0 == "github_repository"
+                                    && attrs
+                                        .get("name")
+                                        .map_or(true, serde_json::Value::is_null)
+                                {
+                                    if let Some(o) = attrs.as_object_mut() {
+                                        o.insert(
+                                            "name".to_string(),
+                                            serde_json::Value::String(id.clone()),
+                                        );
+                                    }
+                                    tracing::warn!(
+                                        address = ?change.address,
+                                        import_id = %id,
+                                        "magma apply: adopt ReadResource could not confirm a name after retry; backfilled identity from import id (computed attrs may be incomplete)"
+                                    );
+                                }
                                 insert_resource(state, &change.address, attrs.clone());
                                 tracing::info!(
                                     address = ?change.address,
