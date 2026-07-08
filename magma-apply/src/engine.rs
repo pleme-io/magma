@@ -1460,19 +1460,68 @@ fn ref_target(inner: &str) -> Option<(String, String)> {
     None
 }
 
+/// The resource `<name>` of a `github_repository.<name>.name` reference path
+/// (inner, no `${}` wrapper). In the org-posture architecture a
+/// `github_repository` resource's `name` attribute IS its resource name, so
+/// this is a sound fallback when the state value is null/unresolvable — it
+/// resolves `${github_repository.izumi.name}` → `izumi` syntactically. Returns
+/// `None` for any other shape (`.node_id`, deeper paths, non-repo types) so the
+/// fallback is scoped strictly to the one attribute where name == resource-name.
+fn repo_name_ref_fallback(inner: &str) -> Option<String> {
+    let mut segs = inner.split('.');
+    match (segs.next(), segs.next(), segs.next(), segs.next()) {
+        (Some("github_repository"), Some(name), Some("name"), None) => {
+            let name = name.split('[').next().unwrap_or(name);
+            (!name.is_empty()).then(|| name.to_string())
+        }
+        _ => None,
+    }
+}
+
 /// Replace `${type.name.attr}` references in-place against `sm`. A value that
 /// is exactly one reference is replaced by the resolved value (preserving its
 /// type); an interpolated string has each `${…}` substituted with the
 /// resolved value stringified. Unresolvable references are left untouched
-/// (the apply may then fail, surfacing the gap rather than masking it).
+/// (the apply may then fail, surfacing the gap rather than masking it) — except
+/// a null/unresolvable `${github_repository.<name>.name}`, which falls back to
+/// `<name>` (see [`repo_name_ref_fallback`]).
 fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::Value>) {
     match v {
         serde_json::Value::String(s) => {
             let trimmed = s.trim();
             if let Some(inner) = trimmed.strip_prefix("${").and_then(|x| x.strip_suffix('}')) {
                 if !inner.contains("${") {
-                    if let Ok(resolved) = resolve_reference(trimmed, sm) {
-                        *v = resolved;
+                    match resolve_reference(trimmed, sm) {
+                        // A `${github_repository.<name>.name}` reference whose
+                        // resolved value is NULL — a corrupt / not-yet-refreshed
+                        // repo state entry (2/831 on rio carry `attributes.name =
+                        // null`; the operator's `refresh` is an M0.10 no-op so it
+                        // never self-heals) — would set the sub-resource's
+                        // `repository` to null → `repos/<owner>//<child>` 404 →
+                        // NOT `is_already_exists` → the reactive adopt-on-conflict
+                        // path (natural_import_id) is never reached, so an
+                        // existing GitHub label/perm can't adopt. The repo's
+                        // `.name` attribute IS its resource name in the
+                        // org-posture architecture, so fall back to <name>
+                        // syntactically (mirrors collect_phantom_parents +
+                        // natural_import_id's deref). Only `.name` refs; only on
+                        // a null/unresolvable result — a genuine resolved value
+                        // always wins.
+                        Ok(resolved) => {
+                            *v = if resolved.is_null() {
+                                repo_name_ref_fallback(inner)
+                                    .map_or(resolved, serde_json::Value::String)
+                            } else {
+                                resolved
+                            };
+                        }
+                        Err(_) => {
+                            // Unresolvable: repo-name fallback if applicable,
+                            // else leave the literal untouched (surface the gap).
+                            if let Some(n) = repo_name_ref_fallback(inner) {
+                                *v = serde_json::Value::String(n);
+                            }
+                        }
                     }
                     return;
                 }
@@ -1510,6 +1559,62 @@ fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repo_name_ref_fallback_scoped_to_dot_name() {
+        assert_eq!(
+            repo_name_ref_fallback("github_repository.izumi.name"),
+            Some("izumi".to_string())
+        );
+        // strips a bracket index on the name segment
+        assert_eq!(
+            repo_name_ref_fallback("github_repository.izumi[0].name"),
+            Some("izumi".to_string())
+        );
+        // NOT `.name` → no fallback (node_id ≠ resource-name)
+        assert_eq!(repo_name_ref_fallback("github_repository.izumi.node_id"), None);
+        // deeper path → no fallback
+        assert_eq!(repo_name_ref_fallback("github_repository.izumi.name.x"), None);
+        // other type → no fallback
+        assert_eq!(repo_name_ref_fallback("github_branch_protection.x.name"), None);
+    }
+
+    #[test]
+    fn substitute_refs_falls_back_on_null_repo_name() {
+        // THE izumi residual: a corrupt/unrefreshed `github_repository` state
+        // entry carries `attributes.name = null` (2/831 on rio). A sub-resource
+        // `repository = ${github_repository.izumi.name}` then resolves to Null →
+        // empty-repo 404 → never reaches the reactive adopt. Fall back to the
+        // resource name so the create hits `.../izumi/labels` → 422 → adopt.
+        let mut sm: HashMap<String, serde_json::Value> = HashMap::new();
+        sm.insert(
+            "github_repository".into(),
+            serde_json::json!({ "izumi": { "name": serde_json::Value::Null } }),
+        );
+        let mut repo = serde_json::json!("${github_repository.izumi.name}");
+        substitute_refs(&mut repo, &sm);
+        assert_eq!(repo, serde_json::json!("izumi"));
+
+        // A genuine resolved name always wins over the fallback.
+        let mut sm2: HashMap<String, serde_json::Value> = HashMap::new();
+        sm2.insert(
+            "github_repository".into(),
+            serde_json::json!({ "breathe": { "name": "breathe" } }),
+        );
+        let mut repo2 = serde_json::json!("${github_repository.breathe.name}");
+        substitute_refs(&mut repo2, &sm2);
+        assert_eq!(repo2, serde_json::json!("breathe"));
+
+        // A null NON-`.name` ref keeps prior behavior (replace-with-null, no fallback).
+        let mut node = serde_json::json!("${github_repository.izumi.node_id}");
+        let mut sm3: HashMap<String, serde_json::Value> = HashMap::new();
+        sm3.insert(
+            "github_repository".into(),
+            serde_json::json!({ "izumi": { "node_id": serde_json::Value::Null } }),
+        );
+        substitute_refs(&mut node, &sm3);
+        assert_eq!(node, serde_json::Value::Null);
+    }
 
     #[test]
     fn rpc_error_folds_provider_crash_into_typed_variant() {
