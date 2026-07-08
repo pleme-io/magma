@@ -966,20 +966,49 @@ fn natural_import_id(change: &ResourceChange) -> Option<String> {
             .and_then(|a| a.get(k))
             .and_then(|v| v.as_str())
     };
+    // A sub-resource's `repository` field is authored as a typed reference to
+    // its parent — `${github_repository.<name>.name}`. The plan's `after` holds
+    // RAW config: reference substitution runs later in the create path, AFTER
+    // import-id construction, so `get("repository")` here yields the literal
+    // `${github_repository.izumi.name}`, not `izumi`. The parent repo's `.name`
+    // attribute IS its resource name (the org-posture convention), so extract
+    // `<name>` syntactically — exactly as `collect_phantom_parents` does. This
+    // is state-independent: the import id resolves to `izumi:bug` whether or not
+    // izumi's `github_repository` is currently in the state_map, so the existing
+    // GitHub labels adopt instead of failing `${…}:bug` import → empty-repo 404
+    // create → parent-phantom-drop loop (the izumi/asobi "8 stuck creates"
+    // residual after the composite-key fix). An already-resolved value (no
+    // `${github_repository.` prefix) passes through unchanged. NOTE: only `.name`
+    // references deref this way — `github_branch_protection.repository_id` is a
+    // `${…node_id}` reference whose value is NOT the name, so it keeps raw `get`.
+    let deref_repo = |v: &str| -> String {
+        v.strip_prefix("${github_repository.")
+            .and_then(|rest| rest.split(['.', '}']).next())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(v)
+            .to_string()
+    };
+    let repo_get = |k: &str| get(k).map(deref_repo);
     let pair = |a: &str, b: &str| match (get(a), get(b)) {
         (Some(x), Some(y)) => Some(format!("{x}:{y}")),
         _ => None,
     };
+    // `<repo>:<subkey>` where `<repo>` is a parent reference to deref.
+    let pair_repo = |a: &str, b: &str| match (repo_get(a), get(b)) {
+        (Some(x), Some(y)) => Some(format!("{x}:{y}")),
+        _ => None,
+    };
     let composite = match change.address.type_id.0.as_str() {
+        // repository_id is a `${…node_id}` reference, NOT `.name` — keep raw.
         "github_branch_protection" => pair("repository_id", "pattern"),
-        "github_actions_secret" => pair("repository", "secret_name"),
-        "github_actions_variable" => pair("repository", "variable_name"),
-        "github_repository_environment" => pair("repository", "environment"),
-        "github_issue_label" => pair("repository", "name"),
+        "github_actions_secret" => pair_repo("repository", "secret_name"),
+        "github_actions_variable" => pair_repo("repository", "variable_name"),
+        "github_repository_environment" => pair_repo("repository", "environment"),
+        "github_issue_label" => pair_repo("repository", "name"),
         // Repo-scoped singletons import by the parent repo name.
-        "github_repository_topics" | "github_repository_collaborators" => {
-            get("repository").map(str::to_string)
-        }
+        "github_repository_topics"
+        | "github_repository_collaborators"
+        | "github_actions_repository_permissions" => repo_get("repository"),
         _ => None,
     };
     composite
@@ -1805,6 +1834,50 @@ mod tests {
                 serde_json::json!({ "repository": "breathe" })
             )),
             Some("orphan".to_string())
+        );
+        // THE izumi/asobi residual: a sub-resource's `repository` is authored as
+        // an UNRESOLVED `${github_repository.<name>.name}` reference in plan
+        // `after` (substitution runs later, in the create path). The import id
+        // must still resolve to `<name>:<subkey>` STATE-INDEPENDENTLY, so the
+        // existing GitHub labels adopt instead of failing `${…}:bug` import →
+        // empty-repo-404 create → parent-phantom-drop loop.
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_issue_label",
+                "izumi_label_bug",
+                serde_json::json!({ "repository": "${github_repository.izumi.name}", "name": "bug" })
+            )),
+            Some("izumi:bug".to_string())
+        );
+        // actions_repository_permissions imports by the (deref'd) parent repo name.
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_actions_repository_permissions",
+                "asobi_actions",
+                serde_json::json!({ "repository": "${github_repository.asobi.name}" })
+            )),
+            Some("asobi".to_string())
+        );
+        // A repo-scoped singleton with an unresolved ref derefs too.
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_repository_topics",
+                "izumi",
+                serde_json::json!({ "repository": "${github_repository.izumi.name}", "topics": ["rust"] })
+            )),
+            Some("izumi".to_string())
+        );
+        // BOUNDARY: branch_protection's `repository_id` is a `${…node_id}`
+        // reference whose value is NOT the resource name — it must stay raw
+        // (deref'ing to the name would be wrong). Documents the intentional
+        // scope: only `.name` references deref.
+        assert_eq!(
+            natural_import_id(&mk(
+                "github_branch_protection",
+                "izumi_main",
+                serde_json::json!({ "repository_id": "${github_repository.izumi.node_id}", "pattern": "main" })
+            )),
+            Some("${github_repository.izumi.node_id}:main".to_string())
         );
     }
 
