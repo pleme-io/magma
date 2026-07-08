@@ -25,8 +25,7 @@ use magma_graph::ResourceGraph;
 use magma_plugin::provider::{ProviderConn, ProviderSchema, is_retryable};
 use magma_plugin::{Plugin, PluginSpec};
 use magma_types::{
-    Action, Plan, ResourceAddress, ResourceChange, ResourceKind, State, StateInstance,
-    StateResource,
+    Action, Plan, ResourceAddress, ResourceChange, State, StateInstance, StateResource,
 };
 
 use crate::{AppliedChange, ApplyOutcome, FailedChange, insert_resource, remove_resource};
@@ -285,45 +284,14 @@ pub async fn run_plan_with_providers(
     // NoOp (matched) changes pass through with no provider call and no
     // ordering; real changes (Create/Update/Delete/…) get dependency-ordered
     // + reference-substituted apply below.
-    let (noops, rest): (Vec<&ResourceChange>, Vec<&ResourceChange>) = plan
+    let (noops, reals): (Vec<&ResourceChange>, Vec<&ResourceChange>) = plan
         .resource_changes
         .iter()
         .partition(|c| c.action == Action::NoOp);
-    // Data sources are evaluated up front (ReadDataSource) so their results
-    // populate the resolution map under `data.<type>.<name>` BEFORE any managed
-    // resource that references them is applied. Without this the `${data.*}`
-    // strings leaked verbatim into the provider RPC (the rio-drive 400).
-    let (datas, reals): (Vec<&ResourceChange>, Vec<&ResourceChange>) = rest
-        .into_iter()
-        .partition(|c| c.address.kind == ResourceKind::Data);
 
     for change in noops {
         match apply_one(change, state, &mut registry).await {
             Ok(a) => applied.push(a),
-            Err(e) => failed.push(mkfail(change, e)),
-        }
-    }
-
-    // Read each data source + fold its result into state_map under the `data`
-    // head, so `${data.<type>.<name>.<attr>}` references resolve in the managed
-    // pass below. (Data sources are not graph-ordered — they have no computed
-    // deps on managed resources; ref_target deliberately returns None for them.)
-    for change in &datas {
-        // Resolve any refs in the data-source config first (usually literal).
-        let mut resolved = (*change).clone();
-        if let Some(after) = resolved.after.as_mut() {
-            substitute_refs(after, &state_map);
-        }
-        match read_data_source_one(&resolved, &mut registry).await {
-            Ok(result) => {
-                sm_insert_data(&mut state_map, &change.address, &result);
-                applied.push(AppliedChange {
-                    address: change.address.clone(),
-                    action: change.action,
-                    before: None,
-                    after: Some(result),
-                });
-            }
             Err(e) => failed.push(mkfail(change, e)),
         }
     }
@@ -504,13 +472,6 @@ pub struct RefreshReport {
     /// error). Refresh NEVER drops state on uncertainty — only on a
     /// confirmed null `ReadResource`.
     pub kept_on_error: usize,
-    /// Whole-resource drops that the mass-drop safety guard SUPPRESSED and
-    /// restored (see [`refresh_named`]). Non-zero ⇒ a systemic read
-    /// malfunction was detected (a large fraction of probed targets all read
-    /// "gone" at once) and the drop was refused to protect state from the
-    /// false-drop → +N-create → adopt oscillation. `dropped_*` are zeroed when
-    /// this fires.
-    pub suppressed_mass_drop: usize,
 }
 
 /// Refresh `state` against the providers' ACTUAL current state — terraform's
@@ -641,23 +602,6 @@ pub fn collect_suspect_repos(plan: &Plan) -> HashSet<String> {
     names
 }
 
-/// Below this many whole-resource drops in a single [`refresh_named`] pass,
-/// the result is trusted outright — genuine phantoms are rare, individual
-/// events. At or above it AND covering ≥ half the probed targets, the drop is
-/// treated as a systemic `ReadResource` malfunction (provider auth/owner/
-/// read-id, mass rate-limit miscoded as null) and SUPPRESSED. A real
-/// deployment never loses half its resources between two plans.
-const MASS_DROP_FLOOR: usize = 8;
-
-/// The mass-drop guard's decision (pure, so it is unit-tested without a
-/// provider). Returns `true` when the staged whole-resource drops should be
-/// REFUSED — i.e. the drop is both absolutely non-trivial (`>= MASS_DROP_FLOOR`)
-/// and covers at least half the probed targets. Such a pass is a systemic
-/// `ReadResource` malfunction, not N genuine phantoms. See [`refresh_named`].
-fn mass_drop_should_suppress(dropped: usize, targeted: usize) -> bool {
-    dropped >= MASS_DROP_FLOOR && dropped.saturating_mul(2) >= targeted
-}
-
 /// Targeted, low-cost cousin of [`refresh_state`]: `ReadResource` ONLY the
 /// resources of `type_id` whose resource-name OR `attributes["name"]` is in
 /// `names`, dropping any the provider confirms **gone** (cty-null). Same
@@ -683,10 +627,6 @@ pub async fn refresh_named(
     let mut registry = Registry::new(ctx);
     let pacer = ctx.pacer.clone();
     let mut kept: Vec<StateResource> = Vec::new();
-    // Whole-resource drops are STAGED, not applied, so the mass-drop guard
-    // below can restore them if the read looks systemically broken.
-    let mut staged_drop: Vec<StateResource> = Vec::new();
-    let mut targeted: usize = 0;
 
     for resource in std::mem::take(&mut state.resources) {
         let attr_name = resource
@@ -701,7 +641,6 @@ pub async fn refresh_named(
             kept.push(resource);
             continue;
         }
-        targeted += 1;
 
         let type_name = resource.address.type_id.0.clone();
         let provider_name = provider_local_name(&type_name);
@@ -722,7 +661,6 @@ pub async fn refresh_named(
         };
 
         let mut kept_instances: Vec<StateInstance> = Vec::new();
-        let mut gone_instances: Vec<StateInstance> = Vec::new();
         for inst in resource.instances {
             let prior_dv = match DynamicValue::from_json(&inst.attributes, &implied) {
                 Ok(d) => d,
@@ -745,11 +683,8 @@ pub async fn refresh_named(
             };
             match rpc_retry!(pacer.as_deref(), lp.conn.read_resource(&type_name, &prior_dv)) {
                 Ok(None) => {
-                    // Provider confirms gone — STAGE the instance for dropping.
-                    // The mass-drop guard (below) may yet restore it if the
-                    // whole pass looks like a systemic read malfunction.
+                    // Confirmed gone — drop the phantom so the plan re-creates it.
                     report.dropped_instances += 1;
-                    gone_instances.push(inst);
                 }
                 Ok(Some(dv)) => match dv.to_json(&implied) {
                     Ok(attrs) => {
@@ -770,15 +705,8 @@ pub async fn refresh_named(
                 }
             }
         }
-        if kept_instances.is_empty() && !gone_instances.is_empty() {
-            // Every instance read gone — STAGE the whole-resource drop so the
-            // guard can decide. (A resource with zero instances and no gones
-            // falls through to the keep path unchanged.)
+        if kept_instances.is_empty() {
             report.dropped_resources += 1;
-            staged_drop.push(StateResource {
-                instances: gone_instances,
-                ..resource
-            });
         } else {
             kept.push(StateResource {
                 instances: kept_instances,
@@ -786,51 +714,8 @@ pub async fn refresh_named(
             });
         }
     }
-
-    // ── Mass-drop safety guard (attractor invariant) ─────────────────────
-    // "Drop only on confirmed-gone" is safe ONLY if ReadResource is reliable.
-    // If a large fraction of probed targets all read "gone" in a single pass,
-    // that is not N genuine phantoms — it is a systemic read malfunction
-    // (provider auth/owner/read-id, mass rate-limit miscoded as cty-null, …).
-    // Honoring it corrupts state into a false-drop → +N-create → adopt
-    // oscillation that never converges. So when the staged drop is both
-    // absolutely non-trivial AND covers ≥ half the probed targets, REFUSE it:
-    // restore everything and surface the malfunction via `suppressed_mass_drop`.
-    let suppress = mass_drop_should_suppress(report.dropped_resources, targeted);
-    if suppress {
-        report.suppressed_mass_drop = report.dropped_resources;
-        report.dropped_resources = 0;
-        report.dropped_instances = 0;
-        kept.append(&mut staged_drop);
-    }
     state.resources = kept;
     report
-}
-
-/// Does a provider error message indicate the resource already exists
-/// (a create-conflict to be adopted via import, not a hard failure)?
-/// Matches the GitHub provider's 422 shapes ("name already exists on this
-/// account", "has already been blocked") + generic already-exists/409.
-fn is_already_exists(msg: &str) -> bool {
-    let m = msg.to_ascii_lowercase();
-    m.contains("already exists")
-        || m.contains("already been")
-        || m.contains("name_already_in_use")
-        || m.contains("422")
-        || m.contains("409")
-}
-
-/// The provider-native import id for a create-conflict adoption. Most
-/// providers key import on the `name` attribute (github_repository's id IS
-/// its name); fall back to the resource's address name.
-fn natural_import_id(change: &ResourceChange) -> Option<String> {
-    change
-        .after
-        .as_ref()
-        .and_then(|a| a.get("name"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .or_else(|| Some(change.address.name.clone()))
 }
 
 async fn apply_one(
@@ -902,68 +787,13 @@ async fn apply_one(
                 &config_dv
             ))
             .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
-            let new_dv = match rpc_retry!(pacer.as_deref(), lp.conn.apply_resource_change(
+            let new_dv = rpc_retry!(pacer.as_deref(), lp.conn.apply_resource_change(
                 &type_name,
                 &prior_dv,
                 &planned_dv,
                 &config_dv
-            )) {
-                Ok(dv) => dv,
-                Err(e) => {
-                    let msg = e.to_string();
-                    // Import-on-conflict: a Create whose provider returns an
-                    // "already exists" diagnostic (e.g. GitHub 422) means the
-                    // resource EXISTS in cloud but is absent from magma's
-                    // state. Adopt it via ImportResourceState instead of
-                    // failing — otherwise the plan re-creates it every cycle
-                    // and 422-loops forever (the pleme-io-opensource
-                    // created:0 / all-422 wedge). This is the magma analog of
-                    // tofu's importPolicy.autoOnConflict.
-                    if change.action == Action::Create && is_already_exists(&msg) {
-                        if let Some(id) = natural_import_id(change) {
-                            if let Ok(Some(imp_dv)) =
-                                lp.conn.import_resource_state(&type_name, &id).await
-                            {
-                                // ImportResourceState returns a STUB (the id +
-                                // minimal fields). The terraform import protocol
-                                // requires a follow-up ReadResource to populate
-                                // the full current attributes (node_id, name,
-                                // …). Skipping it leaves computed attrs empty, so
-                                // dependents referencing them (e.g.
-                                // github_branch_protection.repository_id =
-                                // github_repository.X.node_id) resolve to "" and
-                                // fail with "Could not resolve to a node with the
-                                // global id of ''". Refresh the stub; fall back
-                                // to it only if the read can't confirm.
-                                let full_dv = match lp
-                                    .conn
-                                    .read_resource(&type_name, &imp_dv)
-                                    .await
-                                {
-                                    Ok(Some(read_dv)) => read_dv,
-                                    _ => imp_dv,
-                                };
-                                let attrs = full_dv
-                                    .to_json(&implied)
-                                    .map_err(|e| EngineError::Cty(e.to_string()))?;
-                                insert_resource(state, &change.address, attrs.clone());
-                                tracing::info!(
-                                    address = ?change.address,
-                                    import_id = %id,
-                                    "magma apply: adopted pre-existing resource via import-on-conflict + ReadResource refresh (was already-exists)"
-                                );
-                                return Ok(AppliedChange {
-                                    address: change.address.clone(),
-                                    action: change.action,
-                                    before: None,
-                                    after: Some(attrs),
-                                });
-                            }
-                        }
-                    }
-                    return Err(EngineError::Rpc(provider_name.clone(), msg));
-                }
-            };
+            ))
+            .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?;
             let new_attrs = new_dv
                 .to_json(&implied)
                 .map_err(|e| EngineError::Cty(e.to_string()))?;
@@ -1006,64 +836,6 @@ fn sm_insert(
     if let serde_json::Value::Object(map) = entry {
         map.insert(addr.name.clone(), attrs.clone());
     }
-}
-
-/// Insert a data-source result under the `data` head, so a reference like
-/// `${data.cloudflare_zones.z.result[0].id}` (head = `data`) resolves — distinct
-/// from `sm_insert`'s `type → name` shape for managed resources.
-fn sm_insert_data(
-    sm: &mut HashMap<String, serde_json::Value>,
-    addr: &ResourceAddress,
-    attrs: &serde_json::Value,
-) {
-    let data = sm
-        .entry("data".to_string())
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    if let serde_json::Value::Object(by_type) = data {
-        let t = by_type
-            .entry(addr.type_id.0.clone())
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if let serde_json::Value::Object(by_name) = t {
-            by_name.insert(addr.name.clone(), attrs.clone());
-        }
-    }
-}
-
-/// Evaluate one data source: encode its config against the DATA-SOURCE schema,
-/// call `ReadDataSource`, decode the result to JSON (for `sm_insert_data`).
-async fn read_data_source_one(
-    change: &ResourceChange,
-    reg: &mut Registry<'_>,
-) -> Result<serde_json::Value, EngineError> {
-    let pacer = reg.ctx.pacer.clone();
-    if let Some(p) = pacer.as_deref() {
-        let _ = p.acquire().await;
-    }
-    let type_name = change.address.type_id.0.clone();
-    let provider_name = provider_local_name(&type_name);
-    let lp = reg.get(&provider_name).await?;
-    let implied = lp
-        .schema
-        .data_source(&type_name)
-        .ok_or_else(|| EngineError::NoResourceSchema(type_name.clone(), provider_name.clone()))?
-        .clone();
-    let config_json = change.after.clone().unwrap_or(serde_json::Value::Null);
-    let config_dv = DynamicValue::from_json(&config_json, &implied)
-        .map_err(|e| EngineError::Cty(e.to_string()))?;
-    let state_dv = lp
-        .conn
-        .read_data_source(&type_name, &config_dv)
-        .await
-        .map_err(|e| EngineError::Rpc(provider_name.clone(), e.to_string()))?
-        .ok_or_else(|| {
-            EngineError::Rpc(
-                provider_name.clone(),
-                format!("data source {type_name} returned null state"),
-            )
-        })?;
-    state_dv
-        .to_json(&implied)
-        .map_err(|e| EngineError::Cty(e.to_string()))
 }
 
 /// Collect every `${…}` reference path (inner, no wrapper) found anywhere in
@@ -1161,28 +933,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mass_drop_guard_suppresses_systemic_read_failure() {
-        // The live pleme-io-opensource bug: 661 existing repos all read "gone"
-        // in one pass → must be refused (systemic ReadResource malfunction).
-        assert!(mass_drop_should_suppress(661, 661));
-        // Whole suspect set going gone at once → refuse regardless of size.
-        assert!(mass_drop_should_suppress(MASS_DROP_FLOOR, MASS_DROP_FLOOR));
-        // Half the probed targets going gone → refuse (boundary, inclusive).
-        assert!(mass_drop_should_suppress(MASS_DROP_FLOOR, MASS_DROP_FLOOR * 2));
-    }
-
-    #[test]
-    fn mass_drop_guard_trusts_genuine_phantoms() {
-        // Nothing dropped → never suppress.
-        assert!(!mass_drop_should_suppress(0, 1000));
-        // A handful of real phantoms among many healthy targets → honor it.
-        assert!(!mass_drop_should_suppress(2, 600));
-        assert!(!mass_drop_should_suppress(MASS_DROP_FLOOR - 1, MASS_DROP_FLOOR - 1));
-        // At/above the floor but < half of probed targets → honor it.
-        assert!(!mass_drop_should_suppress(MASS_DROP_FLOOR, MASS_DROP_FLOOR * 2 + 1));
-    }
-
-    #[test]
     fn apply_context_has_default_pacer() {
         // Every apply paces mutation RPCs by default (1 req/s).
         let ctx = ApplyContext::new(PathBuf::from("/tmp/x"));
@@ -1247,59 +997,6 @@ mod tests {
         let mut dangling = json!({ "x": "${github_repository.ghost.id}" });
         substitute_refs(&mut dangling, &sm);
         assert_eq!(dangling["x"], json!("${github_repository.ghost.id}"));
-    }
-
-    #[test]
-    fn data_source_reference_resolution() {
-        use magma_types::{ModulePath, ResourceKind, ResourceTypeId};
-        use serde_json::json;
-        // This is the rio-drive Cloudflare bug, captured as a unit test: a
-        // managed resource references a `data` source result by index, e.g.
-        // `${data.cloudflare_zones.quero.result[0].id}`. Before the data-source
-        // read pass + `data` head insert, that string leaked verbatim into the
-        // provider RPC → Cloudflare 400. It must now resolve.
-        let mut sm: HashMap<String, serde_json::Value> = HashMap::new();
-
-        // sm_insert_data folds a ReadDataSource result under the `data` head.
-        let zones_addr = ResourceAddress {
-            module: ModulePath::root(),
-            kind: ResourceKind::Data,
-            type_id: ResourceTypeId("cloudflare_zones".into()),
-            name: "quero".into(),
-            key: None,
-        };
-        sm_insert_data(
-            &mut sm,
-            &zones_addr,
-            &json!({ "result": [ { "id": "0da42c8d2132a9ddaf714f9e7c920711", "name": "quero.cloud" } ] }),
-        );
-        let acct_addr = ResourceAddress {
-            module: ModulePath::root(),
-            kind: ResourceKind::Data,
-            type_id: ResourceTypeId("cloudflare_accounts".into()),
-            name: "main".into(),
-            key: None,
-        };
-        sm_insert_data(
-            &mut sm,
-            &acct_addr,
-            &json!({ "result": [ { "id": "acct-9f3" } ] }),
-        );
-
-        // ref_target keeps returning None for data refs (they're read up front,
-        // never graph-ordered against managed resources).
-        assert_eq!(ref_target("data.cloudflare_zones.quero.result[0].id"), None);
-
-        // A managed tunnel config referencing both data sources, indexed.
-        let mut after = json!({
-            "zone_id": "${data.cloudflare_zones.quero.result[0].id}",
-            "account_id": "${data.cloudflare_accounts.main.result[0].id}",
-            "comment": "tunnel for ${data.cloudflare_zones.quero.result[0].name}",
-        });
-        substitute_refs(&mut after, &sm);
-        assert_eq!(after["zone_id"], json!("0da42c8d2132a9ddaf714f9e7c920711"));
-        assert_eq!(after["account_id"], json!("acct-9f3"));
-        assert_eq!(after["comment"], json!("tunnel for quero.cloud"));
     }
 
     #[test]
