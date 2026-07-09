@@ -410,6 +410,37 @@ pub async fn run_plan_with_providers(
     // computed deps on managed resources; ref_target deliberately returns None
     // for them.)
     for change in &datas {
+        // REACTION C — an ORPHANED data source (in state/`before` but ABSENT
+        // from the rendered config, so the plan gave it `Delete`/`Forget`) is
+        // FORGOTTEN, never re-read. A data source is definitionally a *cache of
+        // a read*; a removed one has no config left to read against, so there
+        // is nothing to refresh — it is simply dropped from state. This makes
+        // the orphan-refresh-crash class UNREPRESENTABLE: the only caller of
+        // `read_data_source_one` is below in this loop, and a removed data
+        // source `continue`s out before reaching it — no code path RPC-reads a
+        // data source that is no longer in config. (Before this branch, an
+        // orphaned `cloudflare_accounts`/`cloudflare_zones` list data source
+        // fell through to the read path with a null `after` config; the
+        // cloudflare 5.19.1 provider nil-derefs on it, the provider PROCESS
+        // dies, and the whole cycle cascade-fails "channel closed" — the exact
+        // wedge that required a manual Postgres `UPDATE` to purge the orphan
+        // rows from state. That manual purge is now an in-engine reaction.)
+        if matches!(change.action, Action::Delete | Action::Forget) {
+            remove_resource(state, &change.address);
+            applied.push(AppliedChange {
+                address: change.address.clone(),
+                action: change.action,
+                before: change.before.clone(),
+                after: None,
+            });
+            tracing::info!(
+                address = ?change.address,
+                action = ?change.action,
+                "magma apply: forgot orphaned data source (removed from config; \
+                 dropped from state without a provider read)"
+            );
+            continue;
+        }
         // A NoOp data source whose value is ALREADY resolved in `before`
         // carries that value forward — terraform does not re-read a data
         // source whose config was fully known + read at plan time. Re-reading
@@ -1437,6 +1468,13 @@ async fn read_data_source_one(
 /// Routing ALL data-kind changes through the read path regardless of action is
 /// the terraform-correct behavior (data sources are read on every apply) and
 /// makes the leaked-data-reference class unrepresentable.
+///
+/// The one exception — a data source planned `Delete`/`Forget` (orphaned:
+/// removed from config) — is still routed here into `datas`, but the `datas`
+/// loop FORGETS it (drops it from state) instead of reading it. See REACTION C
+/// in `run_plan_with_providers`: a removed data source has no config left to
+/// read against, so re-reading it is both meaningless and the orphan-refresh
+/// crash trigger.
 fn partition_changes<'a>(
     changes: &'a [ResourceChange],
 ) -> (
@@ -2129,6 +2167,106 @@ mod tests {
             Some("zone-abc"),
             "the resolved `before` value is what's carried forward",
         );
+    }
+
+    /// REACTION C — the orphaned-data-source refresh crash is UNREPRESENTABLE.
+    ///
+    /// An orphaned data source (in state from a prior apply, now ABSENT from
+    /// config → planned `Delete`) must be FORGOTTEN from state WITHOUT any
+    /// provider `read_data_source` RPC. Before the reaction it fell through the
+    /// `datas` loop to `read_data_source_one` with a null config; the live
+    /// cloudflare 5.19.1 provider nil-derefs on the accounts/zones LIST data
+    /// sources, the provider PROCESS dies, and the whole cycle cascade-fails
+    /// "channel closed" (the wedge that required a manual Postgres `UPDATE` to
+    /// purge the orphan rows).
+    ///
+    /// Proof harness (mirrors `noop_data_source_with_before_is_carried_forward…`):
+    /// NO provider is reachable (empty workspace, no `$MAGMA_PROVIDER_DIR`). If
+    /// the engine tried to read the orphan, `read_data_source_one` would fail to
+    /// spawn the provider and the change would land in `failed`. It must instead
+    /// apply cleanly (the forget path) AND the orphan must be gone from state.
+    #[tokio::test]
+    async fn orphaned_data_source_is_forgotten_without_a_provider_read() {
+        use magma_types::{
+            InstanceStatus, ModulePath, PlanId, ProviderReference, ResourceAddress, ResourceKind,
+            ResourceTypeId, StateInstance, StateResource,
+        };
+        // SAFETY: single-threaded test; no other thread reads this var.
+        unsafe { std::env::remove_var("MAGMA_PROVIDER_DIR") };
+
+        let orphan = ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Data,
+            type_id: ResourceTypeId("cloudflare_accounts".into()),
+            name: "current".into(),
+            key: None,
+        };
+        // Exactly the live orphan shape: in state/`before`, absent from config
+        // (`after: None`), so the planner emits `Delete`.
+        let plan = Plan {
+            id: PlanId([0u8; 32]),
+            created_at: Utc::now(),
+            config_root: PathBuf::from("/ws"),
+            variables: Default::default(),
+            resource_changes: vec![ResourceChange {
+                address: orphan.clone(),
+                action: Action::Delete,
+                before: Some(serde_json::json!({ "result": [{ "id": "acct-1" }] })),
+                after: None,
+                reasons: vec![magma_types::ChangeReason::DeletedResource],
+            }],
+            output_changes: vec![],
+        };
+        // State starts holding the orphaned data-source row (a prior apply put
+        // it there); the reaction must purge it.
+        let mut state = State {
+            version: 4,
+            terraform_version: "1.9.0".into(),
+            serial: 1,
+            lineage: uuid::Uuid::nil(),
+            outputs: Default::default(),
+            resources: vec![StateResource {
+                address: orphan.clone(),
+                provider: ProviderReference {
+                    source: "cloudflare/cloudflare".into(),
+                    name: "cloudflare".into(),
+                    alias: None,
+                },
+                instances: vec![StateInstance {
+                    schema_version: 0,
+                    attributes: serde_json::json!({ "result": [{ "id": "acct-1" }] }),
+                    private: vec![],
+                    dependencies: vec![],
+                    status: InstanceStatus::Ready,
+                }],
+            }],
+        };
+
+        let td = tempfile::tempdir().unwrap();
+        let ctx = ApplyContext::new(td.path().to_path_buf());
+
+        let outcome = run_plan_with_providers(&plan, &mut state, &ctx).await;
+
+        // NO read RPC was attempted: had the engine tried, the (absent)
+        // provider spawn would fail and the change would be in `failed`.
+        assert!(
+            outcome.failed.is_empty(),
+            "an orphaned data source must be forgotten, never re-read (a read \
+             would spawn a provider that isn't there): {:?}",
+            outcome.failed
+        );
+        // The forget path emitted a clean Delete AppliedChange.
+        assert_eq!(outcome.applied.len(), 1, "the orphan was forgotten");
+        let a = &outcome.applied[0];
+        assert_eq!(a.address, orphan);
+        assert_eq!(a.action, Action::Delete);
+        assert!(a.after.is_none(), "a forgotten data source has no after-state");
+        // And it is gone from state — the manual Postgres purge is now automatic.
+        assert!(
+            state.resources.iter().all(|r| r.address != orphan),
+            "the orphaned data-source row must be dropped from state",
+        );
+        assert!(state.resources.is_empty(), "no rows remain");
     }
 
     #[test]
