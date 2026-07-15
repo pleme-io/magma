@@ -18,6 +18,9 @@ use magma_attest::hash_plan_inputs;
 use magma_config::Config;
 use magma_types::{Action, ChangeReason, Plan, ResourceAddress, ResourceChange, State};
 
+mod compliance;
+pub use compliance::{check_security_group_compliance, ComplianceViolation};
+
 // ── Errors ─────────────────────────────────────────────────────────
 
 use thiserror::Error;
@@ -28,6 +31,8 @@ pub enum PlanError {
     Config(#[from] magma_config::ConfigError),
     #[error("serde: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("compliance violation — refusing to plan:\n{}", .0.iter().map(|v| format!("  - {v}")).collect::<Vec<_>>().join("\n"))]
+    Compliance(Vec<ComplianceViolation>),
 }
 
 // ── Plan ──────────────────────────────────────────────────────────
@@ -36,6 +41,15 @@ pub enum PlanError {
 /// structural diff. No provider RPC yet; updates show as NoOp pending
 /// the `PlanResourceChange` integration.
 pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
+    // Compliance gate — default-on, unbypassable (every architecture's
+    // Ruby DSL choice converges here). Refuse to compute a plan at all
+    // if the config declares a world-open security-group ingress rule
+    // outside the narrow default-allowed public ports. See compliance.rs.
+    let violations = check_security_group_compliance(config);
+    if !violations.is_empty() {
+        return Err(PlanError::Compliance(violations));
+    }
+
     let config_addrs: HashSet<ResourceAddress> = config.resource_addresses().collect();
     let state_addrs: HashSet<ResourceAddress> =
         state.resources.iter().map(|r| r.address.clone()).collect();
@@ -158,6 +172,27 @@ mod tests {
             }
         });
         Config::from_json(json_v).unwrap()
+    }
+
+    #[test]
+    fn plan_refuses_a_world_open_security_group_rule() {
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_security_group_rule": {
+                    "grafana_nodeport": {
+                        "type": "ingress",
+                        "from_port": 32714,
+                        "to_port": 32714,
+                        "protocol": "tcp",
+                        "cidr_blocks": ["0.0.0.0/0"]
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let st = empty_state();
+        let err = plan(&cfg, &st).unwrap_err();
+        assert!(matches!(err, PlanError::Compliance(_)));
     }
 
     #[test]
