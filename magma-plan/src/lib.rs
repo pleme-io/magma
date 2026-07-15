@@ -19,7 +19,10 @@ use magma_config::Config;
 use magma_types::{Action, ChangeReason, Plan, ResourceAddress, ResourceChange, State};
 
 mod compliance;
-pub use compliance::{check_security_group_compliance, ComplianceViolation};
+pub use compliance::{
+    check_cache_encryption, check_database_public_accessibility, check_security_group_compliance,
+    run_compliance_checks, ComplianceBaseline, ComplianceViolation,
+};
 
 // ── Errors ─────────────────────────────────────────────────────────
 
@@ -43,9 +46,11 @@ pub enum PlanError {
 pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     // Compliance gate — default-on, unbypassable (every architecture's
     // Ruby DSL choice converges here). Refuse to compute a plan at all
-    // if the config declares a world-open security-group ingress rule
-    // outside the narrow default-allowed public ports. See compliance.rs.
-    let violations = check_security_group_compliance(config);
+    // if the config violates the configured baseline (world-open
+    // security-group ingress; at High, also public databases and
+    // unencrypted caches). See compliance.rs.
+    let baseline = ComplianceBaseline::from_env();
+    let violations = run_compliance_checks(config, baseline);
     if !violations.is_empty() {
         return Err(PlanError::Compliance(violations));
     }

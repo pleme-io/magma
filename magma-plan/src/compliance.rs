@@ -39,6 +39,56 @@ const WORLD_IPV6: &str = "::/0";
 /// blanket kill switch on the whole check.
 const ESCAPE_HATCH_ATTR: &str = "allow_public_ingress";
 
+/// Per-resource escape hatch for a database intentionally provisioned
+/// publicly-accessible (rare, but real — e.g. a customer-facing
+/// analytics replica). Same discipline as `ESCAPE_HATCH_ATTR`: explicit,
+/// per-resource, visible in committed Terraform JSON.
+const DB_ESCAPE_HATCH_ATTR: &str = "allow_public_database";
+
+/// Per-resource escape hatch for a cache intentionally left unencrypted
+/// (e.g. a throwaway ephemeral-test cluster). Same discipline.
+const CACHE_ESCAPE_HATCH_ATTR: &str = "allow_unencrypted_cache";
+
+/// The env var an operator sets to dial the compliance posture.
+/// Unset or unrecognized → `High` (the "always super compliant by
+/// default" posture the fleet standard asks for — never round down
+/// to a weaker baseline silently).
+const BASELINE_ENV_VAR: &str = "MAGMA_COMPLIANCE_BASELINE";
+
+/// Configurable compliance posture — mirrors `pleme-lib`'s
+/// `compliance.baseline` (`fedramp-low`/`-moderate`/`-high`) shape at
+/// the magma layer. Each tier is a strict superset of the one below it,
+/// so raising the baseline never silently drops an existing check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ComplianceBaseline {
+    /// No checks. Exists for local/dev workflows only — never the
+    /// fleet default; an operator must explicitly opt down to this.
+    Low,
+    /// Security-group world-open-ingress checks.
+    Moderate,
+    /// Moderate + publicly-accessible databases + unencrypted caches.
+    High,
+}
+
+impl ComplianceBaseline {
+    /// Read from `MAGMA_COMPLIANCE_BASELINE` (`low`/`moderate`/`high`,
+    /// case-insensitive). Unset or unrecognized defaults to `High` —
+    /// the fleet-wide "always super compliant" default this gate
+    /// exists to guarantee; a weaker posture is an explicit, visible
+    /// opt-out an operator has to type, never an accidental default.
+    pub fn from_env() -> Self {
+        match std::env::var(BASELINE_ENV_VAR)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "low" => Self::Low,
+            "moderate" => Self::Moderate,
+            _ => Self::High,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComplianceViolation {
     pub address: ResourceAddress,
@@ -92,6 +142,106 @@ pub fn check_security_group_compliance(config: &Config) -> Vec<ComplianceViolati
                 }
             }
         }
+    }
+
+    violations
+}
+
+/// Every publicly-accessible database resource — `aws_db_instance`
+/// (standalone RDS) and `aws_rds_cluster_instance` (Aurora instances;
+/// the cluster resource itself, `aws_rds_cluster`, has no
+/// `publicly_accessible` attribute, only its instances do).
+pub fn check_database_public_accessibility(config: &Config) -> Vec<ComplianceViolation> {
+    let mut violations = Vec::new();
+
+    for type_id in ["aws_db_instance", "aws_rds_cluster_instance"] {
+        let Some(by_name) = config.resources.get(type_id) else {
+            continue;
+        };
+        for (name, attrs) in by_name {
+            if attrs
+                .get(DB_ESCAPE_HATCH_ATTR)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if attrs.get("publicly_accessible").and_then(|v| v.as_bool()) == Some(true) {
+                violations.push(ComplianceViolation {
+                    address: managed_address(type_id, name),
+                    reason: format!(
+                        "publicly_accessible=true — a database should never be reachable from the open internet by default; set `{DB_ESCAPE_HATCH_ATTR}: true` if this is a deliberate, reviewed exception"
+                    ),
+                });
+            }
+        }
+    }
+
+    violations
+}
+
+/// Every cache resource (`aws_elasticache_cluster`,
+/// `aws_elasticache_replication_group`) left without both at-rest and
+/// in-transit encryption. AWS itself defaults both to `false` when
+/// unset, so an omitted attribute is exactly as unsafe as an explicit
+/// `false` — this check treats "unset" and "false" identically.
+pub fn check_cache_encryption(config: &Config) -> Vec<ComplianceViolation> {
+    let mut violations = Vec::new();
+
+    for type_id in ["aws_elasticache_cluster", "aws_elasticache_replication_group"] {
+        let Some(by_name) = config.resources.get(type_id) else {
+            continue;
+        };
+        for (name, attrs) in by_name {
+            if attrs
+                .get(CACHE_ESCAPE_HATCH_ATTR)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let at_rest = attrs
+                .get("at_rest_encryption_enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let in_transit = attrs
+                .get("transit_encryption_enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !at_rest || !in_transit {
+                violations.push(ComplianceViolation {
+                    address: managed_address(type_id, name),
+                    reason: format!(
+                        "at_rest_encryption_enabled={at_rest}, transit_encryption_enabled={in_transit} — both must be true; set `{CACHE_ESCAPE_HATCH_ATTR}: true` if this is a deliberate, reviewed exception (e.g. an ephemeral test cluster)"
+                    ),
+                });
+            }
+        }
+    }
+
+    violations
+}
+
+/// The one entry point `plan()` calls — dispatches to the check set
+/// `baseline` selects. Each tier is additive: `High` runs every
+/// `Moderate` check plus its own, so raising the baseline never
+/// silently drops coverage the tier below already had. Takes an
+/// explicit baseline rather than reading the environment itself —
+/// `ComplianceBaseline::from_env()` is the caller's job (`plan()` calls
+/// it once), keeping this function pure and trivially testable without
+/// env-var races between parallel test threads.
+pub fn run_compliance_checks(
+    config: &Config,
+    baseline: ComplianceBaseline,
+) -> Vec<ComplianceViolation> {
+    let mut violations = Vec::new();
+
+    if baseline >= ComplianceBaseline::Moderate {
+        violations.extend(check_security_group_compliance(config));
+    }
+    if baseline >= ComplianceBaseline::High {
+        violations.extend(check_database_public_accessibility(config));
+        violations.extend(check_cache_encryption(config));
     }
 
     violations
@@ -349,5 +499,141 @@ mod tests {
             }
         }));
         assert_eq!(check_security_group_compliance(&cfg).len(), 1);
+    }
+
+    #[test]
+    fn public_rds_instance_is_a_violation() {
+        let cfg = cfg_from(json!({
+            "aws_db_instance": {
+                "main": { "publicly_accessible": true }
+            }
+        }));
+        let v = check_database_public_accessibility(&cfg);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].address.type_id.0, "aws_db_instance");
+    }
+
+    #[test]
+    fn public_aurora_cluster_instance_is_a_violation() {
+        let cfg = cfg_from(json!({
+            "aws_rds_cluster_instance": {
+                "writer": { "publicly_accessible": true }
+            }
+        }));
+        assert_eq!(check_database_public_accessibility(&cfg).len(), 1);
+    }
+
+    #[test]
+    fn private_database_is_never_a_violation() {
+        let cfg = cfg_from(json!({
+            "aws_db_instance": {
+                "main": { "publicly_accessible": false }
+            }
+        }));
+        assert!(check_database_public_accessibility(&cfg).is_empty());
+    }
+
+    #[test]
+    fn database_escape_hatch_suppresses_the_violation() {
+        let cfg = cfg_from(json!({
+            "aws_db_instance": {
+                "reporting_replica": {
+                    "publicly_accessible": true,
+                    "allow_public_database": true
+                }
+            }
+        }));
+        assert!(check_database_public_accessibility(&cfg).is_empty());
+    }
+
+    #[test]
+    fn unencrypted_cache_is_a_violation() {
+        let cfg = cfg_from(json!({
+            "aws_elasticache_replication_group": {
+                "sessions": {}
+            }
+        }));
+        let v = check_cache_encryption(&cfg);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].address.type_id.0, "aws_elasticache_replication_group");
+    }
+
+    #[test]
+    fn partially_encrypted_cache_is_still_a_violation() {
+        // At-rest alone isn't enough — both must be true.
+        let cfg = cfg_from(json!({
+            "aws_elasticache_cluster": {
+                "sessions": { "at_rest_encryption_enabled": true }
+            }
+        }));
+        assert_eq!(check_cache_encryption(&cfg).len(), 1);
+    }
+
+    #[test]
+    fn fully_encrypted_cache_is_compliant() {
+        let cfg = cfg_from(json!({
+            "aws_elasticache_replication_group": {
+                "sessions": {
+                    "at_rest_encryption_enabled": true,
+                    "transit_encryption_enabled": true
+                }
+            }
+        }));
+        assert!(check_cache_encryption(&cfg).is_empty());
+    }
+
+    #[test]
+    fn cache_escape_hatch_suppresses_the_violation() {
+        let cfg = cfg_from(json!({
+            "aws_elasticache_cluster": {
+                "throwaway_test": { "allow_unencrypted_cache": true }
+            }
+        }));
+        assert!(check_cache_encryption(&cfg).is_empty());
+    }
+
+    #[test]
+    fn baseline_low_runs_nothing() {
+        let cfg = cfg_from(json!({
+            "aws_security_group_rule": {
+                "bad": {
+                    "type": "ingress", "from_port": 22, "to_port": 22,
+                    "protocol": "tcp", "cidr_blocks": ["0.0.0.0/0"]
+                }
+            },
+            "aws_db_instance": { "main": { "publicly_accessible": true } }
+        }));
+        assert!(run_compliance_checks(&cfg, ComplianceBaseline::Low).is_empty());
+    }
+
+    #[test]
+    fn baseline_moderate_runs_security_groups_only() {
+        let cfg = cfg_from(json!({
+            "aws_security_group_rule": {
+                "bad": {
+                    "type": "ingress", "from_port": 22, "to_port": 22,
+                    "protocol": "tcp", "cidr_blocks": ["0.0.0.0/0"]
+                }
+            },
+            "aws_db_instance": { "main": { "publicly_accessible": true } }
+        }));
+        let v = run_compliance_checks(&cfg, ComplianceBaseline::Moderate);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].address.type_id.0, "aws_security_group_rule");
+    }
+
+    #[test]
+    fn baseline_high_runs_everything() {
+        let cfg = cfg_from(json!({
+            "aws_security_group_rule": {
+                "bad": {
+                    "type": "ingress", "from_port": 22, "to_port": 22,
+                    "protocol": "tcp", "cidr_blocks": ["0.0.0.0/0"]
+                }
+            },
+            "aws_db_instance": { "main": { "publicly_accessible": true } },
+            "aws_elasticache_cluster": { "sessions": {} }
+        }));
+        assert_eq!(run_compliance_checks(&cfg, ComplianceBaseline::High).len(), 3);
     }
 }
