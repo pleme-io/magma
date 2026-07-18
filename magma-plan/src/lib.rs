@@ -1,10 +1,19 @@
 //! magma-plan — plan algorithm: `Config × State → Plan`.
 //!
 //! The load-bearing semantics layer. Walks config + state, emits typed
-//! `ResourceChange`s. M0 ships the structural diff (NoOp / Create /
-//! Delete / Update-as-NoOp); the per-attribute update detection that
-//! requires provider RPC (`PlanResourceChange`) lands in M0.x once
-//! magma-protocol's gRPC bindings are wired.
+//! `ResourceChange`s. M0 ships a config-subset drift heuristic for
+//! resources present in both config and state: any config-declared
+//! attribute that differs from the stored state value is classified
+//! `Action::Update` + `ChangeReason::AttributeDrift`; attributes present
+//! only in state (computed-only fields — `id`, `arn`, timestamps, ...)
+//! are never inspected, so they can never cause a false positive. Full
+//! schema-aware diffing — the Update-vs-Replace distinction
+//! (`requires_replace` per attribute) and provider-typed comparison in
+//! place of raw `serde_json::Value` equality — still requires provider
+//! schema access via `PlanResourceChange` and lands in M0.x once
+//! magma-protocol's gRPC bindings are wired in here. The apply-side RPC
+//! plumbing for `Action::Update` already exists (see
+//! `magma-apply`'s engine catch-all apply arm).
 //!
 //! Per `theory/MAGMA.md` §X.1, OpenTofu has documented plan-diff
 //! quirks. Magma matches bug-for-bug for M0–M2 — each documented
@@ -41,8 +50,9 @@ pub enum PlanError {
 // ── Plan ──────────────────────────────────────────────────────────
 
 /// Compute a typed `Plan` from `config` against `state` — the M0
-/// structural diff. No provider RPC yet; updates show as NoOp pending
-/// the `PlanResourceChange` integration.
+/// structural diff plus a config-subset drift heuristic for
+/// in-both resources (see module docs). Full schema-aware diffing
+/// still needs the `PlanResourceChange` provider RPC integration.
 pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     // Compliance gate — default-on, unbypassable (every architecture's
     // Ruby DSL choice converges here). Refuse to compute a plan at all
@@ -85,16 +95,30 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         });
     }
 
-    // Update: in both. M0 stub — NoOp until provider RPC integration.
+    // Update: in both. Compare only the CONFIG-DECLARED attribute set.
+    // `before` (state) is the full provider-schema-shaped attribute set,
+    // including every computed field (id, arn, timestamps, ...); `after`
+    // (config) is the raw user-declared JSON with no computed fields. A
+    // whole-object `before != after` comparison would therefore be true
+    // for essentially every real resource on every cycle — a structural
+    // false positive, not an edge case. Scoping the comparison to
+    // `after`'s keys makes that false positive impossible: a
+    // computed-only key present solely in `before` is never inspected.
     for addr in config_addrs.intersection(&state_addrs) {
         let before = lookup_state_value(state, addr);
         let after = lookup_config_value(config, addr);
+        let drifted = declared_attributes_drifted(&before, &after);
+        let (action, reasons) = if drifted {
+            (Action::Update, vec![ChangeReason::AttributeDrift])
+        } else {
+            (Action::NoOp, vec![])
+        };
         changes.push(ResourceChange {
             address: addr.clone(),
-            action: Action::NoOp, // TODO(M0.x): provider PlanResourceChange RPC.
+            action,
             before,
             after,
-            reasons: vec![],
+            reasons,
         });
     }
 
@@ -140,6 +164,36 @@ fn lookup_state_value(state: &State, addr: &ResourceAddress) -> Option<serde_jso
         .find(|r| r.address == *addr)
         .and_then(|r| r.instances.first())
         .map(|i| i.attributes.clone())
+}
+
+/// Config-subset drift comparison: `true` iff some attribute `after`
+/// (config) actually declares differs from the matching attribute in
+/// `before` (state). Keys present only in `before` — computed-only
+/// fields the provider populates (`id`, `arn`, timestamps, ...) — are
+/// never inspected, so they can never trigger a false positive.
+fn declared_attributes_drifted(
+    before: &Option<serde_json::Value>,
+    after: &Option<serde_json::Value>,
+) -> bool {
+    let Some(after_val) = after else {
+        // Nothing declared in config — nothing to compare.
+        return false;
+    };
+    let Some(after_obj) = after_val.as_object() else {
+        // Config value isn't a JSON object (unexpected shape for a
+        // resource attribute map) — fall back to a whole-value
+        // comparison rather than silently treating it as never-drifted.
+        return before.as_ref() != Some(after_val);
+    };
+    match before.as_ref().and_then(|v| v.as_object()) {
+        Some(before_obj) => after_obj
+            .iter()
+            .any(|(k, after_v)| before_obj.get(k) != Some(after_v)),
+        // State has no recorded instance attributes at all (or they
+        // aren't an object) but config declares some — every declared
+        // key is effectively new.
+        None => !after_obj.is_empty(),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -277,6 +331,86 @@ mod tests {
         // For M0, "in-both" is a NoOp pending provider RPC.
         assert_eq!(p.resource_changes.len(), 1);
         assert_eq!(p.resource_changes[0].action, Action::NoOp);
+    }
+
+    #[test]
+    fn computed_only_attribute_yields_noop() {
+        // State carries a computed-only key (`id`) absent from config.
+        // Every config-declared key matches → must NOT be classified as
+        // drifted just because `before` is a superset of `after`.
+        let cfg = cfg_with_vpc();
+        let mut st = empty_state();
+        st.resources.push(StateResource {
+            address: ResourceAddress {
+                module: magma_types::ModulePath::root(),
+                kind: magma_types::ResourceKind::Managed,
+                type_id: magma_types::ResourceTypeId("aws_vpc".into()),
+                name: "main".into(),
+                key: None,
+            },
+            provider: ProviderReference {
+                source: "hashicorp/aws".into(),
+                name: "aws".into(),
+                alias: None,
+            },
+            instances: vec![StateInstance {
+                schema_version: 0,
+                attributes: json!({
+                    "cidr_block": "10.0.0.0/16",
+                    "id": "vpc-abc123",
+                }),
+                private: Vec::new(),
+                dependencies: Vec::new(),
+                status: InstanceStatus::Ready,
+            }],
+        });
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::NoOp,
+            "a computed-only attribute present solely in state must never trigger drift"
+        );
+        assert!(p.resource_changes[0].reasons.is_empty());
+    }
+
+    #[test]
+    fn declared_attribute_drift_yields_update() {
+        // A config-declared key (`cidr_block`) genuinely differs between
+        // state and config → must be classified Update/AttributeDrift.
+        let cfg = cfg_with_vpc(); // declares cidr_block = 10.0.0.0/16
+        let mut st = empty_state();
+        st.resources.push(StateResource {
+            address: ResourceAddress {
+                module: magma_types::ModulePath::root(),
+                kind: magma_types::ResourceKind::Managed,
+                type_id: magma_types::ResourceTypeId("aws_vpc".into()),
+                name: "main".into(),
+                key: None,
+            },
+            provider: ProviderReference {
+                source: "hashicorp/aws".into(),
+                name: "aws".into(),
+                alias: None,
+            },
+            instances: vec![StateInstance {
+                schema_version: 0,
+                attributes: json!({
+                    "cidr_block": "10.0.0.0/8",
+                    "id": "vpc-abc123",
+                }),
+                private: Vec::new(),
+                dependencies: Vec::new(),
+                status: InstanceStatus::Ready,
+            }],
+        });
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(p.resource_changes[0].action, Action::Update);
+        assert_eq!(
+            p.resource_changes[0].reasons,
+            vec![ChangeReason::AttributeDrift]
+        );
     }
 
     #[test]
