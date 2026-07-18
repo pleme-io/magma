@@ -19,8 +19,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use magma_apply::engine::ApplyContext;
 use magma_apply::import_prepass::{
-    ImportEnvironment, PluginImportEnvironment, import_on_conflict, run_explicit_prepass,
+    ConfiguredImportEnvironment, ImportEnvironment, PluginImportEnvironment, import_on_conflict,
+    run_explicit_prepass,
 };
 use magma_plugin::{Plugin, PluginSpec};
 use magma_state::empty_state;
@@ -203,4 +205,127 @@ async fn raw_import_client_returns_typed_instances() {
     assert_eq!(instances[0].type_name, "aws_iam_role");
     assert_eq!(instances[0].attributes["id"], "cluster-role-id");
     assert_eq!(instances[0].attributes["imported_by"], "mock_provider");
+}
+
+// ── Law 5: ConfiguredImportEnvironment — the fix under test ────────
+//
+// `PluginImportEnvironment` above dials a RAW, UNCONFIGURED channel and
+// decodes ONLY `DynamicValue.json`. Real providers never populate that
+// field for `ImportResourceState` — they respond via `.msgpack`, exactly
+// like every other RPC (`PlanResourceChange`, `ApplyResourceChange`,
+// `ReadResource`) already does in this codebase — and the plugin
+// protocol requires `ConfigureProvider`/`Configure` to run before any
+// other RPC. `ConfiguredImportEnvironment` closes both gaps by reusing
+// `engine::dial_configured_provider` — the SAME spawn -> handshake ->
+// dial -> get_schema -> configure lifecycle the apply engine's own
+// `Registry` (and its mid-apply on-conflict adopt) already rides.
+//
+// These tests exercise the REAL `.terraform/providers` binary-discovery
+// path (`magma_providers::locate_provider`), not a pre-dialed channel —
+// proving the fix's provider-name inference (`engine::provider_local_name`)
+// + dial + configure + schema-typed msgpack decode all work end-to-end.
+
+/// A fake workspace whose `.terraform/providers/` holds the mock
+/// provider binary named `terraform-provider-mock` — exactly how a real
+/// `github`/`cloudflare`/`aws` provider is laid out after `tofu init`,
+/// per `magma_providers::locate_provider`'s doc ("a flat dir of binaries
+/// or the registry tree" both work).
+fn configured_provider_workspace() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let providers_dir = dir.path().join(".terraform").join("providers");
+    std::fs::create_dir_all(&providers_dir).expect("mkdir .terraform/providers");
+    let dest = providers_dir.join("terraform-provider-mock");
+    std::fs::copy(mock_provider_binary(), &dest).expect("copy mock_provider binary");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&dest)
+            .expect("stat copied binary")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&dest, perms).expect("chmod copied binary +x");
+    }
+    dir
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_import_environment_absorbs_through_real_registry_lifecycle() {
+    let ws = configured_provider_workspace();
+    let ctx = ApplyContext::new(ws.path().to_path_buf());
+    let env = ConfiguredImportEnvironment::new(&ctx);
+
+    // "mock_resource" -> provider local name "mock" (the same
+    // first-`_`-prefix rule `engine::provider_local_name` uses for every
+    // other RPC) -> dials `terraform-provider-mock`.
+    let directives = ImportDirectives::default().with_explicit("mock_resource.adopted", "abc123");
+
+    let mut state = empty_state();
+    let outcome = run_explicit_prepass(&env, &directives, &mut state)
+        .await
+        .expect("prepass structurally ok");
+
+    assert_eq!(outcome.newly_absorbed(), 1, "{outcome:?}");
+    assert!(outcome.all_succeeded(), "{outcome:?}");
+    assert_eq!(state.resources.len(), 1);
+    assert_eq!(state.resources[0].address.type_id.0, "mock_resource");
+
+    // The mock encodes {id, name, imported_by} through the REAL
+    // schema-typed msgpack codec (magma_cty) — a round-trip that only
+    // succeeds if ConfiguredImportEnvironment actually ran
+    // GetProviderSchema + ConfigureProvider + ImportResourceState +
+    // schema-driven msgpack decode, not the raw JSON-only shortcut
+    // PluginImportEnvironment takes.
+    let attrs = &state.resources[0].instances[0].attributes;
+    assert_eq!(attrs["id"], "abc123");
+    assert_eq!(attrs["name"], "abc123");
+    assert_eq!(attrs["imported_by"], "mock_provider");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_import_environment_reuses_one_dialed_provider_across_calls() {
+    // Two imports against the SAME provider ("mock") must share one
+    // dialed + configured connection (dial-once-per-provider,
+    // per-address idempotency handled by the prepass) rather than
+    // re-spawning a subprocess per address.
+    let ws = configured_provider_workspace();
+    let ctx = ApplyContext::new(ws.path().to_path_buf());
+    let env = ConfiguredImportEnvironment::new(&ctx);
+
+    let directives = ImportDirectives::default()
+        .with_explicit("mock_resource.first", "id-1")
+        .with_explicit("mock_resource.second", "id-2");
+
+    let mut state = empty_state();
+    let outcome = run_explicit_prepass(&env, &directives, &mut state)
+        .await
+        .expect("prepass structurally ok");
+
+    assert_eq!(outcome.newly_absorbed(), 2, "{outcome:?}");
+    assert!(outcome.all_succeeded(), "{outcome:?}");
+    assert_eq!(state.resources.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_import_environment_missing_schema_is_typed_failure_not_panic() {
+    // "mock_missing_type" also resolves to provider "mock" (dials +
+    // configures fine) but the mock's schema never declared this
+    // resource type — the missing-schema condition must surface as a
+    // typed per-resource FailedImport, never a panic/unwrap.
+    let ws = configured_provider_workspace();
+    let ctx = ApplyContext::new(ws.path().to_path_buf());
+    let env = ConfiguredImportEnvironment::new(&ctx);
+
+    let directives = ImportDirectives::default().with_explicit("mock_missing_type.x", "abc123");
+    let mut state = empty_state();
+    let outcome = run_explicit_prepass(&env, &directives, &mut state)
+        .await
+        .expect("prepass structurally ok even when the provider has no schema for the type");
+
+    assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
+    assert!(
+        outcome.failed[0].reason.contains("no schema"),
+        "{:?}",
+        outcome.failed[0].reason
+    );
+    assert_eq!(state.resources.len(), 0);
 }

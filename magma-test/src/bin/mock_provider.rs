@@ -43,6 +43,18 @@ const EXPECTED_COOKIE_KEY: &str = "TF_PLUGIN_MAGIC_COOKIE";
 const EXPECTED_COOKIE_VAL: &str =
     "d602bf8f470bc67ca7faa0386276bbdd4330efaf76d1a219cb4d6991ca9872b2";
 
+/// The implied cty type of `mock_resource` — MUST mirror the attribute
+/// set `get_provider_schema` declares below (`id`, `name`,
+/// `imported_by`, all strings). Kept as one function both call sites
+/// share so the schema-vs-encoding pair can't drift.
+fn mock_resource_implied_type() -> magma_cty::CtyType {
+    magma_cty::CtyType::object([
+        ("id".to_string(), magma_cty::CtyType::String),
+        ("name".to_string(), magma_cty::CtyType::String),
+        ("imported_by".to_string(), magma_cty::CtyType::String),
+    ])
+}
+
 #[derive(Default)]
 struct MockProvider;
 
@@ -70,11 +82,40 @@ impl Provider for MockProvider {
         _req: Request<tfplugin6::get_provider_schema::Request>,
     ) -> Result<Response<tfplugin6::get_provider_schema::Response>, Status> {
         // Minimal real schema: one resource type "mock_resource" with
-        // no attributes. Enough to prove the wire format works
-        // end-to-end.
+        // three string attributes (id / name / imported_by) — enough
+        // to prove the wire format works end-to-end, INCLUDING the
+        // schema-driven cty msgpack round-trip `ConfiguredImportEnvironment`
+        // (magma-apply::import_prepass) drives via
+        // `ProviderConn::import_resource_state` + `DynamicValue.to_json`.
+        // An empty-attribute block (the prior shape) only proved the
+        // connection + RPC dispatch, never the actual attribute codec —
+        // see `mock_resource_implied_type()` below, which the
+        // `import_resource_state` handler encodes its canned state
+        // against.
+        fn string_attr(name: &str) -> tfplugin6::schema::Attribute {
+            tfplugin6::schema::Attribute {
+                name: name.to_string(),
+                r#type: serde_json::to_vec(&serde_json::json!("string"))
+                    .unwrap_or_default(),
+                nested_type: None,
+                description: String::new(),
+                required: false,
+                optional: true,
+                computed: true,
+                sensitive: false,
+                description_kind: tfplugin6::StringKind::Plain as i32,
+                deprecated: false,
+                deprecation_message: String::new(),
+                write_only: false,
+            }
+        }
         let block = tfplugin6::schema::Block {
             version: 0,
-            attributes: vec![],
+            attributes: vec![
+                string_attr("id"),
+                string_attr("name"),
+                string_attr("imported_by"),
+            ],
             block_types: vec![],
             description: "mock provider resource".into(),
             description_kind: tfplugin6::StringKind::Plain as i32,
@@ -215,11 +256,26 @@ impl Provider for MockProvider {
             "name": r.id,
             "imported_by": "mock_provider",
         });
+        // Encode BOTH wire fields:
+        //   * `.msgpack`, type-driven against `mock_resource_implied_type()`
+        //     (the SAME shape `get_provider_schema` declares above) — the
+        //     field every REAL provider actually populates, and the one
+        //     `ConfiguredImportEnvironment` (magma-apply::import_prepass)
+        //     decodes via `DynamicValue::to_json(&implied)`.
+        //   * `.json`, a raw debug-only echo — kept so the pre-existing
+        //     `PluginImportEnvironment` (raw/unconfigured-channel) law
+        //     battery in this crate's `tests/integration_import_resource_state.rs`
+        //     keeps exercising its own (JSON-only) decode path unchanged.
+        // A real provider populates only `.msgpack`; the mock populates
+        // both so ONE handler proves both magma-side decoders.
+        let msgpack = magma_cty::DynamicValue::from_json(&state_json, &mock_resource_implied_type())
+            .map(|dv| dv.msgpack)
+            .unwrap_or_default();
         Ok(Response::new(tfplugin6::import_resource_state::Response {
             imported_resources: vec![tfplugin6::import_resource_state::ImportedResource {
                 type_name: r.type_name,
                 state: Some(tfplugin6::DynamicValue {
-                    msgpack: vec![],
+                    msgpack,
                     json: serde_json::to_vec(&state_json).unwrap_or_default(),
                 }),
                 private: vec![],
