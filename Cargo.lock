@@ -2227,6 +2227,7 @@ dependencies = [
  "magma-apply",
  "magma-arch-test",
  "magma-config 0.1.10",
+ "magma-cty",
  "magma-pangea",
  "magma-plan",
  "magma-plugin",

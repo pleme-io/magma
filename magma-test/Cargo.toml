@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 magma          = { workspace = true }
+magma-cty      = { workspace = true }
 magma-types    = { workspace = true }
 magma-config   = { workspace = true }
 magma-pangea   = { workspace = true }

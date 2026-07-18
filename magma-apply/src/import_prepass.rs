@@ -33,6 +33,8 @@
 //! (`PluginImportEnvironment`) drives `magma_plugin::import_resource_state`
 //! over a dialed channel; tests mock it.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use magma_types::{
     ImportDirectives, ImportedInstance, InstanceStatus, ModulePath, ProviderReference,
@@ -253,6 +255,126 @@ impl ImportEnvironment for PluginImportEnvironment {
         magma_plugin::import_resource_state(self.channel.clone(), type_name, id)
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+// ── Real environment (correct): provider gRPC over a CONFIGURED conn ──
+
+/// The production `ImportEnvironment` for `spec.importHints` pre-plan
+/// adoption — drives the real provider `ImportResourceState` RPC over a
+/// **fully spawned + configured** connection, the same
+/// spawn→handshake→dial→get_schema→configure lifecycle
+/// [`crate::engine::dial_configured_provider`] gives the apply engine's
+/// own `Registry` (and which the engine's mid-apply
+/// import-on-conflict adopt already rides — see
+/// `engine::run_plan_with_providers`'s `Action::Create` arm).
+///
+/// [`PluginImportEnvironment`] above dials a RAW, UNCONFIGURED channel
+/// and decodes the response's `DynamicValue.json` field. Both are real
+/// gaps for a provider reached over a live provider binary:
+///
+/// 1. The Terraform plugin protocol requires `ConfigureProvider` /
+///    `Configure` to run before any other provider RPC — providers
+///    cache their API client / credentials during `Configure` and are
+///    not contracted to behave correctly (some crash — see
+///    `magma_plugin::provider`'s doc on the absent-`ClientCapabilities`
+///    SIGSEGV) when called unconfigured.
+/// 2. Every OTHER RPC in this codebase (`PlanResourceChange`,
+///    `ApplyResourceChange`, `ReadResource`, `ReadDataSource`, and this
+///    same `ImportResourceState` RPC called from the apply engine's
+///    on-conflict path) round-trips its state via `DynamicValue.msgpack`
+///    — the wire field `magma_cty` is byte-compatible with go-cty's own
+///    msgpack codec for. `.json` is populated by real providers only as
+///    an optional debug aid, never as the carrier of a resource's actual
+///    attributes; a decoder that reads ONLY `.json` and treats `.msgpack`
+///    as a hard error is decoding the wrong field for the response every
+///    real provider actually sends.
+///
+/// `ConfiguredImportEnvironment` closes both gaps by reusing
+/// [`crate::engine::dial_configured_provider`] (spawn once per unique
+/// provider referenced by the directives, cached for this environment's
+/// lifetime) and `ProviderConn::import_resource_state` + the schema's
+/// implied `CtyType` to decode the returned `DynamicValue.msgpack` —
+/// exactly the same decode `engine::apply_one` already performs on
+/// `ReadResource`'s confirming refresh.
+pub struct ConfiguredImportEnvironment<'a> {
+    ctx: &'a crate::engine::ApplyContext,
+    /// Providers dialed so far, keyed by local name (`"github"`,
+    /// `"cloudflare"`, …). Guarded by a `tokio::sync::Mutex` because
+    /// `ImportEnvironment::import_resource_state` takes `&self` (the
+    /// trait's shared-reference contract) while
+    /// `ProviderConn::import_resource_state` needs `&mut`.
+    live: tokio::sync::Mutex<HashMap<String, crate::engine::LiveProvider>>,
+}
+
+impl<'a> ConfiguredImportEnvironment<'a> {
+    /// Build an environment that will lazily dial + configure providers
+    /// against `ctx` (workspace dir for provider binary resolution +
+    /// per-provider `ConfigureProvider` config + terraform_version).
+    #[must_use]
+    pub fn new(ctx: &'a crate::engine::ApplyContext) -> Self {
+        Self {
+            ctx,
+            live: tokio::sync::Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl ImportEnvironment for ConfiguredImportEnvironment<'_> {
+    async fn import_resource_state(
+        &self,
+        type_name: &str,
+        id: &str,
+    ) -> Result<Vec<ImportedInstance>, String> {
+        let provider_name = crate::engine::provider_local_name(type_name);
+        let mut live = self.live.lock().await;
+        if !live.contains_key(&provider_name) {
+            let lp = crate::engine::dial_configured_provider(self.ctx, &provider_name)
+                .await
+                .map_err(|e| e.to_string())?;
+            live.insert(provider_name.clone(), lp);
+        }
+        // Just inserted above (or already present) — infallible get.
+        let lp = live
+            .get_mut(&provider_name)
+            .expect("provider just dialed + inserted");
+
+        let implied = lp.schema.resource(type_name).cloned().ok_or_else(|| {
+            format!(
+                "provider {provider_name:?} has no schema for resource type {type_name:?} \
+                 (GetProviderSchema did not declare it — check the resource type name)"
+            )
+        })?;
+
+        let dv = lp
+            .conn
+            .import_resource_state(type_name, id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match dv {
+            Some(dv) => {
+                let attrs = dv
+                    .to_json(&implied)
+                    .map_err(|e| format!("decode imported {type_name} state: {e}"))?;
+                Ok(vec![ImportedInstance {
+                    type_name: type_name.to_string(),
+                    attributes: attrs,
+                    // `ProviderConn::import_resource_state` (like the apply
+                    // engine's own on-conflict adopt call) returns only the
+                    // decoded state — the wire response's `private` bytes
+                    // aren't threaded through. Matches the existing,
+                    // already-proven mid-apply adopt path's behavior; not a
+                    // regression introduced here.
+                    private: Vec::new(),
+                }])
+            }
+            // The provider imported nothing (cty-null state) — an empty
+            // instance list; `absorb()` records a tracked-but-empty
+            // placeholder, same as the raw path's empty-state case.
+            None => Ok(Vec::new()),
+        }
     }
 }
 

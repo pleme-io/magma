@@ -237,10 +237,107 @@ impl ApplyContext {
 /// A spawned + configured provider held for the apply's lifetime (so
 /// each provider spawns + configures exactly once). `Plugin`'s `Drop`
 /// terminates the subprocess.
-struct LiveProvider {
-    _plugin: Plugin,
-    conn: ProviderConn,
-    schema: ProviderSchema,
+///
+/// `pub` (crate-external) + `pub(crate)` fields so other magma-apply
+/// modules — chiefly [`crate::import_prepass::ConfiguredImportEnvironment`]
+/// — can hold + drive a `LiveProvider` dialed via
+/// [`dial_configured_provider`] without duplicating the spawn →
+/// handshake → dial → schema → configure lifecycle [`Registry::spawn`]
+/// used to own exclusively.
+pub struct LiveProvider {
+    pub(crate) _plugin: Plugin,
+    pub(crate) conn: ProviderConn,
+    pub(crate) schema: ProviderSchema,
+}
+
+/// Spawn + fully configure a provider by its local name (e.g.
+/// `"github"`) — locate the binary, spawn it, negotiate the
+/// tfplugin5/6 handshake, dial, fetch its schema, then run
+/// `ConfigureProvider`/`Configure` with `ctx`'s per-provider config
+/// (or an empty config object, never null — providers expect a value
+/// of the config type).
+///
+/// This is the ONE correct way to obtain a provider connection capable
+/// of ANY RPC beyond `GetProviderSchema`. The Terraform plugin
+/// protocol requires `Configure` to run before any other provider RPC
+/// (`PlanResourceChange`, `ApplyResourceChange`, `ReadResource`,
+/// `ImportResourceState`, …) — providers built on both SDKv2 and
+/// terraform-plugin-framework cache their API client / credentials
+/// during `Configure` and are not guaranteed to behave correctly (some
+/// nil-dereference, see [`crate::engine`]'s module doc on the absent
+/// `ClientCapabilities` SIGSEGV) when called unconfigured.
+///
+/// Extracted from [`Registry::spawn`]'s body so every caller — the
+/// apply engine's own `Registry`, and the import prepass's
+/// `ConfiguredImportEnvironment` — shares this ONE lifecycle instead of
+/// each re-implementing spawn/handshake/dial/configure.
+pub async fn dial_configured_provider(
+    ctx: &ApplyContext,
+    name: &str,
+) -> Result<LiveProvider, EngineError> {
+    let binary = magma_providers::locate_provider(&ctx.workspace_dir, name)
+        .map_err(|e| EngineError::Locate(name.into(), e.to_string()))?;
+    let mut plugin = Plugin::spawn(PluginSpec {
+        binary,
+        // Plaintext h2c (PluginSpec default `secure: false`): a
+        // co-located subprocess provider serves plaintext over its
+        // process-local socket when PLUGIN_CLIENT_CERT is unset
+        // (standard go-plugin), and the socket is already the trust
+        // boundary. AutoMTLS is opt-in for remote providers — a real
+        // protocol-6 provider (cloudflare v5) closes the mTLS channel
+        // post-handshake today, which is why the default is plaintext;
+        // see magma-plugin PluginSpec.secure.
+        ..Default::default()
+    })
+    .await
+    .map_err(|e| EngineError::Spawn(name.into(), e.to_string()))?;
+    // The handshake's negotiated protocol selects the tfplugin5/6
+    // client (SDKv2 providers like github speak v5; framework v6).
+    let protocol = plugin.handshake().app_protocol;
+    let channel = plugin
+        .dial()
+        .await
+        .map_err(|e| EngineError::Spawn(name.into(), e.to_string()))?
+        .clone();
+    let mut conn = ProviderConn::new(channel.clone(), protocol);
+    // When a provider RPC fails with an opaque transport error
+    // ("Service was not ready: channel closed"), the REAL cause is
+    // either the provider subprocess CRASHING (stderr panic/SIGSEGV
+    // captured on the plugin) or the h2 connection-close reason the
+    // driver task recorded (TLS/mTLS rejection, EOF). Fold BOTH into
+    // the typed error via the shared `rpc_error` helper so the failure
+    // is precise, not a dead-end "channel closed". (Spawn-time has no
+    // `LiveProvider` yet, so read the signals off `plugin` + `channel`
+    // directly.)
+    let spawn_err = |op: &str, e: String| -> EngineError {
+        rpc_error(name, op, plugin.crash_summary(), channel.close_reason(), &e)
+    };
+    let schema = conn
+        .get_schema()
+        .await
+        .map_err(|e| spawn_err("get_schema", e.to_string()))?;
+
+    // Configure: the provider-config-typed creds, or an empty object
+    // (→ a provider-config object with all attributes null, which is
+    // what terraform sends for an absent provider block; the provider
+    // falls back to its own env credentials). NOT a null object —
+    // providers expect a value of the config type, not nil.
+    let config_json = ctx
+        .provider_configs
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+    let config_dv = DynamicValue::from_json(&config_json, &schema.provider_config)
+        .map_err(|e| EngineError::Cty(e.to_string()))?;
+    conn.configure(&config_dv, &ctx.terraform_version)
+        .await
+        .map_err(|e| spawn_err("configure", e.to_string()))?;
+
+    Ok(LiveProvider {
+        _plugin: plugin,
+        conn,
+        schema,
+    })
 }
 
 struct Registry<'a> {
@@ -275,76 +372,7 @@ impl<'a> Registry<'a> {
     }
 
     async fn spawn(&self, name: &str) -> Result<LiveProvider, EngineError> {
-        let binary = magma_providers::locate_provider(&self.ctx.workspace_dir, name)
-            .map_err(|e| EngineError::Locate(name.into(), e.to_string()))?;
-        let mut plugin = Plugin::spawn(PluginSpec {
-            binary,
-            // Plaintext h2c (PluginSpec default `secure: false`): a
-            // co-located subprocess provider serves plaintext over its
-            // process-local socket when PLUGIN_CLIENT_CERT is unset
-            // (standard go-plugin), and the socket is already the trust
-            // boundary. AutoMTLS is opt-in for remote providers — a real
-            // protocol-6 provider (cloudflare v5) closes the mTLS channel
-            // post-handshake today, which is why the default is plaintext;
-            // see magma-plugin PluginSpec.secure.
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| EngineError::Spawn(name.into(), e.to_string()))?;
-        // The handshake's negotiated protocol selects the tfplugin5/6
-        // client (SDKv2 providers like github speak v5; framework v6).
-        let protocol = plugin.handshake().app_protocol;
-        let channel = plugin
-            .dial()
-            .await
-            .map_err(|e| EngineError::Spawn(name.into(), e.to_string()))?
-            .clone();
-        let mut conn = ProviderConn::new(channel.clone(), protocol);
-        // When a provider RPC fails with an opaque transport error
-        // ("Service was not ready: channel closed"), the REAL cause is
-        // either the provider subprocess CRASHING (stderr panic/SIGSEGV
-        // captured on the plugin) or the h2 connection-close reason the
-        // driver task recorded (TLS/mTLS rejection, EOF). Fold BOTH into
-        // the typed error via the shared `rpc_error` helper so the failure
-        // is precise, not a dead-end "channel closed". (Spawn-time has no
-        // `LiveProvider` yet, so read the signals off `plugin` + `channel`
-        // directly.)
-        let spawn_err = |op: &str, e: String| -> EngineError {
-            rpc_error(
-                name,
-                op,
-                plugin.crash_summary(),
-                channel.close_reason(),
-                &e,
-            )
-        };
-        let schema = conn
-            .get_schema()
-            .await
-            .map_err(|e| spawn_err("get_schema", e.to_string()))?;
-
-        // Configure: the provider-config-typed creds, or an empty object
-        // (→ a provider-config object with all attributes null, which is
-        // what terraform sends for an absent provider block; the provider
-        // falls back to its own env credentials). NOT a null object —
-        // providers expect a value of the config type, not nil.
-        let config_json = self
-            .ctx
-            .provider_configs
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
-        let config_dv = DynamicValue::from_json(&config_json, &schema.provider_config)
-            .map_err(|e| EngineError::Cty(e.to_string()))?;
-        conn.configure(&config_dv, &self.ctx.terraform_version)
-            .await
-            .map_err(|e| spawn_err("configure", e.to_string()))?;
-
-        Ok(LiveProvider {
-            _plugin: plugin,
-            conn,
-            schema,
-        })
+        dial_configured_provider(self.ctx, name).await
     }
 }
 
@@ -1356,7 +1384,13 @@ async fn apply_one(
 /// The provider's local name from a resource type id: the prefix before
 /// the first `_` (`github_repository` → `github`, `aws_s3_bucket` →
 /// `aws`). Matches `terraform-provider-<name>`.
-fn provider_local_name(type_id: &str) -> String {
+/// The provider's local name (the `provider "<name>" {}` block name a
+/// rendered config would use) inferred from a resource type's prefix —
+/// `"github_repository"` → `"github"`. `pub(crate)` so
+/// [`crate::import_prepass::ConfiguredImportEnvironment`] can select
+/// the SAME provider a plan/apply RPC for this type would dial, without
+/// a second copy of this trivial-but-load-bearing mapping.
+pub(crate) fn provider_local_name(type_id: &str) -> String {
     type_id.split('_').next().unwrap_or(type_id).to_string()
 }
 
