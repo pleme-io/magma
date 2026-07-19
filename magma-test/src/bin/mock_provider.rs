@@ -334,9 +334,39 @@ impl Provider for MockProvider {
 
     async fn read_resource(
         &self,
-        _req: Request<tfplugin6::read_resource::Request>,
+        req: Request<tfplugin6::read_resource::Request>,
     ) -> Result<Response<tfplugin6::read_resource::Response>, Status> {
-        Err(Status::unimplemented("mock: read_resource"))
+        // Exercises magma-apply's plan-time refresh (`refresh_state` /
+        // `refresh_named`) over the real wire path — see
+        // `magma-test/tests/integration_refresh_then_plan.rs`. Canned
+        // drift, mirroring `import_resource_state`'s "missing"-id
+        // sentinel convention above: decode the requested
+        // `current_state`'s `id` attribute; an id of `"gone"` means the
+        // resource was deleted out-of-band (the mock returns a null
+        // `new_state`, exactly the signal a real provider sends for a
+        // resource manually removed outside the tool), any other id is
+        // echoed back unchanged (no drift).
+        let r = req.into_inner();
+        let is_gone = r
+            .current_state
+            .as_ref()
+            .and_then(|dv| {
+                magma_cty::DynamicValue {
+                    msgpack: dv.msgpack.clone(),
+                }
+                .to_json(&mock_resource_implied_type())
+                .ok()
+            })
+            .and_then(|json| json.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .is_some_and(|id| id == "gone");
+
+        Ok(Response::new(tfplugin6::read_resource::Response {
+            new_state: if is_gone { None } else { r.current_state },
+            diagnostics: vec![],
+            private: vec![],
+            deferred: None,
+            new_identity: None,
+        }))
     }
 
     async fn import_resource_state(

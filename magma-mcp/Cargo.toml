@@ -26,6 +26,7 @@ magma-migrate   = { workspace = true }
 magma-flow      = { workspace = true }
 magma-pangea    = { workspace = true }
 magma-plan      = { workspace = true }
+magma-apply     = { workspace = true }
 magma-backend   = { workspace = true }
 hex             = { workspace = true }
 serde        = { workspace = true }

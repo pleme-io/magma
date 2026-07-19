@@ -457,9 +457,9 @@ async fn handle_tool_call(
 
         "magma_plan" => {
             // Real in-process dispatch via magma-pangea + magma-plan +
-            // magma-backend. magma-mcp now owns those transitive deps
-            // alongside magma-flow, so the MCP server can plan directly
-            // without round-tripping through the CLI.
+            // magma-apply + magma-backend. magma-mcp now owns those
+            // transitive deps alongside magma-flow, so the MCP server can
+            // plan directly without round-tripping through the CLI.
             use magma_backend::Backend as _;
             use magma_pangea::WorkspaceLoader as _;
 
@@ -474,12 +474,32 @@ async fn handle_tool_call(
             let cfg = magma_config::Config::from_json(loaded.rendered)
                 .map_err(|e| McpError::InvalidParams(format!("parse: {e}")))?;
             let backend = magma_backend::LocalBackend::new(dir.clone());
-            let state = backend
+            let mut state = backend
                 .read_state()
                 .await
                 .map_err(|e| McpError::InvalidParams(format!("read state: {e}")))?;
-            let plan = magma_plan::plan(&cfg, &state)
-                .map_err(|e| McpError::InvalidParams(format!("plan: {e}")))?;
+
+            // Terraform-parity plan-time refresh — on by default (matches
+            // `magma plan`'s CLI default), pass `"refresh": false` to skip
+            // it and plan against the state exactly as last written.
+            let refresh = params
+                .get("refresh")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let refresh_ctx =
+                refresh.then(|| magma_apply::engine::ApplyContext::new(dir.clone()));
+            let (plan, refresh_report) =
+                magma_apply::engine::refresh_then_plan(&cfg, &mut state, refresh_ctx.as_ref())
+                    .await
+                    .map_err(|e| McpError::InvalidParams(format!("plan: {e}")))?;
+            if refresh_report.is_some() {
+                // Same Terraform-parity persistence as the CLI's `magma
+                // plan`: a refresh mutates state even on a plan-only call.
+                backend
+                    .write_state(&state)
+                    .await
+                    .map_err(|e| McpError::InvalidParams(format!("write refreshed state: {e}")))?;
+            }
 
             Ok(serde_json::json!({
                 "plan_id":          hex::encode(plan.id.0),
@@ -489,6 +509,13 @@ async fn handle_tool_call(
                 "summary": {
                     "total":  plan.resource_changes.len(),
                 },
+                "refresh": refresh_report.map(|r| serde_json::json!({
+                    "refreshed":            r.refreshed,
+                    "dropped_instances":    r.dropped_instances,
+                    "dropped_resources":    r.dropped_resources,
+                    "kept_on_error":        r.kept_on_error,
+                    "suppressed_mass_drop": r.suppressed_mass_drop,
+                })),
             }))
         }
 
@@ -851,6 +878,42 @@ mod tests {
         let result = resp.result.unwrap();
         assert!(result["plan_id"].as_str().unwrap().len() == 64);
         assert!(result["resource_changes"].is_array());
+        // Refresh is on by default (Terraform parity): the fixture's
+        // workspace has no `.terraform/providers` dir, so refresh safely
+        // degrades to "kept on error" rather than being skipped outright —
+        // proving `magma_plan` actually routes through
+        // `refresh_then_plan`, not the bare `magma_plan::plan` call.
+        assert!(
+            result["refresh"].is_object(),
+            "refresh ran by default: {result}"
+        );
+        assert_eq!(result["refresh"]["dropped_instances"], 0);
+    }
+
+    #[tokio::test]
+    async fn magma_plan_refresh_false_skips_refresh() {
+        let ws = magma_fixtures::TfJsonBuilder::new()
+            .resource(
+                "aws_iam_role",
+                "r",
+                serde_json::json!({"name": "mcp-plan-norefresh-test"}),
+            )
+            .render_to_tempdir()
+            .unwrap();
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: serde_json::json!(1),
+            method: "tools/call/magma_plan".into(),
+            params: serde_json::json!({ "workspace_dir": ws.dir(), "refresh": false }),
+        };
+        let resp = dispatch(req).await;
+        assert!(resp.error.is_none(), "plan errored: {:?}", resp.error);
+        let result = resp.result.unwrap();
+        assert!(
+            result["refresh"].is_null(),
+            "refresh: false must skip refresh entirely: {result}"
+        );
     }
 
     #[tokio::test]

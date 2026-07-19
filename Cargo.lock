@@ -1918,6 +1918,7 @@ version = "0.1.10"
 dependencies = [
  "async-trait",
  "hex",
+ "magma-apply",
  "magma-arch-test",
  "magma-backend",
  "magma-config 0.1.10",

@@ -416,6 +416,18 @@ struct PlanArgs {
     /// interfaces via lava-architectures.
     #[arg(long)]
     tlisp_gate: Option<String>,
+    /// Refresh state against real providers before planning — Terraform's
+    /// implicit plan-time refresh (`ReadResource` against every state
+    /// instance), which catches drift from changes made outside magma
+    /// (a resource deleted or edited in the console). On by default,
+    /// matching Terraform; pass `--refresh false` to plan against the
+    /// state exactly as last written (the pre-refresh behavior). Requires
+    /// provider binaries to be locatable (`magma init`, or
+    /// `$MAGMA_PROVIDER_DIR`) — when they aren't, refresh safely degrades
+    /// to a no-op (never drops state on uncertainty) and planning
+    /// proceeds unchanged.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    refresh: bool,
 }
 
 #[derive(clap::Args, Debug, Default)]
@@ -438,6 +450,9 @@ struct ApplyArgs {
     /// Optional typed-interface gate name.
     #[arg(long)]
     tlisp_gate: Option<String>,
+    /// Same as `plan --refresh` — on by default. See [`PlanArgs::refresh`].
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    refresh: bool,
 }
 
 #[derive(clap::Args, Debug, Default)]
@@ -915,8 +930,31 @@ async fn load_workspace_and_state(
     Ok((cfg, backend, state))
 }
 
+/// Surface a plan-time [`magma::apply::engine::RefreshReport`] to the
+/// operator — shared by `cmd_plan` + `cmd_apply` so the two entry points
+/// report drift identically. Silent when refresh found nothing to report
+/// (the common case: state already matches the real world).
+fn report_refresh(report: &magma::apply::engine::RefreshReport) {
+    let changed = report.refreshed > 0
+        || report.dropped_instances > 0
+        || report.dropped_resources > 0
+        || report.suppressed_mass_drop > 0;
+    if !changed {
+        return;
+    }
+    eprintln!(
+        "magma: plan-time refresh — {} instance(s) updated from the real world, \
+         {} confirmed gone ({} resource(s) dropped from state), \
+         {} suppressed as a mass-drop anomaly (systemic read failure, not genuine drift)",
+        report.refreshed,
+        report.dropped_instances,
+        report.dropped_resources,
+        report.suppressed_mass_drop,
+    );
+}
+
 async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
-    let (cfg, _backend, state) = if let Some(tlisp_path) = &args.tlisp {
+    let (cfg, backend, mut state) = if let Some(tlisp_path) = &args.tlisp {
         synthesize_via_tlisp(
             tlisp_path,
             &args.tlisp_bindings,
@@ -927,7 +965,24 @@ async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
     } else {
         load_workspace_and_state(&args.dir).await?
     };
-    let plan = magma::plan::plan(&cfg, &state).map_err(|e| anyhow::anyhow!("plan: {e}"))?;
+    let refresh_ctx = args
+        .refresh
+        .then(|| magma::apply::engine::ApplyContext::new(args.dir.clone()));
+    let (plan, refresh_report) =
+        magma::apply::engine::refresh_then_plan(&cfg, &mut state, refresh_ctx.as_ref())
+            .await
+            .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
+    if let Some(report) = &refresh_report {
+        report_refresh(report);
+        // Terraform parity: a plan-time refresh persists the refreshed
+        // state to the backend even though `plan` itself makes no other
+        // change — so a later `plan`/`apply` never re-discovers the same
+        // drift from scratch.
+        backend
+            .write_state(&state)
+            .await
+            .map_err(|e| anyhow::anyhow!("write refreshed state: {e}"))?;
+    }
     let summary = serde_json::json!({
         "plan_id":          hex::encode(plan.id.0),
         "created_at":       plan.created_at,
@@ -959,7 +1014,22 @@ async fn cmd_apply(args: ApplyArgs) -> Result<u8> {
     } else {
         load_workspace_and_state(&args.dir).await?
     };
-    let plan = magma::plan::plan(&cfg, &state).map_err(|e| anyhow::anyhow!("plan: {e}"))?;
+    let refresh_ctx = args
+        .refresh
+        .then(|| magma::apply::engine::ApplyContext::new(args.dir.clone()));
+    let (plan, refresh_report) =
+        magma::apply::engine::refresh_then_plan(&cfg, &mut state, refresh_ctx.as_ref())
+            .await
+            .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
+    if let Some(report) = &refresh_report {
+        report_refresh(report);
+        // Persist the refresh even if the operator declines to apply below
+        // (Terraform parity — see the matching comment in `cmd_plan`).
+        backend
+            .write_state(&state)
+            .await
+            .map_err(|e| anyhow::anyhow!("write refreshed state: {e}"))?;
+    }
 
     if !args.auto_approve {
         eprintln!(

@@ -990,6 +990,47 @@ pub async fn refresh_named(
     report
 }
 
+/// Terraform-parity plan-time refresh + plan — the ONE place a caller goes
+/// instead of `magma_plan::plan` directly when it wants real Terraform's
+/// implicit-refresh guarantee.
+///
+/// Real Terraform calls `ReadResource` against every state instance before
+/// every `plan`/`apply`, specifically to catch out-of-band drift (a resource
+/// deleted or edited outside the tool). Before this function existed, every
+/// magma entry point diffed config against whatever `state` happened to be
+/// on disk, so a manually-deleted resource surfaced as `NoOp` instead of the
+/// `Create` it actually needs, and a manually-edited resource's drift was
+/// invisible to the plan.
+///
+/// * `ctx = None` — refresh is skipped; behaves exactly like calling
+///   `magma_plan::plan` directly (the pre-fix behavior, e.g. `--refresh
+///   false`, or a caller with no way to reach real providers). Returns
+///   `report = None`.
+/// * `ctx = Some(ctx)` — [`refresh_state`] runs first. It NEVER drops an
+///   instance on read failure or uncertainty (provider unreachable, no
+///   schema, decode error — see its own docs), so it is always safe to pass
+///   `Some` even when no provider binaries are cached: refresh degrades to a
+///   report full of `kept_on_error` and the plan proceeds against
+///   unchanged state, identical to the `ctx = None` path. Returns
+///   `report = Some(_)` describing what changed.
+///
+/// This function mutates `state` in place (refreshed attributes / dropped
+/// phantoms) but never persists it anywhere — callers that own a backend
+/// are responsible for writing the (possibly refreshed) `state` back after
+/// calling this, exactly as they already do with the plan's outcome.
+pub async fn refresh_then_plan(
+    cfg: &magma_config::Config,
+    state: &mut State,
+    ctx: Option<&ApplyContext>,
+) -> Result<(Plan, Option<RefreshReport>), magma_plan::PlanError> {
+    let report = match ctx {
+        Some(ctx) => Some(refresh_state(state, ctx).await),
+        None => None,
+    };
+    let plan = magma_plan::plan(cfg, state)?;
+    Ok((plan, report))
+}
+
 /// Does a provider error message indicate the resource already exists
 /// (a create-conflict to be adopted via import, not a hard failure)?
 /// Matches the GitHub provider's 422 shapes ("name already exists on this
@@ -2530,6 +2571,103 @@ mod tests {
         assert_eq!(report.dropped_resources, 0);
         assert_eq!(report.kept_on_error, 1, "kept the instance it couldn't read");
         assert_eq!(state.resources.len(), 1, "resource survives uncertainty");
+    }
+
+    /// `ctx = None` must be a pure pass-through to `magma_plan::plan` — the
+    /// exact pre-fix behavior every caller that hasn't opted into refresh
+    /// (e.g. `--refresh false`) still gets. No refresh runs, `report` is
+    /// `None`, and the plan is byte-identical to calling `magma_plan::plan`
+    /// directly.
+    #[tokio::test]
+    async fn refresh_then_plan_skips_refresh_when_ctx_is_none() {
+        let cfg = magma_config::Config::from_json(serde_json::json!({
+            "resource": { "github_repository": { "keep_me": { "name": "keep_me" } } }
+        }))
+        .unwrap();
+        let mut state = State {
+            version: 4,
+            terraform_version: "1.9.0".into(),
+            serial: 1,
+            lineage: uuid::Uuid::nil(),
+            outputs: Default::default(),
+            resources: vec![],
+        };
+
+        let direct = magma_plan::plan(&cfg, &state).unwrap();
+        let (via_helper, report) = refresh_then_plan(&cfg, &mut state, None).await.unwrap();
+
+        assert!(report.is_none(), "ctx = None must not produce a refresh report");
+        assert_eq!(
+            via_helper.resource_changes.len(),
+            direct.resource_changes.len()
+        );
+        assert_eq!(
+            via_helper.resource_changes[0].action,
+            direct.resource_changes[0].action,
+            "identical plan to calling magma_plan::plan directly",
+        );
+    }
+
+    /// `ctx = Some(_)` against an unreachable provider must still RUN
+    /// refresh (proving `refresh_then_plan` actually calls [`refresh_state`]
+    /// rather than silently skipping it) while degrading safely — the same
+    /// never-drop-on-uncertainty guarantee [`refresh_never_drops_when_provider_unavailable`]
+    /// proves for `refresh_state` directly.
+    #[tokio::test]
+    async fn refresh_then_plan_runs_refresh_when_ctx_is_some() {
+        use magma_types::{
+            InstanceStatus, ModulePath, ProviderReference, ResourceAddress, ResourceKind,
+            ResourceTypeId, StateInstance, StateResource,
+        };
+        // SAFETY: single-threaded test; no other thread reads this var.
+        unsafe { std::env::remove_var("MAGMA_PROVIDER_DIR") };
+
+        let cfg = magma_config::Config::from_json(serde_json::json!({
+            "resource": { "github_repository": { "keep_me": { "name": "keep_me" } } }
+        }))
+        .unwrap();
+        let mut state = State {
+            version: 4,
+            terraform_version: "1.9.0".into(),
+            serial: 1,
+            lineage: uuid::Uuid::nil(),
+            outputs: Default::default(),
+            resources: vec![StateResource {
+                address: ResourceAddress {
+                    module: ModulePath::root(),
+                    kind: ResourceKind::Managed,
+                    type_id: ResourceTypeId("github_repository".into()),
+                    name: "keep_me".into(),
+                    key: None,
+                },
+                provider: ProviderReference {
+                    source: "integrations/github".into(),
+                    name: "github".into(),
+                    alias: None,
+                },
+                instances: vec![StateInstance {
+                    schema_version: 0,
+                    attributes: serde_json::json!({"name": "keep_me"}),
+                    private: vec![],
+                    dependencies: vec![],
+                    status: InstanceStatus::Ready,
+                }],
+            }],
+        };
+
+        let td = tempfile::tempdir().unwrap();
+        let ctx = ApplyContext::new(td.path().to_path_buf());
+        let (plan, report) = refresh_then_plan(&cfg, &mut state, Some(&ctx)).await.unwrap();
+
+        let report = report.expect("ctx = Some(_) must produce a refresh report");
+        assert_eq!(report.kept_on_error, 1, "no provider reachable — kept, not dropped");
+        assert_eq!(report.dropped_instances, 0);
+        assert_eq!(state.resources.len(), 1, "state untouched on uncertainty");
+        assert_eq!(
+            plan.resource_changes[0].action,
+            Action::NoOp,
+            "config matches unchanged state — still a NoOp",
+        );
     }
 
     #[test]
