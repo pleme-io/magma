@@ -2222,6 +2222,7 @@ version = "0.1.10"
 dependencies = [
  "async-trait",
  "base64",
+ "chrono",
  "insta",
  "magma",
  "magma-apply",
@@ -2248,6 +2249,7 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tracing",
+ "uuid",
  "which",
 ]
 

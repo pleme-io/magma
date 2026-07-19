@@ -1235,13 +1235,13 @@ async fn apply_one(
             // Provider normalizes the proposed state (computes defaults +
             // marks computed attributes unknown). Terraform requires the
             // planned state to flow from plan → apply.
-            let planned_dv = match rpc_retry!(pacer.as_deref(), lp.conn.plan_resource_change(
+            let planned = match rpc_retry!(pacer.as_deref(), lp.conn.plan_resource_change(
                 &type_name,
                 &prior_dv,
                 &config_dv,
                 &config_dv
             )) {
-                Ok(dv) => dv,
+                Ok(p) => p,
                 Err(e) => {
                     let (crash, close) = provider_failure_signals(lp);
                     return Err(rpc_error(
@@ -1253,6 +1253,50 @@ async fn apply_one(
                     ));
                 }
             };
+
+            // The provider's `requires_replace` — computed by the SAME RPC
+            // above — is the ONLY authoritative signal for "does this
+            // change need destroy+create instead of an in-place update?".
+            // magma-plan's Config×State heuristic cannot know this (see
+            // magma-plan's module docs): a ForceNew attribute plans as a
+            // plain `Action::Update` there today. Honor the provider's
+            // live signal regardless of what the plan said, AND honor an
+            // already-Replace-classified change (`Action::Replace` /
+            // `CreateThenDelete` / `DeleteThenCreate`, in case a future
+            // schema-aware magma-plan or another Reconciler produced one)
+            // so neither source can be silently ignored.
+            //
+            // Before this branch existed, EVERY one of these cases fell
+            // through to the single `apply_resource_change` call below,
+            // sending the provider a malformed request — `prior_state`
+            // from the OLD instance paired with a `planned_state` the
+            // provider itself computed as a REPLACEMENT (identity
+            // attributes flipped unknown). The outcome was provider-
+            // dependent and unverified: a hard API failure (safe but
+            // confusing), or a provider that silently no-ops the
+            // immutable field while updating the rest, leaving magma's
+            // recorded state wrong with no error surfaced.
+            let is_replace = !planned.requires_replace.is_empty()
+                || matches!(
+                    change.action,
+                    Action::Replace | Action::CreateThenDelete | Action::DeleteThenCreate
+                );
+            if is_replace {
+                return apply_replace(
+                    change,
+                    &prior_dv,
+                    &config_dv,
+                    &implied,
+                    &type_name,
+                    &provider_name,
+                    lp,
+                    pacer.as_deref(),
+                    state,
+                )
+                .await;
+            }
+
+            let planned_dv = planned.state;
             let new_dv = match rpc_retry!(pacer.as_deref(), lp.conn.apply_resource_change(
                 &type_name,
                 &prior_dv,
@@ -1379,6 +1423,121 @@ async fn apply_one(
             })
         }
     }
+}
+
+/// Orchestrate a change the provider requires be REPLACED (destroy then
+/// create) rather than updated in place — see the `is_replace` branch in
+/// [`apply_one`] for how a change lands here.
+///
+/// Sends the SAME two RPC pairs Terraform core issues for a replace:
+///
+/// 1. `ApplyResourceChange(prior_state → null)` — destroy the old
+///    instance.
+/// 2. A FRESH `PlanResourceChange(null → config)` — the create half's
+///    planned state (defaults, computed-attribute placeholders) is
+///    computed from a null prior, never reused from the pre-replace
+///    plan a real provider may have shaped as a replacement (e.g. with
+///    identity attributes already flipped unknown).
+/// 3. `ApplyResourceChange(null → create_planned)` — create the
+///    replacement.
+///
+/// Never the single malformed `ApplyResourceChange(prior_state,
+/// replacement-shaped planned_state)` call the old catch-all sent for
+/// every action alike — see [`apply_one`]'s `is_replace` doc comment for
+/// why that was unsafe.
+///
+/// Destroy-before-create (`Action::DeleteThenCreate`) is the only order
+/// magma supports today; there is no `create_before_destroy` lifecycle
+/// knob yet, so `Action::CreateThenDelete` is treated identically (a
+/// named simplification — matches [`crate::apply_one`]'s M0 structural
+/// path, which also "ignores ordering" for these two variants).
+async fn apply_replace(
+    change: &ResourceChange,
+    prior_dv: &DynamicValue,
+    config_dv: &DynamicValue,
+    implied: &magma_cty::CtyType,
+    type_name: &str,
+    provider_name: &str,
+    lp: &mut LiveProvider,
+    pacer: Option<&LeakyBucket>,
+    state: &mut State,
+) -> Result<AppliedChange, EngineError> {
+    let null_dv = DynamicValue::from_json(&serde_json::Value::Null, implied)
+        .map_err(|e| EngineError::Cty(e.to_string()))?;
+
+    // 1. Destroy the prior instance.
+    if let Err(e) = rpc_retry!(
+        pacer,
+        lp.conn
+            .apply_resource_change(type_name, prior_dv, &null_dv, &null_dv)
+    ) {
+        let (crash, close) = provider_failure_signals(lp);
+        return Err(rpc_error(
+            provider_name,
+            "apply_resource_change[replace:destroy]",
+            crash,
+            close,
+            &e.to_string(),
+        ));
+    }
+    remove_resource(state, &change.address);
+
+    // 2. Re-plan the create half from a clean slate.
+    let create_planned = match rpc_retry!(
+        pacer,
+        lp.conn
+            .plan_resource_change(type_name, &null_dv, config_dv, config_dv)
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let (crash, close) = provider_failure_signals(lp);
+            return Err(rpc_error(
+                provider_name,
+                "plan_resource_change[replace:create]",
+                crash,
+                close,
+                &e.to_string(),
+            ));
+        }
+    };
+
+    // 3. Create the replacement.
+    let new_dv = match rpc_retry!(
+        pacer,
+        lp.conn.apply_resource_change(
+            type_name,
+            &null_dv,
+            &create_planned.state,
+            config_dv
+        )
+    ) {
+        Ok(dv) => dv,
+        Err(e) => {
+            let (crash, close) = provider_failure_signals(lp);
+            return Err(rpc_error(
+                provider_name,
+                "apply_resource_change[replace:create]",
+                crash,
+                close,
+                &e.to_string(),
+            ));
+        }
+    };
+
+    let new_attrs = new_dv
+        .to_json(implied)
+        .map_err(|e| EngineError::Cty(e.to_string()))?;
+    insert_resource(state, &change.address, new_attrs.clone());
+    Ok(AppliedChange {
+        address: change.address.clone(),
+        // Record what ACTUALLY happened (destroy + create), not
+        // whatever the incoming plan classified this as — an
+        // `Action::Update`-classified change that turned out to
+        // require replace must not be recorded as an in-place update.
+        action: Action::DeleteThenCreate,
+        before: change.before.clone(),
+        after: Some(new_attrs),
+    })
 }
 
 /// The provider's local name from a resource type id: the prefix before

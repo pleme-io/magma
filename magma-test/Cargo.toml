@@ -49,3 +49,5 @@ which          = { workspace = true }
 [dev-dependencies]
 magma-test-laws = { workspace = true, features = ["provider-laws"] }
 magma-apply     = { workspace = true }
+chrono          = { workspace = true }
+uuid            = { workspace = true }

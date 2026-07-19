@@ -97,6 +97,33 @@ pub struct Diag {
     pub detail: String,
 }
 
+/// The provider's full response to `PlanResourceChange`: the normalized
+/// planned state PLUS the attribute paths the provider says force a
+/// destroy+create instead of an in-place update ("requires replace").
+///
+/// Terraform core reads this exact signal — computed by the provider
+/// inside this SAME RPC — to decide Update vs Replace; it is not
+/// something the schema or config can determine on their own (a
+/// provider's `ForceNew` decision can be dynamic, e.g. via
+/// `CustomizeDiff`). Prior to this type existing, [`ProviderConn::plan_resource_change`]
+/// returned only the bare planned [`DynamicValue`], silently discarding
+/// `requires_replace` — the ONE authoritative signal a provider gives
+/// for immutable/ForceNew attributes — before it ever reached
+/// magma-apply's business logic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedChange {
+    pub state: DynamicValue,
+    /// Provider-reported attribute paths requiring replace, rendered as
+    /// dotted diagnostic strings (`"instance_types"`, `"tags.name"`,
+    /// `"rules[2].port"`). Empty ⇒ the provider says an in-place update
+    /// is sufficient. Diagnostic-only shape: callers only need to know
+    /// whether this is non-empty to trigger destroy+create orchestration
+    /// (see `magma-apply::engine::apply_one`); the strings make
+    /// `requires_replace` legible in logs/errors without threading a
+    /// full typed attribute-path AST through every consumer.
+    pub requires_replace: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,
@@ -283,14 +310,19 @@ impl ProviderConn {
         }
     }
 
-    /// `PlanResourceChange` — the provider's proposed new state.
+    /// `PlanResourceChange` — the provider's proposed new state PLUS
+    /// which attribute paths (if any) force a destroy+create instead of
+    /// an in-place update. See [`PlannedChange`]'s doc for why the
+    /// latter matters: it is the ONLY authoritative source for that
+    /// decision, and was silently discarded here before `PlannedChange`
+    /// existed.
     pub async fn plan_resource_change(
         &mut self,
         type_name: &str,
         prior_state: &DynamicValue,
         proposed_new_state: &DynamicValue,
         config: &DynamicValue,
-    ) -> Result<DynamicValue, ProviderError> {
+    ) -> Result<PlannedChange, ProviderError> {
         match &mut self.client {
             Client::V6(c) => {
                 let resp = c
@@ -306,9 +338,19 @@ impl ProviderConn {
                     .map_err(transport)?
                     .into_inner();
                 check_diags(resp.diagnostics.iter().map(diag6))?;
-                resp.planned_state
+                let requires_replace = resp
+                    .requires_replace
+                    .iter()
+                    .map(attribute_path_to_string_v6)
+                    .collect();
+                let state = resp
+                    .planned_state
                     .map(from_pb6)
-                    .ok_or(ProviderError::NoNewState)
+                    .ok_or(ProviderError::NoNewState)?;
+                Ok(PlannedChange {
+                    state,
+                    requires_replace,
+                })
             }
             Client::V5(c) => {
                 let resp = c
@@ -324,9 +366,19 @@ impl ProviderConn {
                     .map_err(transport)?
                     .into_inner();
                 check_diags(resp.diagnostics.iter().map(diag5))?;
-                resp.planned_state
+                let requires_replace = resp
+                    .requires_replace
+                    .iter()
+                    .map(attribute_path_to_string_v5)
+                    .collect();
+                let state = resp
+                    .planned_state
                     .map(from_pb5)
-                    .ok_or(ProviderError::NoNewState)
+                    .ok_or(ProviderError::NoNewState)?;
+                Ok(PlannedChange {
+                    state,
+                    requires_replace,
+                })
             }
         }
     }
@@ -545,6 +597,79 @@ fn from_pb5(dv: tfplugin5::DynamicValue) -> DynamicValue {
     }
 }
 
+/// One `AttributePath.Step` reduced to its selector, independent of
+/// which protocol's generated type it came from — lets
+/// [`render_attribute_path`] be shared by both `_v5`/`_v6` renderers
+/// below instead of duplicating the join logic.
+enum PathStep {
+    Attribute(String),
+    ElementKeyString(String),
+    ElementKeyInt(i64),
+}
+
+/// Render an attribute path as a dotted diagnostic string:
+/// `steps = [Attribute("tags"), ElementKeyString("Name")]` → `"tags.Name"`;
+/// `steps = [Attribute("rules"), ElementKeyInt(2), Attribute("port")]` →
+/// `"rules[2].port"`. See [`PlannedChange::requires_replace`]'s doc for why
+/// this diagnostic shape (not a typed AST) is what callers need.
+fn render_attribute_path(steps: impl Iterator<Item = PathStep>) -> String {
+    let mut out = String::new();
+    for step in steps {
+        match step {
+            PathStep::Attribute(name) => {
+                if !out.is_empty() {
+                    out.push('.');
+                }
+                out.push_str(&name);
+            }
+            PathStep::ElementKeyString(key) => {
+                out.push('[');
+                out.push_str(&key);
+                out.push(']');
+            }
+            PathStep::ElementKeyInt(i) => {
+                out.push('[');
+                out.push_str(&i.to_string());
+                out.push(']');
+            }
+        }
+    }
+    out
+}
+
+fn attribute_path_to_string_v6(path: &tfplugin6::AttributePath) -> String {
+    render_attribute_path(path.steps.iter().map(|s| match &s.selector {
+        Some(tfplugin6::attribute_path::step::Selector::AttributeName(n)) => {
+            PathStep::Attribute(n.clone())
+        }
+        Some(tfplugin6::attribute_path::step::Selector::ElementKeyString(k)) => {
+            PathStep::ElementKeyString(k.clone())
+        }
+        Some(tfplugin6::attribute_path::step::Selector::ElementKeyInt(i)) => {
+            PathStep::ElementKeyInt(*i)
+        }
+        // A step with no selector set is malformed wire data — render as
+        // an empty attribute segment rather than panicking or dropping
+        // the step (which would silently shorten the reported path).
+        None => PathStep::Attribute(String::new()),
+    }))
+}
+
+fn attribute_path_to_string_v5(path: &tfplugin5::AttributePath) -> String {
+    render_attribute_path(path.steps.iter().map(|s| match &s.selector {
+        Some(tfplugin5::attribute_path::step::Selector::AttributeName(n)) => {
+            PathStep::Attribute(n.clone())
+        }
+        Some(tfplugin5::attribute_path::step::Selector::ElementKeyString(k)) => {
+            PathStep::ElementKeyString(k.clone())
+        }
+        Some(tfplugin5::attribute_path::step::Selector::ElementKeyInt(i)) => {
+            PathStep::ElementKeyInt(*i)
+        }
+        None => PathStep::Attribute(String::new()),
+    }))
+}
+
 /// Extract `(severity, summary, detail)` from a tfplugin6 diagnostic.
 fn diag6(d: &tfplugin6::Diagnostic) -> (i32, String, String) {
     (d.severity, d.summary.clone(), d.detail.clone())
@@ -612,5 +737,87 @@ mod tests {
         assert_eq!(from_pb6(to_pb6(&dv)), dv);
         assert_eq!(from_pb5(to_pb5(&dv)), dv);
         assert!(to_pb6(&dv).json.is_empty());
+    }
+
+    fn v6_attr_step(name: &str) -> tfplugin6::attribute_path::Step {
+        tfplugin6::attribute_path::Step {
+            selector: Some(tfplugin6::attribute_path::step::Selector::AttributeName(
+                name.to_string(),
+            )),
+        }
+    }
+
+    fn v6_index_step(i: i64) -> tfplugin6::attribute_path::Step {
+        tfplugin6::attribute_path::Step {
+            selector: Some(tfplugin6::attribute_path::step::Selector::ElementKeyInt(i)),
+        }
+    }
+
+    fn v6_key_step(k: &str) -> tfplugin6::attribute_path::Step {
+        tfplugin6::attribute_path::Step {
+            selector: Some(tfplugin6::attribute_path::step::Selector::ElementKeyString(
+                k.to_string(),
+            )),
+        }
+    }
+
+    #[test]
+    fn attribute_path_to_string_v6_single_attribute() {
+        let path = tfplugin6::AttributePath {
+            steps: vec![v6_attr_step("instance_types")],
+        };
+        assert_eq!(attribute_path_to_string_v6(&path), "instance_types");
+    }
+
+    #[test]
+    fn attribute_path_to_string_v6_nested_key() {
+        let path = tfplugin6::AttributePath {
+            steps: vec![v6_attr_step("tags"), v6_key_step("Name")],
+        };
+        assert_eq!(attribute_path_to_string_v6(&path), "tags[Name]");
+    }
+
+    #[test]
+    fn attribute_path_to_string_v6_indexed_then_attribute() {
+        let path = tfplugin6::AttributePath {
+            steps: vec![v6_attr_step("rules"), v6_index_step(2), v6_attr_step("port")],
+        };
+        assert_eq!(attribute_path_to_string_v6(&path), "rules[2].port");
+    }
+
+    fn v5_attr_step(name: &str) -> tfplugin5::attribute_path::Step {
+        tfplugin5::attribute_path::Step {
+            selector: Some(tfplugin5::attribute_path::step::Selector::AttributeName(
+                name.to_string(),
+            )),
+        }
+    }
+
+    #[test]
+    fn attribute_path_to_string_v5_matches_v6_shape() {
+        let path = tfplugin5::AttributePath {
+            steps: vec![v5_attr_step("ami")],
+        };
+        assert_eq!(attribute_path_to_string_v5(&path), "ami");
+    }
+
+    /// The `plan_resource_change`/`apply_resource_change` wire round-trip
+    /// this crate exists to speak has one job for the requires-replace
+    /// signal: never drop it. A `PlannedChange` with an empty vec must be
+    /// distinguishable from one with paths in it — `requires_replace()`'s
+    /// consumer (`magma-apply::engine::apply_one`) branches on exactly
+    /// this emptiness check.
+    #[test]
+    fn planned_change_requires_replace_is_empty_iff_no_paths() {
+        let no_replace = PlannedChange {
+            state: DynamicValue { msgpack: vec![0xc0] },
+            requires_replace: vec![],
+        };
+        let must_replace = PlannedChange {
+            state: DynamicValue { msgpack: vec![0xc0] },
+            requires_replace: vec!["instance_types".to_string()],
+        };
+        assert!(no_replace.requires_replace.is_empty());
+        assert!(!must_replace.requires_replace.is_empty());
     }
 }

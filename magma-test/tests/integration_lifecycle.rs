@@ -120,5 +120,11 @@ async fn schema_only_smoke() {
         .await
         .expect("schema RPC")
         .into_inner();
-    assert_eq!(resp.resource_schemas.len(), 1);
+    // `mock_resource` (this test's original fixture) + `mock_replace_resource`
+    // (the ForceNew-attribute fixture added for
+    // `integration_replace_destroy_then_create.rs`) — assert both are
+    // present by name rather than re-pinning a bare count, so a THIRD
+    // fixture added later doesn't silently break this smoke test again.
+    assert!(resp.resource_schemas.contains_key("mock_resource"));
+    assert!(resp.resource_schemas.contains_key("mock_replace_resource"));
 }

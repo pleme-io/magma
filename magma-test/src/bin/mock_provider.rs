@@ -55,6 +55,37 @@ fn mock_resource_implied_type() -> magma_cty::CtyType {
     ])
 }
 
+/// The implied cty type of `mock_replace_resource` — a second resource
+/// type carrying one attribute (`immutable_field`) `plan_resource_change`
+/// treats as ForceNew, exercising the requires-replace destroy+create
+/// path end-to-end (see `magma-apply::engine::apply_one`'s `is_replace`
+/// branch + `magma-apply/tests/integration_replace_destroy_then_create.rs`).
+/// Kept SEPARATE from `mock_resource` so this test fixture can never
+/// perturb the existing `mock_resource`-shaped lifecycle/import tests.
+fn mock_replace_resource_implied_type() -> magma_cty::CtyType {
+    magma_cty::CtyType::object([
+        ("id".to_string(), magma_cty::CtyType::String),
+        ("name".to_string(), magma_cty::CtyType::String),
+        ("immutable_field".to_string(), magma_cty::CtyType::String),
+    ])
+}
+
+/// Decode a wire `DynamicValue`'s `immutable_field` string attribute
+/// against `mock_replace_resource_implied_type()`. `None` for an absent/
+/// null value (a create's `prior_state`, or a destroy's `planned_state`)
+/// or a decode failure.
+fn immutable_field_of(dv: &Option<tfplugin6::DynamicValue>) -> Option<String> {
+    let dv = dv.as_ref()?;
+    let json = magma_cty::DynamicValue {
+        msgpack: dv.msgpack.clone(),
+    }
+    .to_json(&mock_replace_resource_implied_type())
+    .ok()?;
+    json.get("immutable_field")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
 #[derive(Default)]
 struct MockProvider;
 
@@ -126,8 +157,26 @@ impl Provider for MockProvider {
             version: 0,
             block: Some(block.clone()),
         };
+        let replace_block = tfplugin6::schema::Block {
+            version: 0,
+            attributes: vec![
+                string_attr("id"),
+                string_attr("name"),
+                string_attr("immutable_field"),
+            ],
+            block_types: vec![],
+            description: "mock provider resource with a ForceNew attribute".into(),
+            description_kind: tfplugin6::StringKind::Plain as i32,
+            deprecated: false,
+            deprecation_message: String::new(),
+        };
+        let replace_schema = tfplugin6::Schema {
+            version: 0,
+            block: Some(replace_block),
+        };
         let mut resource_schemas = std::collections::HashMap::new();
         resource_schemas.insert("mock_resource".to_string(), schema.clone());
+        resource_schemas.insert("mock_replace_resource".to_string(), replace_schema);
 
         Ok(Response::new(tfplugin6::get_provider_schema::Response {
             provider: Some(tfplugin6::Schema {
@@ -191,10 +240,40 @@ impl Provider for MockProvider {
         req: Request<tfplugin6::plan_resource_change::Request>,
     ) -> Result<Response<tfplugin6::plan_resource_change::Response>, Status> {
         let r = req.into_inner();
+        // `mock_replace_resource` treats `immutable_field` as ForceNew:
+        // when there IS a prior instance (this isn't a create) and its
+        // `immutable_field` differs from the proposed value, report it in
+        // `requires_replace` — exactly what a real SDKv2/framework
+        // provider does for a ForceNew attribute. Exercises
+        // `ProviderConn::plan_resource_change`'s `requires_replace`
+        // decode + `magma-apply::engine::apply_one`'s `is_replace`
+        // branch over the REAL wire protocol (see
+        // `magma-apply/tests/integration_replace_destroy_then_create.rs`).
+        let requires_replace = if r.type_name == "mock_replace_resource" {
+            match (
+                immutable_field_of(&r.prior_state),
+                immutable_field_of(&r.proposed_new_state),
+            ) {
+                (Some(prior), Some(proposed)) if prior != proposed => {
+                    vec![tfplugin6::AttributePath {
+                        steps: vec![tfplugin6::attribute_path::Step {
+                            selector: Some(
+                                tfplugin6::attribute_path::step::Selector::AttributeName(
+                                    "immutable_field".to_string(),
+                                ),
+                            ),
+                        }],
+                    }]
+                }
+                _ => vec![],
+            }
+        } else {
+            vec![]
+        };
         // Canned response: planned_state = proposed_new_state (no changes).
         Ok(Response::new(tfplugin6::plan_resource_change::Response {
             planned_state: r.proposed_new_state,
-            requires_replace: vec![],
+            requires_replace,
             planned_private: vec![],
             diagnostics: vec![],
             legacy_type_system: false,
@@ -208,6 +287,39 @@ impl Provider for MockProvider {
         req: Request<tfplugin6::apply_resource_change::Request>,
     ) -> Result<Response<tfplugin6::apply_resource_change::Response>, Status> {
         let r = req.into_inner();
+        // The synthetic failure a REAL provider gives when it receives a
+        // malformed single-call "replace" — `prior_state` from the OLD
+        // instance paired with a `planned_state` whose ForceNew
+        // `immutable_field` already differs. This is exactly what the
+        // pre-fix `apply_one` catch-all used to send for every action
+        // alike; a properly orchestrated destroy (`planned_state` null)
+        // or create (`prior_state` null) never hits this arm, since one
+        // side is always null in that sequence.
+        if r.type_name == "mock_replace_resource" {
+            if let (Some(prior), Some(planned)) = (
+                immutable_field_of(&r.prior_state),
+                immutable_field_of(&r.planned_state),
+            ) {
+                if prior != planned {
+                    return Ok(Response::new(tfplugin6::apply_resource_change::Response {
+                        new_state: None,
+                        private: vec![],
+                        diagnostics: vec![tfplugin6::Diagnostic {
+                            severity: tfplugin6::diagnostic::Severity::Error as i32,
+                            summary: "cannot update immutable_field in place".into(),
+                            detail: format!(
+                                "mock: immutable_field is ForceNew (prior={prior:?} \
+                                 planned={planned:?}) — a real provider hard-fails or \
+                                 silently ignores this single-call request"
+                            ),
+                            attribute: None,
+                        }],
+                        legacy_type_system: false,
+                        new_identity: None,
+                    }));
+                }
+            }
+        }
         // Canned response: new_state = planned_state (apply succeeds as-is).
         Ok(Response::new(tfplugin6::apply_resource_change::Response {
             new_state: r.planned_state,
