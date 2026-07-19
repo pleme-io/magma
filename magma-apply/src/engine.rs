@@ -20,7 +20,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use magma_config::resolve_reference;
 use samba::LeakyBucket;
-use magma_cty::DynamicValue;
+use magma_cty::{CtyType, DynamicValue};
 use magma_graph::ResourceGraph;
 use magma_plugin::provider::{ProviderConn, ProviderSchema, is_retryable};
 use magma_plugin::{Plugin, PluginSpec, ProviderCrash};
@@ -696,6 +696,46 @@ pub struct RefreshReport {
     pub suppressed_mass_drop: usize,
 }
 
+/// Resolve `inst`'s prior [`DynamicValue`] for a `ReadResource`/refresh RPC.
+///
+/// When `inst.schema_version` already matches (or, in the never-observed
+/// case of a provider that regressed its version, is newer than) the
+/// provider's `current_version` for `type_name`, this is a direct decode
+/// against `implied`. Otherwise `inst.attributes` was persisted under an
+/// OLDER schema, and the terraform plugin protocol requires
+/// `UpgradeResourceState` to migrate it forward BEFORE it is fed into
+/// `ReadResource`/`PlanResourceChange`/`ApplyResourceChange` — decoding
+/// old-schema JSON straight against a newer implied type (the entire
+/// history of this function before this fix) risks a marshal mismatch or a
+/// provider-side crash/misparse the moment a provider's schema evolves (a
+/// routine occurrence for actively maintained providers). See
+/// `magma_plugin::provider::ProviderConn::upgrade_resource_state`.
+///
+/// `Err(())` on any decode/RPC failure — every call site's uniform
+/// response is "treat this instance as uncertain, keep it unchanged, count
+/// it `kept_on_error`" (refresh must never drop or corrupt state because a
+/// read/upgrade failed).
+async fn resolve_prior_dv(
+    lp: &mut LiveProvider,
+    pacer: Option<&LeakyBucket>,
+    type_name: &str,
+    implied: &CtyType,
+    current_version: i64,
+    inst: &StateInstance,
+) -> Result<DynamicValue, ()> {
+    if (inst.schema_version as i64) < current_version {
+        let raw = serde_json::to_vec(&inst.attributes).map_err(|_| ())?;
+        rpc_retry!(
+            pacer,
+            lp.conn
+                .upgrade_resource_state(type_name, inst.schema_version as i64, &raw)
+        )
+        .map_err(|_| ())
+    } else {
+        DynamicValue::from_json(&inst.attributes, implied).map_err(|_| ())
+    }
+}
+
 /// Refresh `state` against the providers' ACTUAL current state — terraform's
 /// plan-time refresh. For every resource instance, call `ReadResource`:
 ///
@@ -704,7 +744,9 @@ pub struct RefreshReport {
 ///   apply recorded in state but never actually created — so the next plan
 ///   re-creates it.
 /// * provider returns refreshed state → update the instance's attributes
-///   (so drift in real attributes is detected).
+///   (so drift in real attributes is detected), stamping `schema_version`
+///   to the provider's CURRENT version (migrating forward via
+///   [`resolve_prior_dv`] first when the stored version was older).
 /// * any error / uncertainty → KEEP the instance unchanged. Refresh must
 ///   never delete state because a read failed.
 ///
@@ -719,12 +761,12 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
         let type_name = resource.address.type_id.0.clone();
         let provider_name = provider_local_name(&type_name);
 
-        // Resolve the implied type once (clone so the schema borrow ends
-        // before the per-instance mutable RPC borrows). Any failure here ⇒
-        // keep the whole resource untouched.
-        let implied = match registry.get(&provider_name).await {
+        // Resolve the implied type + current schema version once (clone
+        // so the schema borrow ends before the per-instance mutable RPC
+        // borrows). Any failure here ⇒ keep the whole resource untouched.
+        let (implied, current_version) = match registry.get(&provider_name).await {
             Ok(lp) => match lp.schema.resource(&type_name) {
-                Some(t) => t.clone(),
+                Some(t) => (t.clone(), lp.schema.resource_version(&type_name)),
                 None => {
                     report.kept_on_error += resource.instances.len();
                     kept.push(resource);
@@ -740,14 +782,6 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
 
         let mut kept_instances: Vec<StateInstance> = Vec::new();
         for inst in resource.instances {
-            let prior_dv = match DynamicValue::from_json(&inst.attributes, &implied) {
-                Ok(d) => d,
-                Err(_) => {
-                    report.kept_on_error += 1;
-                    kept_instances.push(inst);
-                    continue;
-                }
-            };
             let lp = match registry.get(&provider_name).await {
                 Ok(l) => l,
                 Err(_) => {
@@ -756,6 +790,17 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
                     continue;
                 }
             };
+            let prior_dv =
+                match resolve_prior_dv(lp, None, &type_name, &implied, current_version, &inst)
+                    .await
+                {
+                    Ok(d) => d,
+                    Err(()) => {
+                        report.kept_on_error += 1;
+                        kept_instances.push(inst);
+                        continue;
+                    }
+                };
             match rpc_retry!(None::<&LeakyBucket>, lp.conn.read_resource(&type_name, &prior_dv)) {
                 Ok(None) => {
                     // Confirmed gone — drop this phantom/deleted instance.
@@ -766,6 +811,12 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
                         report.refreshed += 1;
                         kept_instances.push(StateInstance {
                             attributes: attrs,
+                            // Now confirmed current — never leave the stale
+                            // stored version in place (that would silently
+                            // re-trigger the same upgrade every cycle and
+                            // never actually converge to "checked").
+                            schema_version: u64::try_from(current_version)
+                                .unwrap_or(inst.schema_version),
                             ..inst
                         });
                     }
@@ -888,9 +939,9 @@ pub async fn refresh_named(
 
         let type_name = resource.address.type_id.0.clone();
         let provider_name = provider_local_name(&type_name);
-        let implied = match registry.get(&provider_name).await {
+        let (implied, current_version) = match registry.get(&provider_name).await {
             Ok(lp) => match lp.schema.resource(&type_name) {
-                Some(t) => t.clone(),
+                Some(t) => (t.clone(), lp.schema.resource_version(&type_name)),
                 None => {
                     report.kept_on_error += resource.instances.len();
                     kept.push(resource);
@@ -907,20 +958,32 @@ pub async fn refresh_named(
         let mut kept_instances: Vec<StateInstance> = Vec::new();
         let mut gone_instances: Vec<StateInstance> = Vec::new();
         for inst in resource.instances {
-            let prior_dv = match DynamicValue::from_json(&inst.attributes, &implied) {
-                Ok(d) => d,
-                Err(_) => {
-                    report.kept_on_error += 1;
-                    kept_instances.push(inst);
-                    continue;
-                }
-            };
             if let Some(p) = pacer.as_deref() {
                 let _ = p.acquire().await;
             }
             let lp = match registry.get(&provider_name).await {
                 Ok(l) => l,
                 Err(_) => {
+                    report.kept_on_error += 1;
+                    kept_instances.push(inst);
+                    continue;
+                }
+            };
+            // Migrates forward via UpgradeResourceState first when
+            // `inst.schema_version` is older than `current_version` — see
+            // `resolve_prior_dv`'s doc.
+            let prior_dv = match resolve_prior_dv(
+                lp,
+                pacer.as_deref(),
+                &type_name,
+                &implied,
+                current_version,
+                &inst,
+            )
+            .await
+            {
+                Ok(d) => d,
+                Err(()) => {
                     report.kept_on_error += 1;
                     kept_instances.push(inst);
                     continue;
@@ -939,6 +1002,8 @@ pub async fn refresh_named(
                         report.refreshed += 1;
                         kept_instances.push(StateInstance {
                             attributes: attrs,
+                            schema_version: u64::try_from(current_version)
+                                .unwrap_or(inst.schema_version),
                             ..inst
                         });
                     }
@@ -1229,12 +1294,17 @@ async fn apply_one(
     let provider_name = provider_local_name(&type_name);
     let lp = reg.get(&provider_name).await?;
     // Clone the implied type so the immutable schema borrow ends before
-    // the mutable conn RPC calls.
+    // the mutable conn RPC calls. The provider's CURRENT declared schema
+    // version travels alongside it — every `insert_resource` call below
+    // stamps the REAL version instead of a hardcoded 0, so the next
+    // `refresh_state`/`refresh_named` cycle can tell whether a stored
+    // instance needs `UpgradeResourceState` before it decodes it.
     let implied = lp
         .schema
         .resource(&type_name)
         .ok_or_else(|| EngineError::NoResourceSchema(type_name.clone(), provider_name.clone()))?
         .clone();
+    let current_schema_version = lp.schema.resource_version_u64(&type_name);
 
     let null_json = serde_json::Value::Null;
     let prior_dv = DynamicValue::from_json(change.before.as_ref().unwrap_or(&null_json), &implied)
@@ -1333,6 +1403,7 @@ async fn apply_one(
                     lp,
                     pacer.as_deref(),
                     state,
+                    current_schema_version,
                 )
                 .await;
             }
@@ -1422,7 +1493,12 @@ async fn apply_one(
                                         "magma apply: adopt ReadResource could not confirm a name after retry; backfilled identity from import id (computed attrs may be incomplete)"
                                     );
                                 }
-                                insert_resource(state, &change.address, attrs.clone());
+                                insert_resource(
+                                    state,
+                                    &change.address,
+                                    attrs.clone(),
+                                    current_schema_version,
+                                );
                                 tracing::info!(
                                     address = ?change.address,
                                     import_id = %id,
@@ -1455,7 +1531,12 @@ async fn apply_one(
             let new_attrs = new_dv
                 .to_json(&implied)
                 .map_err(|e| EngineError::Cty(e.to_string()))?;
-            insert_resource(state, &change.address, new_attrs.clone());
+            insert_resource(
+                state,
+                &change.address,
+                new_attrs.clone(),
+                current_schema_version,
+            );
             Ok(AppliedChange {
                 address: change.address.clone(),
                 action: change.action,
@@ -1502,6 +1583,7 @@ async fn apply_replace(
     lp: &mut LiveProvider,
     pacer: Option<&LeakyBucket>,
     state: &mut State,
+    current_schema_version: u64,
 ) -> Result<AppliedChange, EngineError> {
     let null_dv = DynamicValue::from_json(&serde_json::Value::Null, implied)
         .map_err(|e| EngineError::Cty(e.to_string()))?;
@@ -1568,7 +1650,12 @@ async fn apply_replace(
     let new_attrs = new_dv
         .to_json(implied)
         .map_err(|e| EngineError::Cty(e.to_string()))?;
-    insert_resource(state, &change.address, new_attrs.clone());
+    insert_resource(
+        state,
+        &change.address,
+        new_attrs.clone(),
+        current_schema_version,
+    );
     Ok(AppliedChange {
         address: change.address.clone(),
         // Record what ACTUALLY happened (destroy + create), not

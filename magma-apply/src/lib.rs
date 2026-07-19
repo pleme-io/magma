@@ -131,7 +131,12 @@ fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange
                 .after
                 .clone()
                 .unwrap_or(serde_json::Value::Object(Default::default()));
-            insert_resource(state, &change.address, attributes);
+            // 0: this M0 structural path never talks to a provider (see
+            // module docs), so there is no real schema version to stamp —
+            // see `insert_resource`'s doc for why 0 here is honest, not a
+            // bug. The real value is stamped by `engine::apply_one`, which
+            // DOES hold a live provider connection.
+            insert_resource(state, &change.address, attributes, 0);
             Ok(AppliedChange {
                 address: change.address.clone(),
                 action: change.action,
@@ -158,7 +163,9 @@ fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange
                 .clone()
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             remove_resource(state, &change.address);
-            insert_resource(state, &change.address, attributes);
+            // 0 — see the Create arm above: no provider is consulted on
+            // this structural-only path.
+            insert_resource(state, &change.address, attributes, 0);
             Ok(AppliedChange {
                 address: change.address.clone(),
                 action: Action::Update,
@@ -176,7 +183,9 @@ fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange
                 .after
                 .clone()
                 .unwrap_or(serde_json::Value::Object(Default::default()));
-            insert_resource(state, &change.address, attributes);
+            // 0 — see the Create arm above: no provider is consulted on
+            // this structural-only path.
+            insert_resource(state, &change.address, attributes, 0);
             Ok(AppliedChange {
                 address: change.address.clone(),
                 action: change.action,
@@ -187,10 +196,24 @@ fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange
     }
 }
 
+/// Upsert `address`'s single instance into `state`. `schema_version`
+/// SHOULD be the provider's CURRENT declared schema version for this
+/// resource type (`magma_plugin::provider::ProviderSchema::resource_version_u64`)
+/// — every production caller with a live provider connection
+/// (`engine::apply_one`) passes it. Callers with no provider connection at
+/// all (this module's structural-only `apply_one`/`run_plan`, which never
+/// talks to a provider — see the module docs above) pass `0` explicitly:
+/// that is an honest "no provider was consulted to confirm this," never a
+/// silent guess. Stamping a wrong-but-nonzero version would be worse than
+/// 0 — 0 is the one value [`crate::engine::refresh_state`]/
+/// [`crate::engine::refresh_named`] can never mistake for "we already
+/// checked and it matched," so a structurally-inserted instance always
+/// gets a real UpgradeResourceState-mediated check on its first refresh.
 pub(crate) fn insert_resource(
     state: &mut State,
     address: &ResourceAddress,
     attributes: serde_json::Value,
+    schema_version: u64,
 ) {
     // Remove any existing then push the fresh instance.
     state.resources.retain(|r| r.address != *address);
@@ -198,7 +221,7 @@ pub(crate) fn insert_resource(
         address: address.clone(),
         provider: default_provider_for(address),
         instances: vec![StateInstance {
-            schema_version: 0,
+            schema_version,
             attributes,
             private: Vec::new(),
             dependencies: Vec::new(),

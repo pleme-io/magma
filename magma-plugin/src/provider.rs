@@ -78,6 +78,18 @@ pub struct ProviderSchema {
     /// ReadDataSource config + decode its result. Without these the apply
     /// engine cannot evaluate `${data.*}` references (the rio-drive leak).
     pub data_sources: BTreeMap<String, CtyType>,
+    /// Each managed resource type's CURRENT schema version, as declared by
+    /// the provider's `GetProviderSchema`/`GetSchema` response (the
+    /// `Schema.version` field sibling to the `Schema.block` that
+    /// [`crate::schema::block_implied_type`] turns into `resources`'
+    /// implied types). The terraform plugin protocol requires
+    /// `UpgradeResourceState` to run whenever a stored `StateInstance`'s
+    /// `schema_version` is older than this — otherwise its raw attribute
+    /// JSON (persisted under the OLD schema) gets decoded straight against
+    /// the NEW implied type, which a schema change can silently
+    /// misinterpret or fail to marshal. See
+    /// [`ProviderConn::upgrade_resource_state`] + [`ProviderSchema::resource_version`].
+    pub resource_versions: BTreeMap<String, i64>,
 }
 
 impl ProviderSchema {
@@ -87,6 +99,28 @@ impl ProviderSchema {
 
     pub fn data_source(&self, type_name: &str) -> Option<&CtyType> {
         self.data_sources.get(type_name)
+    }
+
+    /// The provider's CURRENT schema version for `type_name`. `0` both for
+    /// a genuinely version-0 schema AND for a type the provider never
+    /// declared — matching Terraform's own convention that an
+    /// un-versioned schema is version 0, so an unknown type never looks
+    /// artificially "newer" than a stored instance and never triggers a
+    /// spurious upgrade.
+    #[must_use]
+    pub fn resource_version(&self, type_name: &str) -> i64 {
+        self.resource_versions.get(type_name).copied().unwrap_or(0)
+    }
+
+    /// [`Self::resource_version`] clamped into `magma_types::StateInstance`'s
+    /// `u64` `schema_version` field. Real provider schema versions are
+    /// always small non-negative integers in practice; this only differs
+    /// from the wire `i64` for a malformed negative version (never
+    /// observed from a real provider), which clamps to `0` rather than
+    /// wrapping to a huge `u64`.
+    #[must_use]
+    pub fn resource_version_u64(&self, type_name: &str) -> u64 {
+        u64::try_from(self.resource_version(type_name)).unwrap_or(0)
     }
 }
 
@@ -225,7 +259,13 @@ impl ProviderConn {
                     None => CtyType::Object(BTreeMap::new()),
                 };
                 let mut resources = BTreeMap::new();
+                let mut resource_versions = BTreeMap::new();
                 for (name, sch) in resp.resource_schemas {
+                    // Capture the schema version regardless of whether the
+                    // block parses, so a resource_version() lookup is never
+                    // silently missing for a type whose implied type failed
+                    // to decode.
+                    resource_versions.insert(name.clone(), sch.version);
                     if let Some(b) = sch.block {
                         resources.insert(name, schema::block_implied_type(&b)?);
                     }
@@ -240,6 +280,7 @@ impl ProviderConn {
                     provider_config,
                     resources,
                     data_sources,
+                    resource_versions,
                 })
             }
             Client::V5(c) => {
@@ -254,7 +295,9 @@ impl ProviderConn {
                     None => CtyType::Object(BTreeMap::new()),
                 };
                 let mut resources = BTreeMap::new();
+                let mut resource_versions = BTreeMap::new();
                 for (name, sch) in resp.resource_schemas {
+                    resource_versions.insert(name.clone(), sch.version);
                     if let Some(b) = sch.block {
                         resources.insert(name, schema::block5_implied_type(&b)?);
                     }
@@ -269,6 +312,7 @@ impl ProviderConn {
                     provider_config,
                     resources,
                     data_sources,
+                    resource_versions,
                 })
             }
         }
@@ -565,6 +609,66 @@ impl ProviderConn {
                     .and_then(|ir| ir.state)
                     .map(from_pb5)
                     .filter(|d| !d.is_null()))
+            }
+        }
+    }
+
+    /// `UpgradeResourceState` — migrate a `StateInstance`'s raw attribute
+    /// JSON (persisted under an older `stored_version` of the provider's
+    /// schema for `type_name`) forward to the CURRENT schema. The
+    /// terraform plugin protocol requires this to run before a stored
+    /// instance is fed into `ReadResource`/`PlanResourceChange`/
+    /// `ApplyResourceChange` whenever `stored_version` is older than the
+    /// provider's live [`ProviderSchema::resource_version`] — decoding
+    /// old-schema JSON straight against the new implied type (skipping
+    /// this call) risks a marshal mismatch or provider-side crash/misparse
+    /// on any resource type whose schema evolved. `raw_json` is the
+    /// instance's raw attribute bytes as stored (magma persists state
+    /// attributes as JSON, never the legacy flatmap format, so only
+    /// `RawState.json` is populated). Returns the upgraded value, decodable
+    /// via `DynamicValue::to_json` against the CURRENT implied type.
+    pub async fn upgrade_resource_state(
+        &mut self,
+        type_name: &str,
+        stored_version: i64,
+        raw_json: &[u8],
+    ) -> Result<DynamicValue, ProviderError> {
+        match &mut self.client {
+            Client::V6(c) => {
+                let resp = c
+                    .upgrade_resource_state(tfplugin6::upgrade_resource_state::Request {
+                        type_name: type_name.to_string(),
+                        version: stored_version,
+                        raw_state: Some(tfplugin6::RawState {
+                            json: raw_json.to_vec(),
+                            flatmap: Default::default(),
+                        }),
+                    })
+                    .await
+                    .map_err(transport)?
+                    .into_inner();
+                check_diags(resp.diagnostics.iter().map(diag6))?;
+                resp.upgraded_state
+                    .map(from_pb6)
+                    .ok_or(ProviderError::NoNewState)
+            }
+            Client::V5(c) => {
+                let resp = c
+                    .upgrade_resource_state(tfplugin5::upgrade_resource_state::Request {
+                        type_name: type_name.to_string(),
+                        version: stored_version,
+                        raw_state: Some(tfplugin5::RawState {
+                            json: raw_json.to_vec(),
+                            flatmap: Default::default(),
+                        }),
+                    })
+                    .await
+                    .map_err(transport)?
+                    .into_inner();
+                check_diags(resp.diagnostics.iter().map(diag5))?;
+                resp.upgraded_state
+                    .map(from_pb5)
+                    .ok_or(ProviderError::NoNewState)
             }
         }
     }

@@ -153,8 +153,15 @@ impl Provider for MockProvider {
             deprecated: false,
             deprecation_message: String::new(),
         };
+        // Schema.version = 1: "mock_resource" has evolved once past its
+        // original (version 0) shape, in which this same attribute was
+        // named `legacy_owner` instead of `imported_by` — see
+        // `upgrade_resource_state` below, which migrates that rename. A
+        // provider bumping its schema version between releases (a routine
+        // occurrence for actively maintained providers) is exactly the
+        // scenario magma's UpgradeResourceState client wiring exists for.
         let schema = tfplugin6::Schema {
-            version: 0,
+            version: 1,
             block: Some(block.clone()),
         };
         let replace_block = tfplugin6::schema::Block {
@@ -338,14 +345,16 @@ impl Provider for MockProvider {
     ) -> Result<Response<tfplugin6::read_resource::Response>, Status> {
         // Exercises magma-apply's plan-time refresh (`refresh_state` /
         // `refresh_named`) over the real wire path — see
-        // `magma-test/tests/integration_refresh_then_plan.rs`. Canned
-        // drift, mirroring `import_resource_state`'s "missing"-id
-        // sentinel convention above: decode the requested
-        // `current_state`'s `id` attribute; an id of `"gone"` means the
-        // resource was deleted out-of-band (the mock returns a null
-        // `new_state`, exactly the signal a real provider sends for a
-        // resource manually removed outside the tool), any other id is
-        // echoed back unchanged (no drift).
+        // `magma-test/tests/integration_refresh_then_plan.rs` +
+        // `integration_upgrade_resource_state.rs`. Canned drift, mirroring
+        // `import_resource_state`'s "missing"-id sentinel convention
+        // above: decode the requested `current_state`'s `id` attribute; an
+        // id of `"gone"` means the resource was deleted out-of-band (the
+        // mock returns a null `new_state`, exactly the signal a real
+        // provider sends for a resource manually removed outside the
+        // tool), any other id is echoed back unchanged (no drift) — which
+        // is also exactly the "nothing changed since the last apply" case
+        // `refresh_state`'s UpgradeResourceState-migration tests exercise.
         let r = req.into_inner();
         let is_gone = r
             .current_state
@@ -451,9 +460,38 @@ impl Provider for MockProvider {
 
     async fn upgrade_resource_state(
         &self,
-        _req: Request<tfplugin6::upgrade_resource_state::Request>,
+        req: Request<tfplugin6::upgrade_resource_state::Request>,
     ) -> Result<Response<tfplugin6::upgrade_resource_state::Response>, Status> {
-        Err(Status::unimplemented("mock: upgrade_resource_state"))
+        // Exercise the real client → magma-apply refresh flow. `version`
+        // is the caller's STORED schema_version (per the protocol, "core
+        // does not have access to the schema of prior_version" — the raw
+        // state is whatever shape that older schema used). For
+        // "mock_resource" version 0, that shape used `legacy_owner`
+        // instead of the current (version 1) `imported_by` — a realistic
+        // field-rename schema migration. `raw_state.json` carries the
+        // JSON-encoded prior attributes (magma never sends the legacy
+        // flatmap format).
+        let r = req.into_inner();
+        let raw = r.raw_state.map(|rs| rs.json).unwrap_or_default();
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Object(Default::default()));
+        if r.version < 1 {
+            if let Some(obj) = v.as_object_mut() {
+                if let Some(legacy) = obj.remove("legacy_owner") {
+                    obj.insert("imported_by".to_string(), legacy);
+                }
+            }
+        }
+        let msgpack = magma_cty::DynamicValue::from_json(&v, &mock_resource_implied_type())
+            .map(|dv| dv.msgpack)
+            .unwrap_or_default();
+        Ok(Response::new(tfplugin6::upgrade_resource_state::Response {
+            upgraded_state: Some(tfplugin6::DynamicValue {
+                msgpack,
+                json: Vec::new(),
+            }),
+            diagnostics: vec![],
+        }))
     }
 
     async fn get_resource_identity_schemas(
