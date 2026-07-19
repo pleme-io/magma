@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use magma_types::{ProviderReference, ResourceAddress, ResourceKind, ResourceTypeId};
+use magma_types::{ProviderReference, ResourceAddress, ResourceKind, ResourceTypeId, State};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -138,6 +138,79 @@ impl Config {
                 alias: None,
             })
             .collect()
+    }
+}
+
+// ── State resolution map ────────────────────────────────────────────
+
+/// Build the `{type → {name → attributes}}` resolution map `resolve_reference`
+/// / `resolve_config` navigate, from a typed `State`. Managed resources are
+/// inserted directly under their `type_id` (`aws_vpc.main` →
+/// `map["aws_vpc"]["main"]`); data resources are nested one level deeper
+/// under a `data` head (`data.cloudflare_zones.z` →
+/// `map["data"]["cloudflare_zones"]["z"]`), matching the reference grammar
+/// (`${data.cloudflare_zones.z.result[0].id}` vs `${aws_vpc.main.id}`).
+///
+/// Mirrors `magma-apply::engine`'s apply-time `state_map` construction
+/// (`sm_insert`/`sm_insert_data`) — this is the plan-time counterpart, so
+/// `${type.name.attr}` references in a rendered config can be resolved
+/// against already-applied state BEFORE a plan diffs `after` against
+/// `before`, not only at apply time. Without this, any resource whose
+/// config references another resource (`vpc_id = "${aws_vpc.main.id}"`)
+/// is unconditionally reported as drifted: the literal, unresolved
+/// reference string can never `serde_json::Value`-equal the concrete
+/// value already recorded in state, regardless of whether anything
+/// actually changed.
+///
+/// A resource with multiple `StateInstance`s (`count`/`for_each`, which
+/// magma-config does not expand on the config side — see
+/// `theory/MAGMA.md` §IX) contributes only its first instance, consistent
+/// with the rest of the plan/apply pipeline's current single-instance
+/// handling.
+pub fn state_resolution_map(state: &State) -> HashMap<String, serde_json::Value> {
+    let mut sm: HashMap<String, serde_json::Value> = HashMap::new();
+    for r in &state.resources {
+        let Some(inst) = r.instances.first() else {
+            continue;
+        };
+        insert_into_resolution_map(&mut sm, &r.address, &inst.attributes);
+    }
+    sm
+}
+
+/// Insert one resource's attributes into an existing resolution map (as
+/// built by `state_resolution_map`), keyed the same way. Lets a caller
+/// GROW the map incrementally as resources are (re-)applied within the
+/// same pass — e.g. `magma-apply`'s structural apply engines, which
+/// resolve each resource's config against everything already applied
+/// (including earlier resources in the SAME apply pass) before writing
+/// its new state, mirroring real Terraform's create-then-resolve
+/// ordering rather than persisting a literal `${...}` reference as if
+/// it were a concrete attribute value.
+pub fn insert_into_resolution_map(
+    map: &mut HashMap<String, serde_json::Value>,
+    address: &ResourceAddress,
+    attributes: &serde_json::Value,
+) {
+    if address.kind == ResourceKind::Data {
+        let data_head = map
+            .entry("data".to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let serde_json::Value::Object(by_type) = data_head {
+            let by_name = by_type
+                .entry(address.type_id.0.clone())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(by_name) = by_name {
+                by_name.insert(address.name.clone(), attributes.clone());
+            }
+        }
+    } else {
+        let entry = map
+            .entry(address.type_id.0.clone())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let serde_json::Value::Object(by_name) = entry {
+            by_name.insert(address.name.clone(), attributes.clone());
+        }
     }
 }
 
@@ -412,6 +485,73 @@ mod tests {
         assert_eq!(
             resolve_reference("${cloudflare_zero_trust_tunnel_cloudflared.rio.id}", &state).unwrap(),
             json!("tunnel-123"),
+        );
+    }
+
+    #[test]
+    fn state_resolution_map_nests_managed_and_data_resources() {
+        use magma_types::{
+            InstanceStatus, ModulePath, ProviderReference as PRef, StateInstance, StateResource,
+        };
+
+        let mk_addr = |kind: ResourceKind, type_id: &str, name: &str| ResourceAddress {
+            module: ModulePath::root(),
+            kind,
+            type_id: ResourceTypeId(type_id.to_string()),
+            name: name.to_string(),
+            key: None,
+        };
+        let mk_instance = |attrs: serde_json::Value| StateInstance {
+            index_key: None,
+            schema_version: 0,
+            attributes: attrs,
+            sensitive_attribute_paths: Vec::new(),
+            private: Vec::new(),
+            dependencies: Vec::new(),
+            status: InstanceStatus::Ready,
+        };
+        let provider = PRef {
+            source: "hashicorp/aws".into(),
+            name: "aws".into(),
+            alias: None,
+        };
+
+        let state = State {
+            version: 4,
+            terraform_version: "1.7.0".into(),
+            serial: 0,
+            lineage: uuid::Uuid::new_v4(),
+            outputs: Default::default(),
+            resources: vec![
+                StateResource {
+                    address: mk_addr(ResourceKind::Managed, "aws_vpc", "main"),
+                    provider: provider.clone(),
+                    instances: vec![mk_instance(json!({ "id": "vpc-abc123" }))],
+                },
+                StateResource {
+                    address: mk_addr(ResourceKind::Data, "cloudflare_zones", "z"),
+                    provider: provider.clone(),
+                    instances: vec![mk_instance(json!({ "result": [ { "id": "zone-abc" } ] }))],
+                },
+            ],
+        };
+
+        let sm = state_resolution_map(&state);
+        assert_eq!(sm["aws_vpc"]["main"]["id"], json!("vpc-abc123"));
+        assert_eq!(
+            sm["data"]["cloudflare_zones"]["z"]["result"][0]["id"],
+            json!("zone-abc")
+        );
+
+        // The map is exactly what resolve_reference/resolve_config expect —
+        // both grammars must resolve directly against it.
+        assert_eq!(
+            resolve_reference("${aws_vpc.main.id}", &sm).unwrap(),
+            json!("vpc-abc123")
+        );
+        assert_eq!(
+            resolve_reference("${data.cloudflare_zones.z.result[0].id}", &sm).unwrap(),
+            json!("zone-abc")
         );
     }
 

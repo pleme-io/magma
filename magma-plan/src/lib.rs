@@ -95,6 +95,18 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         });
     }
 
+    // Resolution map (`{type → {name → attributes}}`, `data` nested one
+    // level deeper) built from the full state — the plan-time counterpart
+    // of `magma-apply::engine`'s apply-time `state_map`. Needed below to
+    // resolve `${type.name.attr}` cross-resource references BEFORE
+    // diffing a resource's declared config against its stored state: a
+    // rendered config carries those references LITERALLY (Pangea emits
+    // `vpc_id = "${aws_vpc.main.id}"` verbatim; real Terraform resolves
+    // it against already-applied state before diffing) — comparing the
+    // literal string to the concrete value already in state made every
+    // resource with a cross-reference unconditionally report drift.
+    let state_map = magma_config::state_resolution_map(state);
+
     // Update: in both. Compare only the CONFIG-DECLARED attribute set.
     // `before` (state) is the full provider-schema-shaped attribute set,
     // including every computed field (id, arn, timestamps, ...); `after`
@@ -107,7 +119,24 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     for addr in config_addrs.intersection(&state_addrs) {
         let before = lookup_state_value(state, addr);
         let after = lookup_config_value(config, addr);
-        let drifted = declared_attributes_drifted(&before, &after);
+        // Resolve interpolations in a THROWAWAY copy used ONLY for the
+        // drift comparison below — the `after` stored on the emitted
+        // `ResourceChange` stays raw/unresolved. `magma-apply::engine`'s
+        // dependency-graph builder (`collect_refs`/`ref_target`) scans a
+        // real change's `after` for literal `${type.name.attr}` strings
+        // to compute apply order; resolving it here would erase those
+        // edges and silently break apply ordering for every resource
+        // this plan still classifies as a genuine change.
+        //
+        // A reference that fails to resolve (e.g. it targets a resource
+        // this same plan only just created, so it has no prior state to
+        // resolve against) falls back to the raw, unresolved value — the
+        // pre-existing, safe-by-erring-toward-drift behavior. It never
+        // silently degrades to NoOp on a resolution failure.
+        let after_resolved = after.as_ref().map(|v| {
+            magma_config::resolve_config(v, &state_map).unwrap_or_else(|_| v.clone())
+        });
+        let drifted = declared_attributes_drifted(&before, &after_resolved);
         let (action, reasons) = if drifted {
             (Action::Update, vec![ChangeReason::AttributeDrift])
         } else {
@@ -192,6 +221,16 @@ fn lookup_state_value(state: &State, addr: &ResourceAddress) -> Option<serde_jso
 /// `before` (state). Keys present only in `before` — computed-only
 /// fields the provider populates (`id`, `arn`, timestamps, ...) — are
 /// never inspected, so they can never trigger a false positive.
+///
+/// The per-key comparison recurses into nested JSON objects with the
+/// SAME subset semantics (`subset_matches`, below): a nested attribute
+/// (`tags`, `vpc_config`, `scaling_config`, ...) is only drifted if a key
+/// the config actually declares differs — extra keys a provider injects
+/// into a nested map (e.g. AWS's auto-added `kubernetes.io/cluster/<name>`
+/// tag alongside a config-declared `tags = { Name = "x" }`) are not
+/// drift, matching real Terraform's own attribute-diff semantics (state
+/// carrying MORE nested keys than config declares is never itself
+/// treated as a change).
 fn declared_attributes_drifted(
     before: &Option<serde_json::Value>,
     after: &Option<serde_json::Value>,
@@ -207,13 +246,34 @@ fn declared_attributes_drifted(
         return before.as_ref() != Some(after_val);
     };
     match before.as_ref().and_then(|v| v.as_object()) {
-        Some(before_obj) => after_obj
-            .iter()
-            .any(|(k, after_v)| before_obj.get(k) != Some(after_v)),
+        Some(before_obj) => after_obj.iter().any(|(k, after_v)| {
+            !before_obj
+                .get(k)
+                .is_some_and(|before_v| subset_matches(before_v, after_v))
+        }),
         // State has no recorded instance attributes at all (or they
         // aren't an object) but config declares some — every declared
         // key is effectively new.
         None => !after_obj.is_empty(),
+    }
+}
+
+/// `true` iff `after_v` (a config-declared value) subset-matches
+/// `before_v` (the corresponding stored-state value). JSON objects
+/// recurse with the same subset semantics used at the top level of
+/// `declared_attributes_drifted` — every key `after_v` declares must be
+/// present in `before_v` with a (recursively) subset-matching value; a
+/// key present ONLY in `before_v`, at any nesting depth, is never drift.
+/// Arrays and scalars still compare by whole-value equality — real
+/// Terraform DOES flag any difference in a list/scalar attribute; the
+/// "extra keys aren't drift" relief is specific to object-valued
+/// (map / nested-block) attributes.
+fn subset_matches(before_v: &serde_json::Value, after_v: &serde_json::Value) -> bool {
+    match (before_v, after_v) {
+        (serde_json::Value::Object(before_obj), serde_json::Value::Object(after_obj)) => after_obj
+            .iter()
+            .all(|(k, av)| before_obj.get(k).is_some_and(|bv| subset_matches(bv, av))),
+        _ => before_v == after_v,
     }
 }
 
@@ -252,6 +312,34 @@ mod tests {
             }
         });
         Config::from_json(json_v).unwrap()
+    }
+
+    /// Build a single-instance `StateResource` — the boilerplate every
+    /// hand-rolled `StateResource` literal in this module repeats.
+    fn mk_state_resource(type_id: &str, name: &str, attrs: serde_json::Value) -> StateResource {
+        StateResource {
+            address: ResourceAddress {
+                module: magma_types::ModulePath::root(),
+                kind: magma_types::ResourceKind::Managed,
+                type_id: magma_types::ResourceTypeId(type_id.into()),
+                name: name.into(),
+                key: None,
+            },
+            provider: ProviderReference {
+                source: "hashicorp/aws".into(),
+                name: "aws".into(),
+                alias: None,
+            },
+            instances: vec![StateInstance {
+                index_key: None,
+                schema_version: 0,
+                attributes: attrs,
+                sensitive_attribute_paths: Vec::new(),
+                private: Vec::new(),
+                dependencies: Vec::new(),
+                status: InstanceStatus::Ready,
+            }],
+        }
     }
 
     #[test]
@@ -433,6 +521,216 @@ mod tests {
                 status: InstanceStatus::Ready,
             }],
         });
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(p.resource_changes[0].action, Action::Update);
+        assert_eq!(
+            p.resource_changes[0].reasons,
+            vec![ChangeReason::AttributeDrift]
+        );
+    }
+
+    // ── BUG 1 regression: unresolved `${type.name.attr}` references ──
+    //
+    // Live incident: a production camelot-eks InfrastructureTemplate's
+    // plan went from correctly showing 1 real drift to falsely showing
+    // 53 of 54 resources as "update" the moment an unrelated
+    // plan-diff hardcoded-NoOp bug was fixed earlier the same session —
+    // every resource whose config referenced a sibling resource
+    // (`vpc_id = "${aws_vpc.main.id}"`) was comparing that literal,
+    // unresolved string against the sibling's concrete state value and
+    // finding them unequal by construction.
+
+    #[test]
+    fn cross_reference_to_unchanged_value_is_noop_not_spurious_update() {
+        // `aws_subnet.priv`'s config declares
+        // `vpc_id = "${aws_vpc.main.id}"`. The VPC's real id (in state)
+        // is exactly what that reference resolves to, and the subnet's
+        // own stored `vpc_id` already matches it — nothing has actually
+        // changed.
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_vpc": {
+                    "main": { "cidr_block": "10.0.0.0/16" }
+                },
+                "aws_subnet": {
+                    "priv": { "vpc_id": "${aws_vpc.main.id}" }
+                }
+            }
+        }))
+        .unwrap();
+
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_vpc",
+            "main",
+            json!({ "cidr_block": "10.0.0.0/16", "id": "vpc-090f93f4590e59ebc" }),
+        ));
+        let subnet_before = json!({
+            "vpc_id": "vpc-090f93f4590e59ebc",
+            "id": "subnet-abc123",
+        });
+        st.resources
+            .push(mk_state_resource("aws_subnet", "priv", subnet_before.clone()));
+
+        // Prove the OLD (pre-fix) bug shape directly: comparing the RAW,
+        // unresolved config value against state's concrete value reports
+        // drift even though nothing changed.
+        let subnet_after_raw = Some(json!({ "vpc_id": "${aws_vpc.main.id}" }));
+        assert!(
+            declared_attributes_drifted(&Some(subnet_before), &subnet_after_raw),
+            "old code path (raw, unresolved comparison) must reproduce the spurious-drift bug shape"
+        );
+
+        // The FIXED pipeline resolves the reference against state before
+        // comparing — the genuinely-unchanged cross-reference must be a
+        // NoOp, not a spurious Update.
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 2);
+        let subnet_change = p
+            .resource_changes
+            .iter()
+            .find(|c| c.address.type_id.0 == "aws_subnet")
+            .unwrap();
+        assert_eq!(
+            subnet_change.action,
+            Action::NoOp,
+            "a config reference that resolves to the SAME value already in state must not report drift"
+        );
+        let vpc_change = p
+            .resource_changes
+            .iter()
+            .find(|c| c.address.type_id.0 == "aws_vpc")
+            .unwrap();
+        assert_eq!(vpc_change.action, Action::NoOp);
+    }
+
+    #[test]
+    fn cross_reference_to_genuinely_changed_value_still_reports_update() {
+        // Inverse of the above: the reference target's value in state
+        // genuinely differs from what the referencing resource has
+        // stored (e.g. the VPC was recreated with a new id since the
+        // subnet was last applied). The fix must not suppress ALL drift
+        // detection for reference-shaped attributes — only the false
+        // positive where the resolved value is unchanged.
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_vpc": {
+                    "main": { "cidr_block": "10.0.0.0/16" }
+                },
+                "aws_subnet": {
+                    "priv": { "vpc_id": "${aws_vpc.main.id}" }
+                }
+            }
+        }))
+        .unwrap();
+
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_vpc",
+            "main",
+            json!({ "cidr_block": "10.0.0.0/16", "id": "vpc-newid00000000" }),
+        ));
+        st.resources.push(mk_state_resource(
+            "aws_subnet",
+            "priv",
+            json!({ "vpc_id": "vpc-stale0000000", "id": "subnet-abc123" }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        let subnet_change = p
+            .resource_changes
+            .iter()
+            .find(|c| c.address.type_id.0 == "aws_subnet")
+            .unwrap();
+        assert_eq!(
+            subnet_change.action,
+            Action::Update,
+            "a config reference that resolves to a DIFFERENT value than what's stored must still report drift"
+        );
+        assert_eq!(
+            subnet_change.reasons,
+            vec![ChangeReason::AttributeDrift]
+        );
+    }
+
+    // ── BUG 2 regression: nested object attributes, whole-value compare ──
+
+    #[test]
+    fn nested_object_attribute_with_extra_state_only_keys_is_noop() {
+        // Config declares a SUBSET of a nested object's keys
+        // (`tags = { Name = "x" }`); state carries an EXTRA
+        // provider-injected key alongside it (AWS auto-adds
+        // `kubernetes.io/cluster/<name>` tags to VPCs/subnets it
+        // manages). Every config-declared key genuinely matches — this
+        // must not be flagged as drift just because state's nested
+        // object is a superset of config's.
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_vpc": {
+                    "main": {
+                        "cidr_block": "10.0.0.0/16",
+                        "tags": { "Name": "camelot-eks-vpc" }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_vpc",
+            "main",
+            json!({
+                "cidr_block": "10.0.0.0/16",
+                "id": "vpc-090f93f4590e59ebc",
+                "tags": {
+                    "Name": "camelot-eks-vpc",
+                    "kubernetes.io/cluster/camelot-eks": "owned"
+                }
+            }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::NoOp,
+            "extra provider-injected keys inside a nested object must never trigger drift"
+        );
+    }
+
+    #[test]
+    fn nested_object_attribute_with_genuinely_different_declared_key_still_updates() {
+        // The subset relief must not swallow real nested drift: a
+        // config-declared key INSIDE the nested object genuinely
+        // differs from state.
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_vpc": {
+                    "main": {
+                        "cidr_block": "10.0.0.0/16",
+                        "tags": { "Name": "camelot-eks-vpc" }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_vpc",
+            "main",
+            json!({
+                "cidr_block": "10.0.0.0/16",
+                "id": "vpc-090f93f4590e59ebc",
+                "tags": {
+                    "Name": "old-name",
+                    "kubernetes.io/cluster/camelot-eks": "owned"
+                }
+            }),
+        ));
+
         let p = plan(&cfg, &st).unwrap();
         assert_eq!(p.resource_changes.len(), 1);
         assert_eq!(p.resource_changes[0].action, Action::Update);
