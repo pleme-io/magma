@@ -173,8 +173,10 @@ async fn inmemory_plan_partial_state() {
             alias: None,
         },
         instances: vec![StateInstance {
+            index_key: None,
             schema_version: 0,
             attributes: json!({ "cidr_block": "10.0.0.0/16", "id": "vpc-existing" }),
+            sensitive_attribute_paths: Vec::new(),
             private: vec![],
             dependencies: vec![],
             status: InstanceStatus::Ready,

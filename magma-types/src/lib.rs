@@ -293,8 +293,25 @@ pub struct StateResource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateInstance {
+    /// `count`/`for_each` instance key. `None` for a resource declared
+    /// without either (the common case — the overwhelming majority of
+    /// real-world state today, since neither `magma-config` nor Pangea
+    /// currently expand `count`/`for_each` on the config side). Carried
+    /// per-instance (not on the parent `StateResource.address`) to match
+    /// real `terraform.tfstate` v4: one resource entry groups all of its
+    /// instances, each tagged with its own `index_key`. See
+    /// `magma_state::tfstate_v4` for the wire-format boundary.
+    #[serde(default)]
+    pub index_key: Option<InstanceKey>,
     pub schema_version: u64,
     pub attributes: serde_json::Value,
+    /// Attribute-path markers for values the provider schema (or a
+    /// config `sensitive = true`) flags as sensitive. Preserved
+    /// opaquely — magma doesn't interpret the path grammar today, it
+    /// only round-trips it so a real state file's sensitive-value
+    /// redaction markers are never silently dropped.
+    #[serde(default)]
+    pub sensitive_attribute_paths: Vec<serde_json::Value>,
     pub private: Vec<u8>,
     pub dependencies: Vec<ResourceAddress>,
     pub status: InstanceStatus,
@@ -322,7 +339,15 @@ pub enum InstanceStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputValue {
     pub value: serde_json::Value,
+    #[serde(default)]
     pub sensitive: bool,
+    /// The output's type-constraint, as tofu encodes it (`"string"`, or
+    /// a nested `["object", {...}]` form for complex types). `None`
+    /// when this `OutputValue` was built in-process rather than read
+    /// off a real state file; the tfstate v4 wire encoder infers a
+    /// best-effort constraint from `value`'s JSON shape in that case.
+    #[serde(default)]
+    pub type_constraint: Option<serde_json::Value>,
 }
 
 // ── Import directives + results ────────────────────────────────────
@@ -434,8 +459,10 @@ impl ImportedInstance {
     #[must_use]
     pub fn to_state_instance(&self) -> StateInstance {
         StateInstance {
+            index_key: None,
             schema_version: 0,
             attributes: self.attributes.clone(),
+            sensitive_attribute_paths: Vec::new(),
             private: self.private.clone(),
             dependencies: Vec::new(),
             status: InstanceStatus::Ready,

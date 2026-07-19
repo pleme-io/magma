@@ -214,6 +214,7 @@ async fn refresh_state_migrates_a_stale_schema_version_end_to_end() {
             alias: None,
         },
         instances: vec![StateInstance {
+            index_key: None,
             // Stored under the OLD (v0) schema — pre-fix, EVERY
             // production write path hardcoded schema_version: 0
             // regardless of the provider's real declared version, so
@@ -225,6 +226,7 @@ async fn refresh_state_migrates_a_stale_schema_version_end_to_end() {
                 "name": "res-1",
                 "legacy_owner": "old-team",
             }),
+            sensitive_attribute_paths: Vec::new(),
             private: vec![],
             dependencies: vec![],
             status: InstanceStatus::Ready,

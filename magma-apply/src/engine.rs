@@ -2554,8 +2554,10 @@ mod tests {
                     alias: None,
                 },
                 instances: vec![StateInstance {
+                    index_key: None,
                     schema_version: 0,
                     attributes: serde_json::json!({ "result": [{ "id": "acct-1" }] }),
+                    sensitive_attribute_paths: Vec::new(),
                     private: vec![],
                     dependencies: vec![],
                     status: InstanceStatus::Ready,
@@ -2641,8 +2643,10 @@ mod tests {
                     alias: None,
                 },
                 instances: vec![StateInstance {
+                    index_key: None,
                     schema_version: 0,
                     attributes: serde_json::json!({"name": "keep_me"}),
+                    sensitive_attribute_paths: Vec::new(),
                     private: vec![],
                     dependencies: vec![],
                     status: InstanceStatus::Ready,
@@ -2733,8 +2737,10 @@ mod tests {
                     alias: None,
                 },
                 instances: vec![StateInstance {
+                    index_key: None,
                     schema_version: 0,
                     attributes: serde_json::json!({"name": "keep_me"}),
+                    sensitive_attribute_paths: Vec::new(),
                     private: vec![],
                     dependencies: vec![],
                     status: InstanceStatus::Ready,
@@ -2814,8 +2820,10 @@ mod tests {
                 alias: None,
             },
             instances: vec![StateInstance {
+                index_key: None,
                 schema_version: 0,
                 attributes: serde_json::json!({ "name": attr }),
+                sensitive_attribute_paths: Vec::new(),
                 private: vec![],
                 dependencies: vec![],
                 status: InstanceStatus::Ready,

@@ -118,8 +118,10 @@ fn build_state(decls: &[(String, String)]) -> State {
                 alias: None,
             },
             instances: vec![StateInstance {
+                index_key: None,
                 schema_version: 0,
                 attributes: json!({ "id": format!("{}-id", name) }),
+                sensitive_attribute_paths: Vec::new(),
                 private: vec![],
                 dependencies: vec![],
                 status: InstanceStatus::Ready,

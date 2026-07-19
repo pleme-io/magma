@@ -6,11 +6,18 @@
 //! on the same backend exactly (DynamoDB / GCS object-lock / Consul
 //! session / Postgres advisory / etc.).
 //!
+//! `LocalBackend` reads/writes the real `terraform.tfstate` v4 wire
+//! format via `magma_state::tfstate_v4` — a state file a real `tofu`/
+//! `terraform` run wrote (or will read) round-trips correctly, not
+//! just magma's own internal typed shape. See that module's doc for
+//! exactly what's modeled and what's a named, deliberate gap.
+//!
 //! M0 ships the LocalBackend; S3 follows in M1.
 
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use magma_state::tfstate_v4;
 use magma_types::State;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -24,6 +31,8 @@ pub enum BackendError {
     Io(#[from] std::io::Error),
     #[error("serde: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("state wire format: {0}")]
+    State(#[from] magma_state::StateError),
     #[error("state is already locked by {holder} ({id})")]
     AlreadyLocked { id: String, holder: String },
     #[error("lock id mismatch: have {have:?}, expected {expected:?}")]
@@ -101,12 +110,12 @@ impl Backend for LocalBackend {
             return Ok(empty);
         }
         let bytes = tokio::fs::read(&self.state_path).await?;
-        Ok(serde_json::from_slice(&bytes)?)
+        Ok(tfstate_v4::decode(&bytes)?)
     }
 
     async fn write_state(&self, state: &State) -> Result<(), BackendError> {
         let tmp = self.state_path.with_extension("tfstate.tmp");
-        let bytes = serde_json::to_vec_pretty(state)?;
+        let bytes = tfstate_v4::encode(state)?;
         if let Some(parent) = self.state_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }

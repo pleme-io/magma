@@ -221,8 +221,10 @@ pub(crate) fn insert_resource(
         address: address.clone(),
         provider: default_provider_for(address),
         instances: vec![StateInstance {
+            index_key: None,
             schema_version,
             attributes,
+            sensitive_attribute_paths: Vec::new(),
             private: Vec::new(),
             dependencies: Vec::new(),
             status: InstanceStatus::Ready,
@@ -345,8 +347,10 @@ mod tests {
             address: addr("aws_vpc", "main"),
             provider: default_provider_for(&addr("aws_vpc", "main")),
             instances: vec![StateInstance {
+                index_key: None,
                 schema_version: 0,
                 attributes: json!({ "id": "vpc-x" }),
+                sensitive_attribute_paths: Vec::new(),
                 private: vec![],
                 dependencies: vec![],
                 status: InstanceStatus::Ready,

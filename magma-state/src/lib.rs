@@ -6,12 +6,21 @@
 //! file that round-trips through `tofu show -json` unchanged, and vice
 //! versa. See `theory/MAGMA.md` §II.6 level 4 for the round-trip proof
 //! harness.
+//!
+//! Disk I/O (`read_state` / `write_state` / `round_trip`) goes through
+//! the [`tfstate_v4`] wire-format boundary — a real, pre-existing
+//! `terraform.tfstate` produced by `tofu apply`/`terraform apply` reads
+//! correctly (not just magma's own previously-written files). See that
+//! module's doc for exactly what's modeled, what's verified against a
+//! real fixture, and what's a named, deliberate gap.
 
 use std::path::{Path, PathBuf};
 
-use magma_types::State;
+use magma_types::{ResourceKind, State};
 use thiserror::Error;
 use uuid::Uuid;
+
+pub mod tfstate_v4;
 
 // ── Errors ─────────────────────────────────────────────────────────
 
@@ -25,6 +34,19 @@ pub enum StateError {
     UnsupportedVersion(u64),
     #[error("state file lineage mismatch: have {have}, expected {expected}")]
     LineageMismatch { have: Uuid, expected: Uuid },
+    #[error("state file lineage {0:?} is not a valid UUID")]
+    InvalidLineage(String),
+    #[error("malformed resource address {0:?}: {1}")]
+    MalformedAddress(String, String),
+    #[error("malformed provider reference {0:?}")]
+    MalformedProvider(String),
+    #[error("malformed \"private\" field (expected base64): {0}")]
+    MalformedPrivate(String),
+    #[error(
+        "resource kind {0:?} cannot be written to a tfstate v4 resources array \
+         (only Managed/Data are valid there)"
+    )]
+    UnwritableResourceKind(ResourceKind),
 }
 
 // ── Empty state ────────────────────────────────────────────────────
@@ -46,13 +68,18 @@ pub fn empty_state() -> State {
 /// Read a `terraform.tfstate` v4 file from disk into a typed `State`.
 /// Returns an `empty_state()` if the file doesn't exist (matches
 /// Terraform's "no state means fresh workspace" semantics).
+///
+/// Reads the real wire format via [`tfstate_v4::decode`] — a
+/// pre-existing state file produced by `tofu apply` / `terraform
+/// apply` (not just a file magma itself previously wrote) parses
+/// correctly.
 pub async fn read_state(path: impl AsRef<Path>) -> Result<State, StateError> {
     let path = path.as_ref();
     if !path.exists() {
         return Ok(empty_state());
     }
     let bytes = tokio::fs::read(path).await?;
-    let state: State = serde_json::from_slice(&bytes)?;
+    let state = tfstate_v4::decode(&bytes)?;
     if state.version != 4 {
         return Err(StateError::UnsupportedVersion(state.version));
     }
@@ -61,20 +88,26 @@ pub async fn read_state(path: impl AsRef<Path>) -> Result<State, StateError> {
 
 /// Write a `State` atomically — write to `<path>.tmp`, fsync, rename.
 /// Atomic so a crash mid-write doesn't corrupt the canonical file.
+///
+/// Writes the real wire format via [`tfstate_v4::encode`] so the
+/// result is directly readable by `tofu show -json` / `terraform
+/// show -json` and re-adoptable by a real tofu/terraform run — not
+/// just by another magma instance.
 pub async fn write_state(path: impl AsRef<Path>, state: &State) -> Result<(), StateError> {
     let path = path.as_ref();
     let tmp: PathBuf = path.with_extension("tfstate.tmp");
-    let bytes = serde_json::to_vec_pretty(state)?;
+    let bytes = tfstate_v4::encode(state)?;
     tokio::fs::write(&tmp, &bytes).await?;
     tokio::fs::rename(&tmp, path).await?;
     Ok(())
 }
 
-/// Round-trip a state file through serde without disk I/O. Used by the
-/// §II.6 level 4 byte-exact tests.
+/// Round-trip real `terraform.tfstate` v4 bytes through the typed
+/// `State` boundary without disk I/O. Used by the §II.6 level 4
+/// byte-exact tests.
 pub fn round_trip(bytes: &[u8]) -> Result<Vec<u8>, StateError> {
-    let state: State = serde_json::from_slice(bytes)?;
-    Ok(serde_json::to_vec_pretty(&state)?)
+    let state = tfstate_v4::decode(bytes)?;
+    tfstate_v4::encode(&state)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -117,8 +150,17 @@ mod tests {
 
     #[test]
     fn round_trip_byte_stable() {
+        // `round_trip` now speaks the real wire format (compact JSON,
+        // matching what `tofu apply` itself writes — see
+        // `tfstate_v4`), not magma's own typed-`State` shape — so the
+        // input here must be real-wire bytes, not
+        // `serde_json::to_vec_pretty(&State)`. `tfstate_v4::encode` is
+        // itself under direct test in `tfstate_v4::tests` and in
+        // `tests/tfstate_v4_fixtures.rs` against real `tofu`-produced
+        // bytes; this test only proves `round_trip` (decode ∘ encode)
+        // is idempotent on its own output.
         let s = empty_state();
-        let bytes = serde_json::to_vec_pretty(&s).unwrap();
+        let bytes = tfstate_v4::encode(&s).unwrap();
         let again = round_trip(&bytes).unwrap();
         assert_eq!(bytes, again);
     }

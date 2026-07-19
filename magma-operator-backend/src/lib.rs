@@ -23,14 +23,15 @@
 //! # State shape conversion
 //!
 //! Tofu serializes resources with string-encoded provider
-//! references (`provider["registry.terraform.io/hashicorp/aws"]`)
+//! references (`provider["registry.opentofu.org/hashicorp/aws"]`)
 //! and an opaque resources array. magma's typed `State` uses a
 //! `ProviderReference { source, name, alias }` struct + typed
-//! `StateResource` instances. The `tofu_state` module ships the
-//! canonical converter both directions; M0.10 ships the permissive
-//! forward conversion (skips unparseable resources with a warning),
-//! while M0.11 lands byte-equality with tofu's serialized format so
-//! cross-executor reads stay coherent.
+//! `StateResource` instances. The `tofu_state` module here is a thin
+//! wrapper over the canonical, real-fixture-tested converter in
+//! `magma_state::tfstate_v4` (also what `magma_state::read_state` /
+//! `write_state` and `magma_backend::LocalBackend` use directly) — a
+//! malformed resource fails the whole decode with a typed error
+//! rather than being silently dropped.
 //!
 //! # Locking
 //!
@@ -212,190 +213,56 @@ pub mod tofu_state {
     //! Convert between OpenTofu's serialized state format and
     //! magma's typed `State`.
     //!
-    //! Tofu's on-disk format:
+    //! A thin, `serde_json::Value`-shaped wrapper around
+    //! `magma_state::tfstate_v4` — the canonical, real-fixture-tested
+    //! wire-format converter (see that module's doc for the exact
+    //! schema, what's byte-exact-verified, and named gaps). This
+    //! module used to carry its own, independent, unverified
+    //! implementation; per the "solve once" rule it now delegates
+    //! rather than re-diverging. Two behavioral corrections versus the
+    //! prior implementation, both load-bearing:
     //!
-    //! ```json
-    //! {
-    //!   "version": 4,
-    //!   "terraform_version": "1.7.0",
-    //!   "serial": 5,
-    //!   "lineage": "...",
-    //!   "outputs": { ... },
-    //!   "resources": [
-    //!     {
-    //!       "mode": "managed",
-    //!       "type": "aws_iam_role",
-    //!       "name": "k3s_node",
-    //!       "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
-    //!       "instances": [
-    //!         { "schema_version": 0, "attributes": {...} }
-    //!       ]
-    //!     }
-    //!   ]
-    //! }
-    //! ```
-    //!
-    //! magma's typed `State` uses a struct-form `ProviderReference`
-    //! and typed `StateResource` instances. M0.10 ships a
-    //! permissive forward conversion (drops unparseable resources)
-    //! and a write-back that produces tofu-readable JSON (M0.11
-    //! tightens to byte-equality with tofu's exact whitespace).
+    //!   1. **No permissive resource-skipping.** The prior
+    //!      `tofu_to_magma` silently dropped any resource entry it
+    //!      couldn't parse (`filter_map`, no warning ever actually
+    //!      emitted despite the doc comment claiming one). A silently
+    //!      truncated state is a silent-corruption bug — this version
+    //!      fails loudly with a typed error instead.
+    //!   2. **No hardcoded registry host.** The prior
+    //!      `format_provider_reference` always wrote back
+    //!      `registry.terraform.io/...` regardless of what was parsed,
+    //!      which corrupts (doubles) an OpenTofu-native
+    //!      `registry.opentofu.org` reference on round-trip — see
+    //!      `magma_state::tfstate_v4`'s module doc for the empirical
+    //!      fixture that caught this.
 
-    use magma_types::{
-        InstanceStatus, ModulePath, ProviderReference, ResourceAddress, ResourceKind,
-        ResourceTypeId, State, StateInstance, StateResource,
-    };
-    use serde_json::{Value, json};
-    use thiserror::Error;
-    use uuid::Uuid;
+    use magma_state::StateError;
+    use magma_types::State;
+    use serde_json::Value;
+    pub use magma_state::tfstate_v4::{format_provider_reference, parse_provider_reference};
 
-    #[derive(Debug, Error)]
+    #[derive(Debug, thiserror::Error)]
     pub enum TofuStateError {
         #[error("expected top-level object")]
         NotAnObject,
-        #[error("resources field is not an array")]
-        ResourcesNotArray,
+        #[error("state wire format: {0}")]
+        Wire(#[from] StateError),
         #[error("encode: {0}")]
         Encode(#[from] serde_json::Error),
     }
 
     /// Tofu serialized JSON → magma's typed State.
     pub fn tofu_to_magma(v: &Value) -> Result<State, TofuStateError> {
-        let obj = v.as_object().ok_or(TofuStateError::NotAnObject)?;
-        let version = obj.get("version").and_then(Value::as_u64).unwrap_or(4);
-        let terraform_version = obj
-            .get("terraform_version")
-            .and_then(Value::as_str)
-            .unwrap_or("1.7.0")
-            .to_string();
-        let serial = obj.get("serial").and_then(Value::as_u64).unwrap_or(0);
-        let lineage_str = obj.get("lineage").and_then(Value::as_str).unwrap_or("");
-        let lineage = Uuid::parse_str(lineage_str).unwrap_or_else(|_| Uuid::nil());
-        let resources_raw: Vec<Value> = obj
-            .get("resources")
-            .map(|r| r.as_array().ok_or(TofuStateError::ResourcesNotArray))
-            .transpose()?
-            .map(|slice| slice.to_vec())
-            .unwrap_or_default();
-        let resources: Vec<StateResource> =
-            resources_raw.iter().filter_map(parse_resource).collect();
-        Ok(State {
-            version,
-            terraform_version,
-            serial,
-            lineage,
-            outputs: Default::default(),
-            resources,
-        })
+        if !v.is_object() {
+            return Err(TofuStateError::NotAnObject);
+        }
+        let bytes = serde_json::to_vec(v)?;
+        Ok(magma_state::tfstate_v4::decode(&bytes)?)
     }
 
     /// magma's typed State → tofu serialized JSON bytes.
     pub fn magma_to_tofu(state: &State) -> Result<Vec<u8>, TofuStateError> {
-        let resources: Vec<Value> = state.resources.iter().map(resource_to_value).collect();
-        let top = json!({
-            "version":           state.version,
-            "terraform_version": state.terraform_version,
-            "serial":            state.serial,
-            "lineage":           state.lineage.to_string(),
-            "outputs":           {},
-            "resources":         resources,
-        });
-        Ok(serde_json::to_vec_pretty(&top)?)
-    }
-
-    fn parse_resource(v: &Value) -> Option<StateResource> {
-        let type_id = v.get("type")?.as_str()?.to_string();
-        let name = v.get("name")?.as_str()?.to_string();
-        let mode = v.get("mode").and_then(Value::as_str).unwrap_or("managed");
-        let kind = match mode {
-            "data" => ResourceKind::Data,
-            _ => ResourceKind::Managed,
-        };
-        let provider_str = v.get("provider").and_then(Value::as_str).unwrap_or("");
-        let provider = parse_provider_reference(provider_str);
-
-        let instances: Vec<StateInstance> = v
-            .get("instances")
-            .and_then(Value::as_array)
-            .map(|arr| arr.iter().filter_map(parse_instance).collect())
-            .unwrap_or_default();
-
-        Some(StateResource {
-            address: ResourceAddress {
-                module: ModulePath::root(),
-                kind,
-                type_id: ResourceTypeId(type_id),
-                name,
-                key: None,
-            },
-            provider,
-            instances,
-        })
-    }
-
-    fn parse_instance(v: &Value) -> Option<StateInstance> {
-        Some(StateInstance {
-            schema_version: v.get("schema_version").and_then(Value::as_u64).unwrap_or(0),
-            attributes: v.get("attributes").cloned().unwrap_or(Value::Null),
-            private: vec![],
-            dependencies: vec![],
-            status: InstanceStatus::Ready,
-        })
-    }
-
-    /// Parse tofu's serialized provider form:
-    /// `provider["registry.terraform.io/hashicorp/aws"]` →
-    /// `ProviderReference { source: "hashicorp/aws", name: "aws", alias: None }`.
-    pub fn parse_provider_reference(s: &str) -> ProviderReference {
-        let inner = s
-            .strip_prefix("provider[\"")
-            .and_then(|rest| rest.strip_suffix("\"]"))
-            .unwrap_or(s);
-        let stripped = inner
-            .strip_prefix("registry.terraform.io/")
-            .unwrap_or(inner);
-        let name = stripped.rsplit('/').next().unwrap_or("aws").to_string();
-        ProviderReference {
-            source: stripped.to_string(),
-            name,
-            alias: None,
-        }
-    }
-
-    /// Format a `ProviderReference` back into tofu's serialized form.
-    pub fn format_provider_reference(p: &ProviderReference) -> String {
-        format!("provider[\"registry.terraform.io/{}\"]", p.source)
-    }
-
-    fn resource_to_value(r: &StateResource) -> Value {
-        // Tofu serializes only `managed` + `data` modes in the
-        // `resources` array; `output` / `local` / `variable` live in
-        // their own top-level blocks. M0.10 emits managed/data
-        // verbatim and skips the others (the magma_to_tofu caller is
-        // expected to pre-filter; we default to "managed" for safety
-        // if a non-emittable kind sneaks through).
-        let mode = match r.address.kind {
-            ResourceKind::Managed => "managed",
-            ResourceKind::Data => "data",
-            _ => "managed",
-        };
-        let instances: Vec<Value> = r
-            .instances
-            .iter()
-            .map(|i| {
-                json!({
-                    "schema_version": i.schema_version,
-                    "attributes":     i.attributes,
-                })
-            })
-            .collect();
-        json!({
-            "mode":      mode,
-            "type":      r.address.type_id.0,
-            "name":      r.address.name,
-            "provider":  format_provider_reference(&r.provider),
-            "instances": instances,
-        })
+        Ok(magma_state::tfstate_v4::encode(state)?)
     }
 }
 
@@ -471,30 +338,50 @@ mod tests {
         assert_eq!(parsed["version"], 4);
         let provider_str = parsed["resources"][0]["provider"].as_str().unwrap();
         assert!(
-            provider_str.contains("registry.terraform.io/hashicorp/aws"),
+            // A short-form source ("hashicorp/aws", what magma-config
+            // and StateBuilder build) is qualified with OpenTofu's own
+            // default registry host on write — not Terraform CLI's.
+            // See magma_state::tfstate_v4's module doc for the
+            // empirical fixture that pins this down.
+            provider_str.contains("registry.opentofu.org/hashicorp/aws"),
             "tofu shape should serialize provider in canonical form, got: {provider_str}",
         );
         // Reading back through the same backend recovers the typed state.
         let got = backend.read_state().await.unwrap();
         assert_eq!(got.resources.len(), want.resources.len());
-        assert_eq!(got.resources[0].provider.source, "hashicorp/aws");
+        assert_eq!(
+            got.resources[0].provider.source,
+            "registry.opentofu.org/hashicorp/aws",
+        );
     }
 
     // ── tofu_state conversions ───────────────────────────────────
 
     #[test]
-    fn parse_provider_reference_canonical() {
+    fn parse_provider_reference_preserves_registry_host_verbatim() {
+        // The registry host is carried through unchanged — NOT
+        // normalized to either vendor's default. This is the fix for
+        // the corruption bug: a prior implementation stripped
+        // "registry.terraform.io/" specifically, so any OTHER host
+        // (including OpenTofu's own default) round-tripped wrong.
         let r = tofu_state::parse_provider_reference(
             "provider[\"registry.terraform.io/hashicorp/aws\"]",
-        );
-        assert_eq!(r.source, "hashicorp/aws");
+        )
+        .unwrap();
+        assert_eq!(r.source, "registry.terraform.io/hashicorp/aws");
         assert_eq!(r.name, "aws");
+
+        let r2 = tofu_state::parse_provider_reference(
+            "provider[\"registry.opentofu.org/hashicorp/aws\"]",
+        )
+        .unwrap();
+        assert_eq!(r2.source, "registry.opentofu.org/hashicorp/aws");
     }
 
     #[test]
     fn format_provider_reference_round_trips() {
         let original = "provider[\"registry.terraform.io/hashicorp/aws\"]";
-        let parsed = tofu_state::parse_provider_reference(original);
+        let parsed = tofu_state::parse_provider_reference(original).unwrap();
         let formatted = tofu_state::format_provider_reference(&parsed);
         assert_eq!(original, formatted);
     }
@@ -515,7 +402,8 @@ mod tests {
                     "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
                     "instances": [{
                         "schema_version": 0,
-                        "attributes":     { "cidr_block": "10.0.0.0/16" }
+                        "attributes":     { "cidr_block": "10.0.0.0/16" },
+                        "sensitive_attributes": []
                     }]
                 }
             ]
@@ -524,12 +412,18 @@ mod tests {
         assert_eq!(state.resources.len(), 1);
         let r = &state.resources[0];
         assert_eq!(r.address.type_id.0, "aws_vpc");
-        assert_eq!(r.provider.source, "hashicorp/aws");
+        assert_eq!(r.provider.source, "registry.terraform.io/hashicorp/aws");
         assert_eq!(r.instances[0].schema_version, 0);
     }
 
     #[test]
-    fn tofu_to_magma_skips_unparseable_resources() {
+    fn tofu_to_magma_fails_loudly_on_an_unparseable_resource() {
+        // The prior implementation silently DROPPED a resource entry
+        // it couldn't parse (`filter_map`) — a real-fixture read that
+        // hits one malformed entry would silently lose data instead of
+        // surfacing the problem. This is the corrected behavior: a
+        // malformed resource fails the whole decode with a typed
+        // error, never a silent truncation.
         let value = serde_json::json!({
             "version": 4,
             "terraform_version": "1.7.0",
@@ -547,9 +441,8 @@ mod tests {
                 }
             ]
         });
-        let state = tofu_state::tofu_to_magma(&value).unwrap();
-        assert_eq!(state.resources.len(), 1);
-        assert_eq!(state.resources[0].address.name, "ok");
+        let err = tofu_state::tofu_to_magma(&value).unwrap_err();
+        assert!(matches!(err, tofu_state::TofuStateError::Wire(_)));
     }
 
     #[test]
@@ -560,17 +453,20 @@ mod tests {
         // The provider field is JSON-encoded so embedded quotes are
         // backslash-escaped. Look for the unescaped infix instead.
         assert!(
-            s.contains("registry.terraform.io/hashicorp/aws"),
+            s.contains("registry.opentofu.org/hashicorp/aws"),
             "missing canonical provider source in:\n{s}"
         );
-        assert!(s.contains("\"mode\": \"managed\""));
-        assert!(s.contains("\"type\": \"aws_iam_role\""));
+        // Compact JSON (no pretty-printing) — matches what OpenTofu
+        // itself writes to disk, per the empirical fixture in
+        // magma_state::tfstate_v4's test corpus.
+        assert!(s.contains("\"mode\":\"managed\""));
+        assert!(s.contains("\"type\":\"aws_iam_role\""));
         // Round-trip via parsed JSON: the typed provider string ends
-        // back in `provider["registry.terraform.io/hashicorp/aws"]` form.
+        // back in `provider["registry.opentofu.org/hashicorp/aws"]` form.
         let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(
             parsed["resources"][0]["provider"].as_str().unwrap(),
-            "provider[\"registry.terraform.io/hashicorp/aws\"]",
+            "provider[\"registry.opentofu.org/hashicorp/aws\"]",
         );
     }
 

@@ -157,13 +157,34 @@ fn lookup_config_value(config: &Config, addr: &ResourceAddress) -> Option<serde_
         .cloned()
 }
 
+/// Look up the diffable attribute value for `addr`.
+///
+/// `magma-config::Config::resource_addresses()` never expands
+/// `count`/`for_each` (neither Pangea nor magma's JSON config reader
+/// supports either today — see `theory/MAGMA.md` §IX), so every
+/// config-declared address is inherently singular: at most one
+/// `StateInstance` is ever the "right" one to diff against. A real,
+/// pre-existing state file adopted from tofu/terraform CAN carry
+/// multiple instances under one address (a resource originally
+/// created with `count`/`for_each`); taking `.first()` unconditionally
+/// would silently drop drift in every instance but the first — the
+/// exact silent-corruption class this function must not produce.
+/// Until config-side `count`/`for_each` expansion lands, magma still
+/// diffs only the first instance (there is no config-side target for
+/// the others to diff against), but a multi-instance match is surfaced
+/// loudly via `tracing::warn!` instead of silently swallowed.
 fn lookup_state_value(state: &State, addr: &ResourceAddress) -> Option<serde_json::Value> {
-    state
-        .resources
-        .iter()
-        .find(|r| r.address == *addr)
-        .and_then(|r| r.instances.first())
-        .map(|i| i.attributes.clone())
+    let resource = state.resources.iter().find(|r| r.address == *addr)?;
+    if resource.instances.len() > 1 {
+        tracing::warn!(
+            address = %format!("{}.{}", addr.type_id.0, addr.name),
+            instance_count = resource.instances.len(),
+            "state resource has multiple instances (count/for_each) but magma-config \
+             does not expand count/for_each; diffing only the first instance — drift \
+             in the remaining instances is not detected",
+        );
+    }
+    resource.instances.first().map(|i| i.attributes.clone())
 }
 
 /// Config-subset drift comparison: `true` iff some attribute `after`
@@ -290,8 +311,10 @@ mod tests {
                 alias: None,
             },
             instances: vec![StateInstance {
+                index_key: None,
                 schema_version: 0,
                 attributes: json!({"id": "vpc-abc"}),
+                sensitive_attribute_paths: Vec::new(),
                 private: Vec::new(),
                 dependencies: Vec::new(),
                 status: InstanceStatus::Ready,
@@ -320,8 +343,10 @@ mod tests {
                 alias: None,
             },
             instances: vec![StateInstance {
+                index_key: None,
                 schema_version: 0,
                 attributes: json!({"cidr_block": "10.0.0.0/16"}),
+                sensitive_attribute_paths: Vec::new(),
                 private: Vec::new(),
                 dependencies: Vec::new(),
                 status: InstanceStatus::Ready,
@@ -354,11 +379,13 @@ mod tests {
                 alias: None,
             },
             instances: vec![StateInstance {
+                index_key: None,
                 schema_version: 0,
                 attributes: json!({
                     "cidr_block": "10.0.0.0/16",
                     "id": "vpc-abc123",
                 }),
+                sensitive_attribute_paths: Vec::new(),
                 private: Vec::new(),
                 dependencies: Vec::new(),
                 status: InstanceStatus::Ready,
@@ -394,11 +421,13 @@ mod tests {
                 alias: None,
             },
             instances: vec![StateInstance {
+                index_key: None,
                 schema_version: 0,
                 attributes: json!({
                     "cidr_block": "10.0.0.0/8",
                     "id": "vpc-abc123",
                 }),
+                sensitive_attribute_paths: Vec::new(),
                 private: Vec::new(),
                 dependencies: Vec::new(),
                 status: InstanceStatus::Ready,

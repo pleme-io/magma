@@ -428,8 +428,10 @@ fn absorb(state: &mut State, target_address: &ResourceAddress, instances: &[Impo
             // the address is at least tracked (the next ReadResource
             // hydrates it). This keeps the import idempotent.
             vec![StateInstance {
+                index_key: None,
                 schema_version: 0,
                 attributes: serde_json::Value::Object(Default::default()),
+                sensitive_attribute_paths: Vec::new(),
                 private: Vec::new(),
                 dependencies: Vec::new(),
                 status: InstanceStatus::Ready,

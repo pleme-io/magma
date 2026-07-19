@@ -186,8 +186,10 @@ fn import_absorbs_a_preexisting_iam_role() {
                 alias: None,
             },
             instances: vec![StateInstance {
+                index_key: None,
                 schema_version: 0,
                 attributes: serde_json::json!({"name": "cluster-role", "id": "cluster-role-id"}),
+                sensitive_attribute_paths: Vec::new(),
                 private: vec![],
                 dependencies: vec![],
                 status: InstanceStatus::Ready,

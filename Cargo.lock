@@ -1660,6 +1660,7 @@ name = "magma-backend"
 version = "0.1.10"
 dependencies = [
  "async-trait",
+ "magma-state",
  "magma-types 0.1.10",
  "serde",
  "serde_json",
@@ -2175,8 +2176,8 @@ dependencies = [
 name = "magma-state"
 version = "0.1.10"
 dependencies = [
+ "base64",
  "chrono",
- "magma-backend",
  "magma-types 0.1.10",
  "serde",
  "serde_json",
