@@ -50,11 +50,19 @@
 //!    never compared at all (a named write-only-attribute exemption
 //!    list).
 //!
-//! Plus one narrowly-scoped fix outside that class:
-//! `aws_iam_openid_connect_provider.url` compares with a leading
-//! `https://`/`http://` scheme stripped from both sides — a
-//! config-resolved reference to an EKS cluster's OIDC issuer carries
-//! the scheme, AWS's `DescribeOpenIDConnectProvider` strips it.
+//! Plus two narrowly-scoped fixes outside that class:
+//!
+//! - `aws_iam_openid_connect_provider.url` compares with a leading
+//!   `https://`/`http://` scheme stripped from both sides — a
+//!   config-resolved reference to an EKS cluster's OIDC issuer carries
+//!   the scheme, AWS's `DescribeOpenIDConnectProvider` strips it.
+//! - BUG 7: a genuinely readable, bidirectional attribute that a
+//!   separate, sibling controller mutates directly against the live
+//!   provider API — Terraform's own `lifecycle.ignore_changes`
+//!   semantic, address-scoped (never resource-type-scoped, unlike BUG
+//!   6) via `EXTERNALLY_MANAGED_ATTRIBUTES`. Confirmed case:
+//!   `camelot-eks_controllers_ng`'s `scaling_config`, live-owned by
+//!   `breathe-controller`'s `EksNodegroupProvedor`.
 //!
 //! See the `BUG 3`–`BUG 8` regression tests below for the exact
 //! confirmed-real before/after shapes.
@@ -176,7 +184,7 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
             magma_config::resolve_config(v, &state_map).unwrap_or_else(|_| v.clone())
         });
         let drifted =
-            declared_attributes_drifted(&addr.type_id.0, &before, &after_resolved);
+            declared_attributes_drifted(&addr.type_id.0, &addr.name, &before, &after_resolved);
         let (action, reasons) = if drifted {
             (Action::Update, vec![ChangeReason::AttributeDrift])
         } else {
@@ -285,6 +293,7 @@ fn lookup_state_value(state: &State, addr: &ResourceAddress) -> Option<serde_jso
 /// bigger provider-schema (`PlanResourceChange`) M0.x work.
 fn declared_attributes_drifted(
     resource_type: &str,
+    resource_name: &str,
     before: &Option<serde_json::Value>,
     after: &Option<serde_json::Value>,
 ) -> bool {
@@ -308,18 +317,30 @@ fn declared_attributes_drifted(
             if is_write_only_attribute(resource_type, k) {
                 return false;
             }
+            // BUG 7: an attribute that IS genuinely readable but is
+            // authoritatively mutated by a separate, sibling controller
+            // directly against the live API (bypassing Terraform/magma
+            // state entirely) — Terraform's own `lifecycle.ignore_changes`
+            // semantic. Unlike BUG 6 this is address-scoped, not
+            // type-scoped: exempting it fleet-wide would silently hide
+            // real drift on every OTHER resource of the same type that
+            // ISN'T managed by that sibling controller.
+            if is_externally_managed_attribute(resource_type, resource_name, k) {
+                return false;
+            }
             !before_obj.get(k).is_some_and(|before_v| {
                 attribute_matches(resource_type, k, before_v, after_v, before_obj, after_obj)
             })
         }),
         // State has no recorded instance attributes at all (or they
         // aren't an object) but config declares some — every declared
-        // key is effectively new (still respecting the write-only
-        // exemption, for consistency with the populated-state branch
-        // above).
-        None => after_obj
-            .keys()
-            .any(|k| !is_write_only_attribute(resource_type, k)),
+        // key is effectively new (still respecting the write-only and
+        // externally-managed exemptions, for consistency with the
+        // populated-state branch above).
+        None => after_obj.keys().any(|k| {
+            !is_write_only_attribute(resource_type, k)
+                && !is_externally_managed_attribute(resource_type, resource_name, k)
+        }),
     }
 }
 
@@ -571,6 +592,38 @@ fn is_write_only_attribute(resource_type: &str, attribute: &str) -> bool {
     WRITE_ONLY_ATTRIBUTES
         .iter()
         .any(|(rt, attr)| *rt == resource_type && *attr == attribute)
+}
+
+/// Terraform's `lifecycle.ignore_changes` semantic: a genuinely
+/// readable, bidirectional attribute that a separate, sibling
+/// controller mutates directly against the live provider API — not via
+/// Terraform/magma at all — so config and state legitimately, durably
+/// disagree on it without either side being wrong. Distinct from
+/// `WRITE_ONLY_ATTRIBUTES` (which is never readable, by provider
+/// design) and deliberately scoped to `(resource_type, resource_name,
+/// attribute)`, never resource-type-only — exempting an attribute
+/// fleet-wide would silently hide real drift on every other resource of
+/// the same type that ISN'T under that sibling controller's ownership.
+///
+/// Confirmed case: `camelot-eks_controllers_ng`'s `scaling_config` is
+/// live-mutated by `breathe-controller`'s `EksNodegroupProvedor`
+/// (`update_nodegroup_config` against AWS directly, gated by its own
+/// `BreatheCloudPool` CR) on every breathe reconcile tick — magma's
+/// static `min_size`/`max_size`/`desired_size` declaration would
+/// otherwise fight breathe's live scaling on every plan cycle.
+/// `camelot-eks_system_ng` has no `BreatheCloudPool` targeting it, so
+/// its `scaling_config` stays fully drift-checked, as does every other
+/// node group in the fleet.
+const EXTERNALLY_MANAGED_ATTRIBUTES: &[(&str, &str, &str)] = &[(
+    "aws_eks_node_group",
+    "camelot-eks_controllers_ng",
+    "scaling_config",
+)];
+
+fn is_externally_managed_attribute(resource_type: &str, resource_name: &str, attribute: &str) -> bool {
+    EXTERNALLY_MANAGED_ATTRIBUTES
+        .iter()
+        .any(|(rt, name, attr)| *rt == resource_type && *name == resource_name && *attr == attribute)
 }
 
 /// `aws_iam_openid_connect_provider.url` — a config-resolved reference
@@ -896,7 +949,7 @@ mod tests {
         // drift even though nothing changed.
         let subnet_after_raw = Some(json!({ "vpc_id": "${aws_vpc.main.id}" }));
         assert!(
-            declared_attributes_drifted("aws_subnet", &Some(subnet_before), &subnet_after_raw),
+            declared_attributes_drifted("aws_subnet", "priv", &Some(subnet_before), &subnet_after_raw),
             "old code path (raw, unresolved comparison) must reproduce the spurious-drift bug shape"
         );
 
@@ -1584,6 +1637,95 @@ mod tests {
             Action::Update,
             "a genuinely different addon_version must still report drift even though the \
              write-only fields on the same resource are exempt"
+        );
+    }
+
+    // ── BUG 7 regression: address-scoped externally-managed attribute
+    //    (breathe-controller vs magma on camelot-eks_controllers_ng's
+    //    scaling_config) ──
+    //
+    // Live incident: `breathe-controller`'s `EksNodegroupProvedor` calls
+    // `UpdateNodegroupConfig` directly against AWS on every reconcile
+    // tick, gated by a live `BreatheCloudPool` CR targeting
+    // `camelot-eks_controllers_ng` — bypassing Terraform/magma state
+    // entirely. Pangea's static `scaling_config` declaration would
+    // otherwise fight breathe's live scaling on every plan cycle.
+
+    #[test]
+    fn externally_managed_scaling_config_on_named_resource_never_reports_drift() {
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_eks_node_group": {
+                    "camelot-eks_controllers_ng": {
+                        "cluster_name": "camelot-eks",
+                        "node_group_name": "camelot-eks-controllers",
+                        "scaling_config": { "min_size": 1, "max_size": 4, "desired_size": 1 }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_eks_node_group",
+            "camelot-eks_controllers_ng",
+            json!({
+                "cluster_name": "camelot-eks",
+                "node_group_name": "camelot-eks-controllers",
+                "scaling_config": { "min_size": 1, "max_size": 5, "desired_size": 5 },
+                "id": "camelot-eks:camelot-eks-controllers"
+            }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::NoOp,
+            "camelot-eks_controllers_ng's scaling_config is breathe-owned — a live disagreement \
+             with magma's static declaration must never report drift"
+        );
+    }
+
+    #[test]
+    fn externally_managed_scaling_config_exemption_does_not_leak_to_other_resources() {
+        // The exemption is address-scoped, not resource-type-scoped —
+        // a DIFFERENT aws_eks_node_group (no BreatheCloudPool targets
+        // it) with the exact same scaling_config disagreement must
+        // still report drift. This is the safety-critical test: it
+        // proves the fix can't silently widen into a fleet-wide
+        // scaling_config blind spot.
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_eks_node_group": {
+                    "camelot-eks_system_ng": {
+                        "cluster_name": "camelot-eks",
+                        "node_group_name": "camelot-eks-system",
+                        "scaling_config": { "min_size": 1, "max_size": 4, "desired_size": 1 }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_eks_node_group",
+            "camelot-eks_system_ng",
+            json!({
+                "cluster_name": "camelot-eks",
+                "node_group_name": "camelot-eks-system",
+                "scaling_config": { "min_size": 1, "max_size": 5, "desired_size": 5 },
+                "id": "camelot-eks:camelot-eks-system"
+            }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::Update,
+            "camelot-eks_system_ng has no BreatheCloudPool owner — its scaling_config drift \
+             must still be reported, proving the exemption is address-scoped, not type-scoped"
         );
     }
 
