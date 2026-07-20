@@ -19,6 +19,45 @@
 //! quirks. Magma matches bug-for-bug for M0–M2 — each documented
 //! quirk is a `magma_known_quirk!` proptest case so regressions surface
 //! immediately.
+//!
+//! On top of the config-subset heuristic, `subset_matches` /
+//! `attribute_matches` absorb six confirmed, schema-free
+//! false-positive classes plus one narrowly-scoped fix, all found via
+//! direct Postgres inspection of a live production camelot-eks
+//! `InfrastructureTemplate`'s plan output (54 real AWS resources) after
+//! the interpolation-resolution and nested-object-recursion fixes above
+//! had already closed the dominant causes, leaving 27 false-positive-
+//! heavy "update" flags:
+//!
+//! 1. JSON-encoded string attributes (`assume_role_policy`) compare by
+//!    parsed value, not literal string — AWS re-serializes with
+//!    reordered keys.
+//! 2. Scalar-only array attributes (`subnet_ids`, `route_table_ids`)
+//!    compare as multisets, not ordered sequences — AWS returns them
+//!    reordered.
+//! 3. A `max_items = 1` nested block encoded as `[{...}]` in tfstate vs
+//!    a bare `{...}` in Pangea's rendered config (`access_config`,
+//!    `access_scope`, `scaling_config`, `update_config`) is unwrapped
+//!    and compared as the same value.
+//! 4. NACL-rule `protocol` values are canonicalized (`"tcp"` ==
+//!    `"6"`) before comparing — AWS returns numeric codes, config
+//!    declares names.
+//! 5. NACL-rule `from_port`/`to_port` treat `null` (AWS, on an
+//!    allow-all `-1` rule) and `0` (Pangea's declared value for the
+//!    same rule) as equal, scoped to allow-all rules only.
+//! 6. `aws_eks_addon.resolve_conflicts_on_{create,update}` — apply-time
+//!    directives with no readable counterpart in `DescribeAddon` — are
+//!    never compared at all (a named write-only-attribute exemption
+//!    list).
+//!
+//! Plus one narrowly-scoped fix outside that class:
+//! `aws_iam_openid_connect_provider.url` compares with a leading
+//! `https://`/`http://` scheme stripped from both sides — a
+//! config-resolved reference to an EKS cluster's OIDC issuer carries
+//! the scheme, AWS's `DescribeOpenIDConnectProvider` strips it.
+//!
+//! See the `BUG 3`–`BUG 8` regression tests below for the exact
+//! confirmed-real before/after shapes.
 
 use std::collections::HashSet;
 
@@ -136,7 +175,8 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         let after_resolved = after.as_ref().map(|v| {
             magma_config::resolve_config(v, &state_map).unwrap_or_else(|_| v.clone())
         });
-        let drifted = declared_attributes_drifted(&before, &after_resolved);
+        let drifted =
+            declared_attributes_drifted(&addr.type_id.0, &before, &after_resolved);
         let (action, reasons) = if drifted {
             (Action::Update, vec![ChangeReason::AttributeDrift])
         } else {
@@ -231,7 +271,20 @@ fn lookup_state_value(state: &State, addr: &ResourceAddress) -> Option<serde_jso
 /// drift, matching real Terraform's own attribute-diff semantics (state
 /// carrying MORE nested keys than config declares is never itself
 /// treated as a change).
+///
+/// `resource_type` (`addr.type_id.0`, e.g. `"aws_network_acl_rule"`)
+/// threads down to `attribute_matches` for the small set of comparisons
+/// that need to know WHICH field or WHICH resource they're looking at
+/// (protocol-name normalization, allow-all port nulling, the
+/// write-only-attribute exemption list, the OIDC-provider URL-scheme
+/// normalization) — none of which are expressible as a pure
+/// `Value × Value → bool` heuristic. Confirmed live against a
+/// production camelot-eks `InfrastructureTemplate`'s plan output (see
+/// the BUG 3–8 regression tests below): six schema-free false-positive
+/// classes plus one narrowly-scoped OIDC fix, none of which need the
+/// bigger provider-schema (`PlanResourceChange`) M0.x work.
 fn declared_attributes_drifted(
+    resource_type: &str,
     before: &Option<serde_json::Value>,
     after: &Option<serde_json::Value>,
 ) -> bool {
@@ -247,15 +300,64 @@ fn declared_attributes_drifted(
     };
     match before.as_ref().and_then(|v| v.as_object()) {
         Some(before_obj) => after_obj.iter().any(|(k, after_v)| {
-            !before_obj
-                .get(k)
-                .is_some_and(|before_v| subset_matches(before_v, after_v))
+            // BUG 6: write-only / never-refreshable attributes (e.g.
+            // `aws_eks_addon.resolve_conflicts_on_{create,update}`) have
+            // no readable counterpart in the provider's Describe/Read
+            // API — state is permanently unable to match config for
+            // these keys, by design, so they never contribute to drift.
+            if is_write_only_attribute(resource_type, k) {
+                return false;
+            }
+            !before_obj.get(k).is_some_and(|before_v| {
+                attribute_matches(resource_type, k, before_v, after_v, before_obj, after_obj)
+            })
         }),
         // State has no recorded instance attributes at all (or they
         // aren't an object) but config declares some — every declared
-        // key is effectively new.
-        None => !after_obj.is_empty(),
+        // key is effectively new (still respecting the write-only
+        // exemption, for consistency with the populated-state branch
+        // above).
+        None => after_obj
+            .keys()
+            .any(|k| !is_write_only_attribute(resource_type, k)),
     }
+}
+
+/// Field-name- and resource-type-aware dispatch sitting in front of the
+/// generic `subset_matches`. Most attributes fall straight through to
+/// `subset_matches`; a handful of confirmed AWS provider read/write
+/// asymmetries need to know the specific field (and, for the OIDC case,
+/// the specific resource type) they're comparing:
+///
+/// - `protocol` on any resource — AWS returns numeric protocol codes
+///   (`"6"`), config declares names (`"tcp"`) — BUG 4.
+/// - `from_port` / `to_port` on a rule whose `protocol` (either side)
+///   is allow-all (`-1`) — AWS returns `null`, config declares `0` —
+///   BUG 5. Scoped to allow-all only: a genuine port difference on a
+///   normal rule still compares by equality.
+/// - `aws_iam_openid_connect_provider.url` — a config-resolved
+///   reference to an EKS cluster's OIDC issuer carries the `https://`
+///   scheme; AWS's `DescribeOpenIDConnectProvider` strips it on read.
+fn attribute_matches(
+    resource_type: &str,
+    field_name: &str,
+    before_v: &serde_json::Value,
+    after_v: &serde_json::Value,
+    before_obj: &serde_json::Map<String, serde_json::Value>,
+    after_obj: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    if field_name == "protocol" {
+        return protocol_values_match(before_v, after_v);
+    }
+    if (field_name == "from_port" || field_name == "to_port")
+        && (is_allow_all_protocol(before_obj) || is_allow_all_protocol(after_obj))
+    {
+        return port_matches(before_v, after_v);
+    }
+    if resource_type == "aws_iam_openid_connect_provider" && field_name == "url" {
+        return url_scheme_normalized_matches(before_v, after_v);
+    }
+    subset_matches(before_v, after_v)
 }
 
 /// `true` iff `after_v` (a config-declared value) subset-matches
@@ -264,17 +366,233 @@ fn declared_attributes_drifted(
 /// `declared_attributes_drifted` — every key `after_v` declares must be
 /// present in `before_v` with a (recursively) subset-matching value; a
 /// key present ONLY in `before_v`, at any nesting depth, is never drift.
-/// Arrays and scalars still compare by whole-value equality — real
-/// Terraform DOES flag any difference in a list/scalar attribute; the
-/// "extra keys aren't drift" relief is specific to object-valued
-/// (map / nested-block) attributes.
+///
+/// Three schema-free structural/semantic relaxations apply before
+/// falling back to whole-value equality (each confirmed against a real
+/// camelot-eks plan false positive):
+///
+/// - **BUG 3** — a single-element array wrapping an object on one side
+///   and a bare object on the other (`aws_eks_cluster.access_config`,
+///   `aws_eks_node_group.scaling_config`/`update_config`) are the SAME
+///   `max_items = 1` nested block; tfstate's array wrapper is unwrapped
+///   before comparing, recursively, so a nested block's OWN nested
+///   blocks get the same treatment.
+/// - **BUG 2** — an array whose elements are all JSON scalars (never an
+///   array of nested-block objects, which can carry real positional
+///   meaning) compares as a multiset, not an ordered sequence
+///   (`aws_network_acl.subnet_ids`, `aws_vpc_endpoint.route_table_ids`).
+/// - **BUG 1** — a JSON-encoded string attribute (`assume_role_policy`)
+///   compares by its PARSED value, not the literal string, so AWS
+///   re-serializing the same policy with reordered keys doesn't drift.
+///
+/// Arrays-of-objects and non-JSON strings still compare by whole-value
+/// equality — real Terraform DOES flag any difference in a genuinely
+/// order-sensitive list attribute; these relaxations are additive, not
+/// a general "ignore order/shape" switch.
 fn subset_matches(before_v: &serde_json::Value, after_v: &serde_json::Value) -> bool {
+    // BUG 3: max_items=1 nested-block shape mismatch — normalize
+    // BEFORE the main dispatch so the unwrapped values still get the
+    // full recursive treatment (a nested block's own nested blocks may
+    // carry the same array-vs-object mismatch).
+    if let Some(unwrapped_before) = unwrap_single_object_array(before_v) {
+        if after_v.is_object() {
+            return subset_matches(unwrapped_before, after_v);
+        }
+    }
+    if let Some(unwrapped_after) = unwrap_single_object_array(after_v) {
+        if before_v.is_object() {
+            return subset_matches(before_v, unwrapped_after);
+        }
+    }
+
     match (before_v, after_v) {
         (serde_json::Value::Object(before_obj), serde_json::Value::Object(after_obj)) => after_obj
             .iter()
             .all(|(k, av)| before_obj.get(k).is_some_and(|bv| subset_matches(bv, av))),
+
+        // BUG 2: scalar-only arrays compare as multisets.
+        (serde_json::Value::Array(before_arr), serde_json::Value::Array(after_arr))
+            if before_arr.iter().all(is_json_scalar) && after_arr.iter().all(is_json_scalar) =>
+        {
+            scalar_multiset_matches(before_arr, after_arr)
+        }
+
+        // BUG 1: JSON-encoded string attributes compare by parsed
+        // value. A parse failure on either side (not JSON to begin
+        // with — a genuine plain-string attribute) falls back to the
+        // existing literal comparison below.
+        (serde_json::Value::String(before_s), serde_json::Value::String(after_s)) => {
+            match (
+                serde_json::from_str::<serde_json::Value>(before_s),
+                serde_json::from_str::<serde_json::Value>(after_s),
+            ) {
+                (Ok(before_parsed), Ok(after_parsed)) => before_parsed == after_parsed,
+                _ => before_v == after_v,
+            }
+        }
+
         _ => before_v == after_v,
     }
+}
+
+/// If `v` is a single-element JSON array whose sole element is an
+/// object, return that object; otherwise `None`. tfstate encodes
+/// Terraform `max_items = 1` nested blocks as `[{...}]`; Pangea's
+/// rendered config JSON emits the equivalent block as a bare `{...}`
+/// with no wrapping array — the two are the SAME semantic value, just
+/// two different provider-vs-renderer serializations of one block.
+fn unwrap_single_object_array(v: &serde_json::Value) -> Option<&serde_json::Value> {
+    match v {
+        serde_json::Value::Array(items) if items.len() == 1 && items[0].is_object() => {
+            Some(&items[0])
+        }
+        _ => None,
+    }
+}
+
+/// `true` iff `v` is never itself a container that can carry
+/// per-position semantic meaning beyond "a set of values" — i.e. every
+/// scalar (`String`/`Number`/`Bool`/`Null`), but never `Object` or
+/// `Array`. Used to scope the BUG 2 multiset relief to lists that are,
+/// in practice, sets: a list of nested-block objects (which CAN encode
+/// real positional meaning) is deliberately excluded and keeps the
+/// original ordered-equality behavior.
+fn is_json_scalar(v: &serde_json::Value) -> bool {
+    !matches!(
+        v,
+        serde_json::Value::Object(_) | serde_json::Value::Array(_)
+    )
+}
+
+/// Compare two arrays of JSON scalars as multisets rather than ordered
+/// sequences. AWS's `Describe*` APIs frequently return list-typed
+/// attributes in a different order than the order a config declares
+/// them in (`aws_network_acl.subnet_ids`, `aws_vpc_endpoint.route_table_ids`
+/// — confirmed live, same elements, different order). Terraform's own
+/// `TypeSet` vs `TypeList` split means SOME lists are genuinely
+/// order-sensitive, but restricting this relief to scalar-only arrays
+/// (see `is_json_scalar`) keeps the false-negative risk to "silently
+/// swallows reordering-as-drift" — it can never silently swallow a
+/// genuine element addition/removal/value-change, since the multiset
+/// comparison still requires identical element multisets (duplicate
+/// counts included, via a full sorted-string comparison).
+fn scalar_multiset_matches(
+    before_arr: &[serde_json::Value],
+    after_arr: &[serde_json::Value],
+) -> bool {
+    let mut before_sorted: Vec<String> = before_arr.iter().map(canonical_scalar_key).collect();
+    let mut after_sorted: Vec<String> = after_arr.iter().map(canonical_scalar_key).collect();
+    before_sorted.sort();
+    after_sorted.sort();
+    before_sorted == after_sorted
+}
+
+/// Deterministic sort/equality key for a JSON scalar. `serde_json`
+/// serializes a given scalar identically every time, so this stands in
+/// for `Ord` (which `serde_json::Value` doesn't implement — `Number`
+/// can't total-order `f64`/`NaN`).
+fn canonical_scalar_key(v: &serde_json::Value) -> String {
+    serde_json::to_string(v).unwrap_or_default()
+}
+
+/// Canonicalize an AWS NACL-rule `protocol` value to its numeric IP
+/// protocol-number string. AWS's `DescribeNetworkAcls` always returns
+/// the numeric string (`"6"`, `"17"`, `"-1"`); Pangea's rendered config
+/// declares the human name (`"tcp"`, `"udp"`, `"all"`). `None` if `v`
+/// isn't a string (e.g. `null` — the caller falls back to whole-value
+/// equality in that case). Table is intentionally the confirmed set
+/// only — extend with evidence, never a guess.
+fn canonicalize_protocol_value(v: &serde_json::Value) -> Option<String> {
+    let s = v.as_str()?;
+    Some(match s.to_ascii_lowercase().as_str() {
+        "tcp" => "6".to_string(),
+        "udp" => "17".to_string(),
+        "icmp" => "1".to_string(),
+        "all" => "-1".to_string(),
+        "-1" => "-1".to_string(),
+        _ => s.to_string(),
+    })
+}
+
+/// BUG 4: compare two `protocol` values after canonicalizing both to
+/// the numeric-code form (`"tcp"` == `"6"`). Falls back to whole-value
+/// equality when either side doesn't canonicalize (non-string / an
+/// already-numeric code not in the table) — a genuinely different
+/// protocol (`"tcp"` vs `"udp"`) still canonicalizes to different codes
+/// and correctly reports drift.
+fn protocol_values_match(before_v: &serde_json::Value, after_v: &serde_json::Value) -> bool {
+    match (
+        canonicalize_protocol_value(before_v),
+        canonicalize_protocol_value(after_v),
+    ) {
+        (Some(b), Some(a)) => b == a,
+        _ => before_v == after_v,
+    }
+}
+
+/// `true` iff the resource's `protocol` attribute — checked in `obj`,
+/// which the caller invokes for BOTH `before_obj` and `after_obj` since
+/// state and config are being compared mid-transition — canonicalizes
+/// to `"-1"` (all protocols/ports).
+fn is_allow_all_protocol(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
+    obj.get("protocol")
+        .and_then(canonicalize_protocol_value)
+        .as_deref()
+        == Some("-1")
+}
+
+/// `true` iff `v` is JSON `null` or the numeric zero.
+fn is_null_or_zero(v: &serde_json::Value) -> bool {
+    v.is_null() || v.as_i64() == Some(0) || v.as_f64() == Some(0.0)
+}
+
+/// BUG 5: AWS returns `null` for `from_port`/`to_port` when `protocol`
+/// is `-1` (all protocols/ports); Pangea's rendered config declares `0`
+/// for the same allow-all rule. The caller only invokes this once it
+/// has confirmed the rule IS allow-all — `null` and `0` compare equal
+/// in that case, but any other genuine difference (e.g. `0` vs `100`)
+/// still falls through to whole-value equality and correctly reports
+/// drift.
+fn port_matches(before_v: &serde_json::Value, after_v: &serde_json::Value) -> bool {
+    (is_null_or_zero(before_v) && is_null_or_zero(after_v)) || before_v == after_v
+}
+
+/// Apply-time-only Terraform AWS-provider directives with no
+/// corresponding readable field in the provider's own `Describe`/`Read`
+/// API — state is permanently unable to reflect a config-declared value
+/// for these, by design, so they must never be compared for drift.
+/// Confirmed cases only; extend with evidence, never a guess.
+const WRITE_ONLY_ATTRIBUTES: &[(&str, &str)] = &[
+    ("aws_eks_addon", "resolve_conflicts_on_create"),
+    ("aws_eks_addon", "resolve_conflicts_on_update"),
+];
+
+fn is_write_only_attribute(resource_type: &str, attribute: &str) -> bool {
+    WRITE_ONLY_ATTRIBUTES
+        .iter()
+        .any(|(rt, attr)| *rt == resource_type && *attr == attribute)
+}
+
+/// `aws_iam_openid_connect_provider.url` — a config-resolved reference
+/// to an EKS cluster's OIDC issuer (`aws_eks_cluster.*.identity[0].oidc[0].issuer`)
+/// carries the `https://` scheme; AWS's `DescribeOpenIDConnectProvider`
+/// strips the scheme on read, so state never carries it. Compare with a
+/// leading scheme stripped from both sides — a genuinely different
+/// issuer (different host or path) still compares unequal.
+fn url_scheme_normalized_matches(
+    before_v: &serde_json::Value,
+    after_v: &serde_json::Value,
+) -> bool {
+    match (before_v.as_str(), after_v.as_str()) {
+        (Some(b), Some(a)) => strip_url_scheme(b) == strip_url_scheme(a),
+        _ => before_v == after_v,
+    }
+}
+
+fn strip_url_scheme(s: &str) -> &str {
+    s.strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .unwrap_or(s)
 }
 
 #[derive(serde::Serialize)]
@@ -578,7 +896,7 @@ mod tests {
         // drift even though nothing changed.
         let subnet_after_raw = Some(json!({ "vpc_id": "${aws_vpc.main.id}" }));
         assert!(
-            declared_attributes_drifted(&Some(subnet_before), &subnet_after_raw),
+            declared_attributes_drifted("aws_subnet", &Some(subnet_before), &subnet_after_raw),
             "old code path (raw, unresolved comparison) must reproduce the spurious-drift bug shape"
         );
 
@@ -748,5 +1066,594 @@ mod tests {
         let p2 = plan(&cfg, &st).unwrap();
         // PlanId only depends on inputs + structural changes, not timestamp.
         assert_eq!(p1.id.0, p2.id.0);
+    }
+
+    // ── BUG 3 regression: JSON-encoded string attribute, key reorder ──
+    //
+    // Live incident: a production camelot-eks `InfrastructureTemplate`'s
+    // plan carried 27 false-positive-heavy "update" flags after the
+    // interpolation-resolution and nested-object-recursion fixes above
+    // had already closed the dominant causes. `aws_iam_role.*.assume_role_policy`
+    // is a JSON-encoded string; AWS re-serializes the policy document
+    // with its own key order on read, and the raw-string comparison
+    // reported drift on every cycle even though the policy never
+    // actually changed.
+
+    #[test]
+    fn json_string_attribute_with_reordered_keys_is_noop_not_spurious_update() {
+        // Hand-written raw strings, NOT `json!(..).to_string()` — this
+        // crate's `serde_json::Map` is a `BTreeMap` (no `preserve_order`
+        // feature), so two `json!()` values built from the SAME Rust
+        // process always serialize with identical (alphabetically
+        // sorted) key order regardless of literal source order. Real
+        // AWS (its own JSON serializer) and Pangea's Ruby `to_json`
+        // (insertion-ordered) are two independent, differently-ordered
+        // serializers — reproduced here as two distinct string literals.
+        let before_policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"eks.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#.to_string();
+        let after_policy = r#"{"Statement":[{"Action":"sts:AssumeRole","Principal":{"Service":"eks.amazonaws.com"},"Effect":"Allow"}],"Version":"2012-10-17"}"#.to_string();
+        assert_ne!(
+            before_policy, after_policy,
+            "the two policy documents must be byte-different strings — exactly the \
+             shape the old, unconditional `before_v == after_v` fallback misclassified"
+        );
+
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_iam_role": {
+                    "eks_cluster_role": { "assume_role_policy": after_policy }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_iam_role",
+            "eks_cluster_role",
+            json!({ "assume_role_policy": before_policy, "id": "AROAEXAMPLE123" }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::NoOp,
+            "a JSON policy re-serialized with reordered keys must not report drift"
+        );
+    }
+
+    #[test]
+    fn json_string_attribute_with_genuinely_different_content_still_updates() {
+        let before_policy = json!({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "sts:AssumeRole",
+                "Principal": { "Service": "eks.amazonaws.com" }
+            }]
+        })
+        .to_string();
+        let after_policy = json!({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Principal": { "Service": "eks.amazonaws.com" }
+            }]
+        })
+        .to_string();
+
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_iam_role": {
+                    "eks_cluster_role": { "assume_role_policy": after_policy }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_iam_role",
+            "eks_cluster_role",
+            json!({ "assume_role_policy": before_policy, "id": "AROAEXAMPLE123" }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::Update,
+            "a genuinely different policy document (different Action) must still report drift"
+        );
+    }
+
+    // ── BUG 4 regression: scalar-array reordering ──
+    //
+    // Live incident: `aws_network_acl.subnet_ids` and
+    // `aws_vpc_endpoint.route_table_ids` — AWS returns the same
+    // elements in a different order than Pangea's config declares them.
+
+    #[test]
+    fn scalar_array_attribute_reordered_is_noop_not_spurious_update() {
+        let before_ids = json!(["subnet-b222", "subnet-a111", "subnet-c333"]);
+        let after_ids = json!(["subnet-a111", "subnet-b222", "subnet-c333"]);
+        assert_ne!(
+            before_ids, after_ids,
+            "same elements, different order — raw Value equality (the old fallback) \
+             sees these as different"
+        );
+
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_network_acl": {
+                    "main": { "subnet_ids": after_ids }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_network_acl",
+            "main",
+            json!({ "subnet_ids": before_ids, "id": "acl-abc123" }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::NoOp,
+            "same subnet ids in a different order must not report drift"
+        );
+    }
+
+    #[test]
+    fn scalar_array_attribute_genuinely_different_element_still_updates() {
+        let before_ids = json!(["subnet-a111", "subnet-b222", "subnet-c333"]);
+        let after_ids = json!(["subnet-a111", "subnet-b222", "subnet-d444"]);
+
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_network_acl": {
+                    "main": { "subnet_ids": after_ids }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_network_acl",
+            "main",
+            json!({ "subnet_ids": before_ids, "id": "acl-abc123" }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::Update,
+            "a genuinely different subnet id (not just reordered) must still report drift"
+        );
+    }
+
+    // ── BUG 5 regression: max_items=1 nested block, array vs bare object ──
+    //
+    // Live incident: `aws_eks_cluster.access_config`,
+    // `aws_eks_access_policy_association.access_scope`,
+    // `aws_eks_node_group.{scaling_config,update_config}` — tfstate
+    // encodes a `max_items = 1` nested block as a single-element array
+    // `[{...}]`; Pangea's rendered config JSON emits the equivalent
+    // block as a bare `{...}`. Confirmed pure false positives — the
+    // values underneath are identical.
+
+    #[test]
+    fn nested_block_array_of_one_object_vs_bare_object_is_noop() {
+        let before_scaling = json!([{ "desired_size": 3, "max_size": 5, "min_size": 1 }]);
+        let after_scaling = json!({ "desired_size": 3, "max_size": 5, "min_size": 1 });
+        assert_ne!(
+            before_scaling, after_scaling,
+            "an Array and an Object are never `==` under raw serde_json::Value equality \
+             (the old fallback) even when the values underneath are identical"
+        );
+
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_eks_node_group": {
+                    "workers": { "scaling_config": after_scaling }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_eks_node_group",
+            "workers",
+            json!({ "scaling_config": before_scaling, "id": "camelot-eks:workers" }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::NoOp,
+            "a max_items=1 block wrapped in an array (state) vs bare (config) must not report drift"
+        );
+    }
+
+    #[test]
+    fn nested_block_array_of_one_object_genuinely_different_value_still_updates() {
+        let before_scaling = json!([{ "desired_size": 3, "max_size": 5, "min_size": 1 }]);
+        let after_scaling = json!({ "desired_size": 4, "max_size": 5, "min_size": 1 });
+
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_eks_node_group": {
+                    "workers": { "scaling_config": after_scaling }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_eks_node_group",
+            "workers",
+            json!({ "scaling_config": before_scaling, "id": "camelot-eks:workers" }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::Update,
+            "a genuinely different desired_size inside the unwrapped block must still report drift"
+        );
+    }
+
+    // ── BUG 6 regression: NACL-rule protocol name vs number ──
+    //
+    // Live incident: 10 of 14 `aws_network_acl_rule.*` resources
+    // false-positived because AWS's `DescribeNetworkAcls` returns the
+    // numeric IP protocol code while Pangea's config declares the name.
+
+    #[test]
+    fn nacl_rule_protocol_name_vs_number_is_noop() {
+        let before_protocol = json!("6");
+        let after_protocol = json!("tcp");
+        assert_ne!(before_protocol, after_protocol);
+
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_network_acl_rule": {
+                    "allow_https": {
+                        "rule_number": 100,
+                        "egress": false,
+                        "protocol": after_protocol,
+                        "rule_action": "allow",
+                        "cidr_block": "10.0.0.0/16",
+                        "from_port": 443,
+                        "to_port": 443
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_network_acl_rule",
+            "allow_https",
+            json!({
+                "rule_number": 100,
+                "egress": false,
+                "protocol": before_protocol,
+                "rule_action": "allow",
+                "cidr_block": "10.0.0.0/16",
+                "from_port": 443,
+                "to_port": 443,
+                "id": "nacl-abc123"
+            }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::NoOp,
+            "protocol \"6\" (state) and \"tcp\" (config) name the same protocol and must not report drift"
+        );
+    }
+
+    #[test]
+    fn nacl_rule_genuinely_different_protocol_still_updates() {
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_network_acl_rule": {
+                    "allow_https": {
+                        "rule_number": 100,
+                        "egress": false,
+                        "protocol": "udp",
+                        "rule_action": "allow",
+                        "cidr_block": "10.0.0.0/16",
+                        "from_port": 443,
+                        "to_port": 443
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_network_acl_rule",
+            "allow_https",
+            json!({
+                "rule_number": 100,
+                "egress": false,
+                "protocol": "6",
+                "rule_action": "allow",
+                "cidr_block": "10.0.0.0/16",
+                "from_port": 443,
+                "to_port": 443,
+                "id": "nacl-abc123"
+            }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::Update,
+            "tcp (\"6\") vs udp (\"17\") are genuinely different protocols and must still report drift"
+        );
+    }
+
+    // ── BUG 7 regression: allow-all NACL rule, null vs 0 ports ──
+    //
+    // Live incident: the 4 `protocol = "-1"` (allow-all) NACL rules —
+    // AWS returns `null` for `from_port`/`to_port` on an allow-all
+    // rule; Pangea's rendered config declares `0` for the same rule.
+
+    #[test]
+    fn nacl_rule_allow_all_null_vs_zero_ports_is_noop() {
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_network_acl_rule": {
+                    "allow_all_egress": {
+                        "rule_number": 200,
+                        "egress": true,
+                        "protocol": "all",
+                        "rule_action": "allow",
+                        "cidr_block": "0.0.0.0/0",
+                        "from_port": 0,
+                        "to_port": 0
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_network_acl_rule",
+            "allow_all_egress",
+            json!({
+                "rule_number": 200,
+                "egress": true,
+                "protocol": "-1",
+                "rule_action": "allow",
+                "cidr_block": "0.0.0.0/0",
+                "from_port": null,
+                "to_port": null,
+                "id": "nacl-def456"
+            }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::NoOp,
+            "null (state) and 0 (config) for from_port/to_port on an allow-all rule must not report drift"
+        );
+    }
+
+    #[test]
+    fn nacl_rule_allow_all_genuinely_different_port_still_updates() {
+        // Even under an allow-all protocol, a genuinely different
+        // from_port value (not the null-vs-0 shape) must still surface
+        // as drift — the relief is narrowly scoped, not "ignore ports
+        // on allow-all rules".
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_network_acl_rule": {
+                    "allow_all_egress": {
+                        "rule_number": 200,
+                        "egress": true,
+                        "protocol": "all",
+                        "rule_action": "allow",
+                        "cidr_block": "0.0.0.0/0",
+                        "from_port": 100,
+                        "to_port": 100
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_network_acl_rule",
+            "allow_all_egress",
+            json!({
+                "rule_number": 200,
+                "egress": true,
+                "protocol": "-1",
+                "rule_action": "allow",
+                "cidr_block": "0.0.0.0/0",
+                "from_port": 0,
+                "to_port": 0,
+                "id": "nacl-def456"
+            }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::Update,
+            "a genuinely different from_port (0 vs 100) must still report drift even on an allow-all rule"
+        );
+    }
+
+    // ── BUG 8 regression: write-only EKS-addon fields ──
+    //
+    // Live incident: `aws_eks_addon.resolve_conflicts_on_{create,update}`
+    // are apply-time-only directives with no corresponding readable
+    // field in AWS's `DescribeAddon` API — state is permanently `null`
+    // for these regardless of what a correct refresh does.
+
+    #[test]
+    fn eks_addon_write_only_fields_never_report_drift() {
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_eks_addon": {
+                    "vpc_cni": {
+                        "cluster_name": "camelot-eks",
+                        "addon_name": "vpc-cni",
+                        "resolve_conflicts_on_create": "OVERWRITE",
+                        "resolve_conflicts_on_update": "OVERWRITE"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_eks_addon",
+            "vpc_cni",
+            json!({
+                "cluster_name": "camelot-eks",
+                "addon_name": "vpc-cni",
+                "resolve_conflicts_on_create": null,
+                "resolve_conflicts_on_update": null,
+                "id": "camelot-eks:vpc-cni"
+            }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::NoOp,
+            "null (state, unreadable) vs \"OVERWRITE\" (config, write-only) must never report drift"
+        );
+    }
+
+    #[test]
+    fn eks_addon_other_attribute_genuinely_different_still_updates() {
+        // The write-only exemption must be narrowly scoped to the two
+        // named keys — a genuinely different, REAL attribute on the
+        // same resource (`addon_version`) must still report drift.
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_eks_addon": {
+                    "vpc_cni": {
+                        "cluster_name": "camelot-eks",
+                        "addon_name": "vpc-cni",
+                        "addon_version": "v1.18.0-eksbuild.1",
+                        "resolve_conflicts_on_create": "OVERWRITE",
+                        "resolve_conflicts_on_update": "OVERWRITE"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_eks_addon",
+            "vpc_cni",
+            json!({
+                "cluster_name": "camelot-eks",
+                "addon_name": "vpc-cni",
+                "addon_version": "v1.15.4-eksbuild.1",
+                "resolve_conflicts_on_create": null,
+                "resolve_conflicts_on_update": null,
+                "id": "camelot-eks:vpc-cni"
+            }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::Update,
+            "a genuinely different addon_version must still report drift even though the \
+             write-only fields on the same resource are exempt"
+        );
+    }
+
+    // ── OIDC-provider issuer URL regression (narrowly-scoped, not
+    //    part of the 6-class family) ──
+    //
+    // Live incident: `aws_iam_openid_connect_provider.camelot-eks_oidc`'s
+    // `url` resolves (via
+    // `${aws_eks_cluster.main.identity[0].oidc[0].issuer}`) to a value
+    // WITH the `https://` scheme; AWS's `DescribeOpenIDConnectProvider`
+    // strips the scheme on read, so state never carries it.
+
+    #[test]
+    fn oidc_provider_url_scheme_prefix_is_noop() {
+        let before_url = json!("oidc.eks.us-east-2.amazonaws.com/id/ABCDEF0123456789");
+        let after_url = json!("https://oidc.eks.us-east-2.amazonaws.com/id/ABCDEF0123456789");
+        assert_ne!(before_url, after_url);
+
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_iam_openid_connect_provider": {
+                    "camelot-eks_oidc": { "url": after_url }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_iam_openid_connect_provider",
+            "camelot-eks_oidc",
+            json!({
+                "url": before_url,
+                "id": "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-2.amazonaws.com/id/ABCDEF0123456789"
+            }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::NoOp,
+            "the same issuer URL with vs without an https:// scheme must not report drift"
+        );
+    }
+
+    #[test]
+    fn oidc_provider_url_genuinely_different_issuer_still_updates() {
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_iam_openid_connect_provider": {
+                    "camelot-eks_oidc": {
+                        "url": "https://oidc.eks.us-east-2.amazonaws.com/id/DIFFERENT9999999"
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_iam_openid_connect_provider",
+            "camelot-eks_oidc",
+            json!({ "url": "oidc.eks.us-east-2.amazonaws.com/id/ABCDEF0123456789" }),
+        ));
+
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::Update,
+            "a genuinely different OIDC issuer id must still report drift regardless of scheme normalization"
+        );
     }
 }
