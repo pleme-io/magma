@@ -20,6 +20,8 @@ pub use import_prepass::{
     ImportedAddress, PluginImportEnvironment, import_on_conflict, run_explicit_prepass,
 };
 
+use std::collections::HashMap;
+
 use chrono::Utc;
 use magma_types::{
     Action, InstanceStatus, Plan, ProviderReference, ResourceAddress, ResourceChange, ResourceKind,
@@ -91,8 +93,55 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
     let mut applied = Vec::new();
     let mut failed = Vec::new();
 
-    for change in &plan.resource_changes {
-        match apply_one(change, state) {
+    // Resolution map (`{type → {name → attributes}}`), seeded from
+    // state that already exists, then grown as each change in THIS
+    // pass is structurally applied. This M0 structural apply talks to
+    // no provider (see module docs), so unlike
+    // `engine::run_plan_with_providers` (which resolves refs via
+    // `substitute_refs` before the provider call) it must resolve
+    // `${type.name.attr}` references itself before writing `after`
+    // into state — otherwise a resource that references a sibling
+    // (`vpc_id = "${aws_vpc.main.id}"`) would have that literal,
+    // UNRESOLVED string persisted as if it were a concrete attribute
+    // value. A later plan — which now correctly resolves references,
+    // see BUG 1 in `magma-plan` — would then compare that stale
+    // literal against a freshly-resolved value and report spurious
+    // drift, breaking the apply-convergence law
+    // (`magma-test-laws::assert_apply_converges`).
+    let mut state_map = magma_config::state_resolution_map(state);
+
+    // NoOp changes need no resolution or ordering — apply them first,
+    // in plan order (unchanged behavior; mirrors
+    // `engine::run_plan_with_providers`'s own noops-first split).
+    let (noops, reals): (Vec<&ResourceChange>, Vec<&ResourceChange>) = plan
+        .resource_changes
+        .iter()
+        .partition(|c| matches!(c.action, Action::NoOp));
+
+    for change in noops {
+        match apply_one(change, state, &mut state_map) {
+            Ok(a) => applied.push(a),
+            Err(e) => failed.push(FailedChange {
+                address: change.address.clone(),
+                action: change.action,
+                reason: e.to_string(),
+            }),
+        }
+    }
+
+    // Real changes are applied in DEPENDENCY order, not plan order —
+    // plan order is alphabetical by (type_id, name) (see
+    // `magma_plan::plan`'s deterministic sort), which is NOT
+    // dependency order: e.g. `github_branch_protection_v3` sorts
+    // before `github_repository` even when the former's config
+    // references the latter. This module has no provider RPC to defer
+    // resolution to, so getting apply ORDER right is what makes
+    // reference RESOLUTION correct (`resolve_for_structural_apply`
+    // below) — mirrors `engine::run_plan_with_providers`'s own
+    // `ResourceGraph`-based ordering. Falls back to plan order on a
+    // cycle / graph error — never refuses to apply.
+    for change in dependency_ordered(&reals) {
+        match apply_one(change, state, &mut state_map) {
             Ok(a) => applied.push(a),
             Err(e) => failed.push(FailedChange {
                 address: change.address.clone(),
@@ -117,7 +166,11 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
     })
 }
 
-fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange, ApplyError> {
+fn apply_one(
+    change: &ResourceChange,
+    state: &mut State,
+    state_map: &mut HashMap<String, serde_json::Value>,
+) -> Result<AppliedChange, ApplyError> {
     match change.action {
         Action::NoOp => Ok(AppliedChange {
             address: change.address.clone(),
@@ -127,16 +180,14 @@ fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange
         }),
 
         Action::Create | Action::Read => {
-            let attributes = change
-                .after
-                .clone()
-                .unwrap_or(serde_json::Value::Object(Default::default()));
+            let attributes = resolve_for_structural_apply(change.after.as_ref(), state_map);
             // 0: this M0 structural path never talks to a provider (see
             // module docs), so there is no real schema version to stamp —
             // see `insert_resource`'s doc for why 0 here is honest, not a
             // bug. The real value is stamped by `engine::apply_one`, which
             // DOES hold a live provider connection.
-            insert_resource(state, &change.address, attributes, 0);
+            insert_resource(state, &change.address, attributes.clone(), 0);
+            magma_config::insert_into_resolution_map(state_map, &change.address, &attributes);
             Ok(AppliedChange {
                 address: change.address.clone(),
                 action: change.action,
@@ -158,14 +209,12 @@ fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange
         Action::Update => {
             // M0: Update is treated as upsert against state. Real
             // attribute-level update via provider RPC lands in M0.x.
-            let attributes = change
-                .after
-                .clone()
-                .unwrap_or(serde_json::Value::Object(Default::default()));
+            let attributes = resolve_for_structural_apply(change.after.as_ref(), state_map);
             remove_resource(state, &change.address);
             // 0 — see the Create arm above: no provider is consulted on
             // this structural-only path.
-            insert_resource(state, &change.address, attributes, 0);
+            insert_resource(state, &change.address, attributes.clone(), 0);
+            magma_config::insert_into_resolution_map(state_map, &change.address, &attributes);
             Ok(AppliedChange {
                 address: change.address.clone(),
                 action: Action::Update,
@@ -176,22 +225,94 @@ fn apply_one(change: &ResourceChange, state: &mut State) -> Result<AppliedChange
 
         Action::Replace | Action::CreateThenDelete | Action::DeleteThenCreate => {
             // Delete-then-create variant: drop the prior instance, insert
-            // the new one. M0 ignores ordering; the provider would in
-            // practice care about resource dependencies.
+            // the new one. Apply ORDER across resources is handled by
+            // `dependency_ordered` in `run_plan`; this arm itself still
+            // ignores intra-resource ordering nuance (single instance).
             remove_resource(state, &change.address);
-            let attributes = change
-                .after
-                .clone()
-                .unwrap_or(serde_json::Value::Object(Default::default()));
+            let attributes = resolve_for_structural_apply(change.after.as_ref(), state_map);
             // 0 — see the Create arm above: no provider is consulted on
             // this structural-only path.
-            insert_resource(state, &change.address, attributes, 0);
+            insert_resource(state, &change.address, attributes.clone(), 0);
+            magma_config::insert_into_resolution_map(state_map, &change.address, &attributes);
             Ok(AppliedChange {
                 address: change.address.clone(),
                 action: change.action,
                 before: change.before.clone(),
                 after: change.after.clone(),
             })
+        }
+    }
+}
+
+/// Resolve `${type.name.attr}` references in a change's `after` config
+/// against the running resolution map BEFORE it becomes a resource's new
+/// state — the M0 structural counterpart of `engine::substitute_refs`'s
+/// apply-time resolution (this module never dials a provider, so it must
+/// do this resolution itself rather than let the provider's response
+/// supply the concrete value). Falls back to the raw, unresolved value
+/// on a resolution failure (e.g. a reference to a resource this same
+/// pass hasn't reached yet) — never panics, never silently drops the
+/// attribute set, exactly mirroring `magma-plan`'s own
+/// safe-by-erring-toward-the-raw-value fallback.
+fn resolve_for_structural_apply(
+    after: Option<&serde_json::Value>,
+    state_map: &HashMap<String, serde_json::Value>,
+) -> serde_json::Value {
+    let Some(v) = after else {
+        return serde_json::Value::Object(Default::default());
+    };
+    magma_config::resolve_config(v, state_map).unwrap_or_else(|_| v.clone())
+}
+
+/// Order `changes` so a resource that references a sibling
+/// (`vpc_id = "${aws_vpc.main.id}"`) is always processed AFTER that
+/// sibling. Mirrors `engine::run_plan_with_providers`'s own
+/// dependency-graph ordering (`engine::collect_refs`/`engine::ref_target`
+/// + `magma_graph::ResourceGraph`, reused rather than re-implemented) —
+/// plan order (alphabetical by `(type_id, name)`, see `magma_plan::plan`)
+/// is not dependency order. Falls back to the given order on a cycle /
+/// graph error — never refuses to apply.
+fn dependency_ordered<'a>(changes: &[&'a ResourceChange]) -> Vec<&'a ResourceChange> {
+    let keys: std::collections::HashSet<(String, String)> = changes
+        .iter()
+        .map(|c| (c.address.type_id.0.clone(), c.address.name.clone()))
+        .collect();
+    let by_key: HashMap<(String, String), &'a ResourceChange> = changes
+        .iter()
+        .map(|c| ((c.address.type_id.0.clone(), c.address.name.clone()), *c))
+        .collect();
+
+    let mut graph = magma_graph::ResourceGraph::new();
+    for c in changes {
+        graph.add(c.address.clone());
+    }
+    for c in changes {
+        let self_key = (c.address.type_id.0.clone(), c.address.name.clone());
+        if let Some(after) = &c.after {
+            for refstr in engine::collect_refs(after) {
+                if let Some(dep_key) = engine::ref_target(&refstr) {
+                    if dep_key != self_key && keys.contains(&dep_key) {
+                        if let Some(dep) = by_key.get(&dep_key) {
+                            graph.depend(c.address.clone(), dep.address.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    match graph.waves() {
+        Ok(waves) => waves
+            .into_iter()
+            .flatten()
+            .filter_map(|a| by_key.get(&(a.type_id.0.clone(), a.name.clone())).copied())
+            .collect(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "magma-apply: dependency-graph error in structural apply — applying in plan order"
+            );
+            changes.to_vec()
         }
     }
 }
@@ -368,6 +489,52 @@ mod tests {
         let outcome = run_plan(&p, &mut state).unwrap();
         assert_eq!(outcome.applied.len(), 1);
         assert_eq!(state.resources.len(), 0);
+    }
+
+    #[test]
+    fn structural_apply_resolves_interpolated_references_before_persisting_state() {
+        // Sibling of magma-plan's BUG 1, surfaced by that fix: this M0
+        // structural apply never talks to a provider, so unlike
+        // `engine::run_plan_with_providers` (which resolves references
+        // via `substitute_refs` before the provider call) it must
+        // resolve `${type.name.attr}` references itself before writing
+        // a resource's new state. Otherwise the literal, unresolved
+        // reference string is persisted as if it were a concrete
+        // attribute value, and a later plan — which now correctly
+        // resolves references — reports spurious drift against it,
+        // breaking `magma-test-laws::assert_apply_converges`. Changes
+        // are listed here with the REFERENCING resource first, to also
+        // prove dependency ordering (not just plan order) resolves it.
+        let mut state = fresh_state();
+        let p = plan_with(vec![
+            ResourceChange {
+                address: addr("aws_subnet", "priv"),
+                action: Action::Create,
+                before: None,
+                after: Some(json!({ "vpc_id": "${aws_vpc.main.id}" })),
+                reasons: vec![ChangeReason::NewResource],
+            },
+            ResourceChange {
+                address: addr("aws_vpc", "main"),
+                action: Action::Create,
+                before: None,
+                after: Some(json!({ "id": "vpc-abc123" })),
+                reasons: vec![ChangeReason::NewResource],
+            },
+        ]);
+
+        let outcome = run_plan(&p, &mut state).unwrap();
+        assert_eq!(outcome.failed.len(), 0, "apply must not fail: {:?}", outcome.failed);
+        let subnet = state
+            .resources
+            .iter()
+            .find(|r| r.address.type_id.0 == "aws_subnet")
+            .expect("subnet applied");
+        assert_eq!(
+            subnet.instances[0].attributes["vpc_id"],
+            json!("vpc-abc123"),
+            "state must hold the RESOLVED reference value, not the literal ${{...}} string"
+        );
     }
 
     #[test]

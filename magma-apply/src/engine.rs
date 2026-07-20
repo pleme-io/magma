@@ -1813,8 +1813,11 @@ fn partition_changes<'a>(
 }
 
 /// Collect every `${…}` reference path (inner, no wrapper) found anywhere in
-/// a config value.
-fn collect_refs(v: &serde_json::Value) -> Vec<String> {
+/// a config value. `pub(crate)`: `crate::dependency_ordered` (the M0
+/// structural apply's own dependency-graph ordering, `lib.rs`) reuses this
+/// same extraction rather than re-implementing it — one reference-scanning
+/// pass, shared by both apply engines.
+pub(crate) fn collect_refs(v: &serde_json::Value) -> Vec<String> {
     fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
         match v {
             serde_json::Value::String(s) => {
@@ -1843,7 +1846,9 @@ fn collect_refs(v: &serde_json::Value) -> Vec<String> {
 /// → `("github_repository", "galho")`. Returns `None` for `data.*` sources
 /// (resolved from existing state, not ordered as apply dependencies) or
 /// malformed paths. Strips any `[index]` from the name segment.
-fn ref_target(inner: &str) -> Option<(String, String)> {
+/// `pub(crate)`: shared with `crate::dependency_ordered` (`lib.rs`) — see
+/// `collect_refs`'s doc.
+pub(crate) fn ref_target(inner: &str) -> Option<(String, String)> {
     let segs: Vec<&str> = inner.split('.').collect();
     if segs.first() == Some(&"data") {
         return None;
