@@ -332,48 +332,136 @@ pub fn resolve_config(
     }
 }
 
-/// `true` if the string contains a `${...}` interpolation.
+/// `true` if the string contains a `${...}` interpolation. Escape-aware
+/// (2026-07-23, same incident/fix family as `magma-test-laws::architecture`
+/// and `magma-apply::engine`'s `collect_refs`/`substitute_refs`): a `$${`
+/// HCL2-escaped literal must NOT count as an interpolation, or `resolve_string`
+/// below tries to resolve the malformed extracted path from an escaped
+/// GitHub Actions `${{ }}` expression as a real reference and fails the
+/// whole config resolution (this function is shared by both `magma-plan`
+/// and `magma-apply`, so the failure surfaces in either phase).
 fn has_interpolation(s: &str) -> bool {
-    s.contains("${")
+    contains_unescaped_dollar_brace(s)
+}
+
+/// `true` if `s` contains a genuine (non-`$$`-escaped) `${` anywhere.
+fn contains_unescaped_dollar_brace(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if i + 2 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'$' && bytes[i + 2] == b'{' {
+            i += 3;
+            continue;
+        }
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// `true` if the whole string is exactly one `${...}` reference (no surrounding
-/// text), so the resolved value's JSON type is preserved.
+/// text), so the resolved value's JSON type is preserved. An escaped `$${...}`
+/// never counts, even if it spans the whole string — it isn't a reference.
 fn is_whole_reference(s: &str) -> bool {
     let t = s.trim();
-    t.starts_with("${") && t.ends_with('}') && t[2..].find("${").is_none()
+    if let Some(rest) = t.strip_prefix("$$") {
+        // The whole string opens with an escape ($${...) -- never a whole
+        // reference, regardless of what follows.
+        let _ = rest;
+        return false;
+    }
+    t.starts_with("${") && t.ends_with('}') && !contains_unescaped_dollar_brace(&t[2..])
 }
 
+/// Escape-aware embedded-interpolation substitution. `$${`/`%%{` are HCL2's
+/// own escapes for a literal `${`/`%{` and are rewritten to their unescaped
+/// form (never resolved as a reference) — the same rule and rationale as
+/// `magma-apply::engine::substitute_refs` (see that function's doc for the
+/// full incident writeup: an escaped GitHub Actions `${{ }}` sequence left
+/// un-rewritten would otherwise ship a syntactically broken workflow, or —
+/// worse, here — fail this `Result`-returning function outright via `?` on
+/// the malformed extracted "reference"). Slicing only happens immediately
+/// adjacent to `$`/`%`/`{`/`}` (all single-byte ASCII), so every slice point
+/// is a guaranteed UTF-8 char boundary regardless of surrounding content.
 fn resolve_string(
     s: &str,
     state: &HashMap<String, serde_json::Value>,
 ) -> Result<serde_json::Value, ConfigError> {
     if !has_interpolation(s) {
-        return Ok(serde_json::Value::String(s.to_string()));
+        // No genuine interpolation. If the ONLY thing present is an escaped
+        // literal, still unescape it before returning.
+        return Ok(serde_json::Value::String(unescape_only(s)));
     }
     if is_whole_reference(s) {
         return resolve_reference(s.trim(), state);
     }
     // Embedded interpolation(s) inside a larger string → string substitution.
+    let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start..];
-        let end = after
-            .find('}')
-            .ok_or_else(|| ConfigError::Malformed(format!("unterminated interpolation: {s:?}")))?;
-        let reference = &after[..=end];
-        let resolved = resolve_reference(reference, state)?;
-        // Stringify the resolved value for embedding (strip quotes for strings).
-        match resolved {
-            serde_json::Value::String(v) => out.push_str(&v),
-            other => out.push_str(&other.to_string()),
+    let mut last_push = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if i + 2 < bytes.len()
+            && (bytes[i] == b'$' || bytes[i] == b'%')
+            && bytes[i + 1] == bytes[i]
+            && bytes[i + 2] == b'{'
+        {
+            out.push_str(&s[last_push..i]);
+            out.push(bytes[i] as char); // '$' or '%' -- single-byte ASCII, safe
+            out.push('{');
+            i += 3;
+            last_push = i;
+            continue;
         }
-        rest = &after[end + 1..];
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            let after = &s[i..];
+            let end = after.find('}').ok_or_else(|| {
+                ConfigError::Malformed(format!("unterminated interpolation: {s:?}"))
+            })?;
+            let reference = &after[..=end];
+            let resolved = resolve_reference(reference, state)?;
+            out.push_str(&s[last_push..i]);
+            // Stringify the resolved value for embedding (strip quotes for strings).
+            match resolved {
+                serde_json::Value::String(v) => out.push_str(&v),
+                other => out.push_str(&other.to_string()),
+            }
+            i += end + 1;
+            last_push = i;
+            continue;
+        }
+        i += 1;
     }
-    out.push_str(rest);
+    out.push_str(&s[last_push..]);
     Ok(serde_json::Value::String(out))
+}
+
+/// Rewrite any `$${`/`%%{` escape to its unescaped `${`/`%{` form, with no
+/// reference resolution at all — the fast path for a string that
+/// `has_interpolation` already determined carries no genuine `${...}`.
+fn unescape_only(s: &str) -> String {
+    if !s.contains("$${") && !s.contains("%%{") {
+        return s.to_string();
+    }
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut last_push = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if i + 2 < bytes.len() && (bytes[i] == b'$' || bytes[i] == b'%') && bytes[i + 1] == bytes[i] && bytes[i + 2] == b'{' {
+            out.push_str(&s[last_push..i]);
+            out.push(bytes[i] as char);
+            out.push('{');
+            i += 3;
+            last_push = i;
+            continue;
+        }
+        i += 1;
+    }
+    out.push_str(&s[last_push..]);
+    out
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -589,5 +677,74 @@ mod tests {
         assert_eq!(resolved["ingress"][0]["hostname"], json!("drive.bristol.quero.cloud"));
         // No interpolation must survive anywhere.
         assert!(!resolved.to_string().contains("${"));
+    }
+
+    // ── Escape-aware has_interpolation / is_whole_reference / resolve_string
+    // (2026-07-23 incident family — see magma-apply::engine's substitute_refs
+    // for the full writeup) ─────────────────────────────────────────────
+
+    #[test]
+    fn has_interpolation_false_for_pure_escaped_literal() {
+        assert!(!has_interpolation("$${{ secrets.BOT_PAT }}"));
+        assert!(!has_interpolation("literal %%{if true}yes%%{endif}"));
+    }
+
+    #[test]
+    fn has_interpolation_true_when_a_real_reference_sits_alongside_an_escape() {
+        assert!(has_interpolation(
+            "$${{ secrets.BOT_PAT }} and ${github_repository.izumi.id}"
+        ));
+    }
+
+    #[test]
+    fn resolve_string_unescapes_a_whole_string_escaped_literal_with_no_state_lookup() {
+        // No `sm` entry that could possibly resolve `{aws_vpc.x.id}` --
+        // if this were (wrongly) treated as a reference, this would error.
+        let sm: HashMap<String, serde_json::Value> = HashMap::new();
+        let resolved = resolve_string("$${aws_vpc.x.id}", &sm).unwrap();
+        assert_eq!(resolved, json!("${aws_vpc.x.id}"));
+    }
+
+    #[test]
+    fn resolve_string_resolves_a_real_reference_next_to_an_escaped_github_actions_expr() {
+        let mut sm: HashMap<String, serde_json::Value> = HashMap::new();
+        sm.insert(
+            "github_repository".to_string(),
+            json!({ "izumi": { "id": "R_kgAizumi" } }),
+        );
+        let resolved = resolve_string(
+            "$${{ secrets.BOT_PAT }} and ${github_repository.izumi.id}",
+            &sm,
+        )
+        .unwrap();
+        assert_eq!(resolved, json!("${{ secrets.BOT_PAT }} and R_kgAizumi"));
+    }
+
+    #[test]
+    fn resolve_config_walks_a_github_repository_file_content_shaped_resource() {
+        // The exact shape of the 2026-07-23 incident: a github_repository_file
+        // whose `content` carries a real GitHub Actions workflow with a
+        // correctly-HCL2-escaped secrets expression. resolve_config must
+        // leave it as the correct, single-escaped, valid GHA syntax -- not
+        // error, and not leave a stray extra `$`.
+        let state: HashMap<String, serde_json::Value> = HashMap::new();
+        let cfg = json!({
+            "repository": "pangea-consul",
+            "file": ".github/workflows/auto-bump.yml",
+            "content": "name: auto-bump\njobs:\n  bump:\n    secrets:\n      BOT_PAT: $${{ secrets.BOT_PAT }}\n"
+        });
+        let resolved = resolve_config(&cfg, &state).unwrap();
+        assert_eq!(
+            resolved["content"],
+            json!("name: auto-bump\njobs:\n  bump:\n    secrets:\n      BOT_PAT: ${{ secrets.BOT_PAT }}\n")
+        );
+    }
+
+    #[test]
+    fn resolve_string_does_not_corrupt_multi_byte_utf8_around_escaped_content() {
+        let sm: HashMap<String, serde_json::Value> = HashMap::new();
+        let resolved =
+            resolve_string("caf\u{e9} $${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}", &sm).unwrap();
+        assert_eq!(resolved, json!("caf\u{e9} ${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}"));
     }
 }
