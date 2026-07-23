@@ -200,25 +200,47 @@ pub fn assert_all_laws(cfg: &Config) {
 
 // ── Reference-collection helpers ──────────────────────────────────
 
-/// Recursively walk a JSON value and append every `${...}` reference
-/// found in string positions to `out`. References are stored as
-/// their inner path (without the `${...}` wrapper).
+/// Recursively walk a JSON value and append every genuine `${...}`
+/// interpolation reference found in string positions to `out`.
+/// References are stored as their inner path (without the `${...}`
+/// wrapper).
+///
+/// ## Escaped literals are not references (2026-07-23 incident)
+///
+/// HCL2's own escaping convention — the syntax Terraform-JSON string
+/// values are subject to just like native HCL — is `$${` / `%%{` for
+/// a literal `${` / `%{` that must render as-is and NEVER be
+/// interpolated. `HclContentEscaping.escape` in pangea-architectures
+/// emits exactly this doubling for opaque foreign content (a GitHub
+/// Actions workflow's `${{ secrets.BOT_PAT }}`, a shell `${VAR}`, …)
+/// before it lands in a `github_repository_file.content` string, so
+/// that Terraform's own JSON parser doesn't choke on it.
+///
+/// A naive `s.find("${")` (the previous implementation here) has no
+/// concept of that escape: for `$${{ secrets.BOT_PAT }}` it matches
+/// the SECOND `$` + the FIRST `{` (a real substring `"${"` sits right
+/// there, one byte into the escape), then scans forward to the next
+/// `}` and extracts `{ secrets.BOT_PAT ` — note the stray leading
+/// brace, the leftover second `{` of GitHub Actions' double-brace
+/// `${{ }}` syntax — as a "reference". That string can never match a
+/// declared resource address, so `assert_no_dangling_references`
+/// rejects the ENTIRE workspace. This is exactly what broke
+/// `pleme-io-opensource`'s 2,567-resource apply on 2026-07-23, one
+/// release after the escaping fix itself (pangea-architectures commit
+/// 236cd42) landed — the escape was correct, this scanner just didn't
+/// know how to read it.
+///
+/// The fix: scan left to right and, at every position, prefer the
+/// escape-sequence match (`$${` / `%%{`, 3 bytes, consumed whole and
+/// never re-examined) over the reference-open match (`${`, 2 bytes).
+/// This is the same greedy, position-local decision HCL2's own
+/// tokenizer makes — it never "looks back" past the current byte —
+/// so a real, adjacent, or immediately-following reference is still
+/// found correctly, and the escaped sequence's trailing brace can
+/// never be mistaken for a fresh opener.
 fn collect_references(v: &serde_json::Value, out: &mut Vec<String>) {
     match v {
-        serde_json::Value::String(s) => {
-            // Multiple `${...}` substrings can appear in one string —
-            // e.g. concatenated names. Walk them all.
-            let mut rest = s.as_str();
-            while let Some(start) = rest.find("${") {
-                rest = &rest[start + 2..];
-                if let Some(end) = rest.find('}') {
-                    out.push(rest[..end].to_string());
-                    rest = &rest[end + 1..];
-                } else {
-                    break;
-                }
-            }
-        }
+        serde_json::Value::String(s) => scan_string_for_references(s, out),
         serde_json::Value::Array(arr) => {
             for x in arr {
                 collect_references(x, out);
@@ -230,6 +252,60 @@ fn collect_references(v: &serde_json::Value, out: &mut Vec<String>) {
             }
         }
         _ => {}
+    }
+}
+
+/// The actual per-string scan behind [`collect_references`], factored
+/// out so it's directly unit-testable against raw `&str` fixtures
+/// without wrapping every case in a `serde_json::Value::String`.
+///
+/// Walks `s` byte by byte (all of `$`, `%`, `{`, `}` are single-byte
+/// ASCII, so byte-index scanning never lands mid-codepoint on the
+/// surrounding UTF-8 content). At each position, in priority order:
+///
+/// 1. `$${` or `%%{` — an HCL2-escaped literal `${` / `%{`. NOT a
+///    reference. All 3 bytes are consumed as one inert unit, so the
+///    second `{` is never re-examined as if it were a fresh opener —
+///    the exact shape of the production bug, since GitHub Actions'
+///    `${{ }}` has a DOUBLE brace immediately after the escape.
+/// 2. `${` (a single, unescaped `$`) — a genuine interpolation open.
+///    Scanned forward to the matching `}` and the inner path is
+///    recorded.
+/// 3. anything else — advance one byte and keep scanning.
+///
+/// `%{...}` (HCL2 template directives — `%{if}` / `%{for}`) is walked
+/// over like ordinary text when NOT escaped, matching this scanner's
+/// behavior before this fix: this law validates resource
+/// *references*, which are always `${...}`-wrapped. Recognizing
+/// `%%{` only prevents it from ever being misread, symmetric with the
+/// `$${` case — it does not newly treat `%{` as a reference opener.
+fn scan_string_for_references(s: &str, out: &mut Vec<String>) {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Escaped literal: `$$` or `%%` immediately followed by `{`.
+        // Consume all 3 bytes as one unit — never a reference, and
+        // the trailing `{` must not restart a scan on the next loop.
+        if i + 2 < bytes.len()
+            && (bytes[i] == b'$' || bytes[i] == b'%')
+            && bytes[i + 1] == bytes[i]
+            && bytes[i + 2] == b'{'
+        {
+            i += 3;
+            continue;
+        }
+        // Genuine, unescaped interpolation open.
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            let after = &s[i + 2..];
+            if let Some(end) = after.find('}') {
+                out.push(after[..end].to_string());
+                i += 2 + end + 1;
+                continue;
+            }
+            // Unterminated `${` — nothing left worth scanning.
+            break;
+        }
+        i += 1;
     }
 }
 
@@ -328,4 +404,103 @@ pub fn collect_all_references(cfg: &Config) -> Vec<String> {
 #[allow(dead_code)]
 fn _hashmap_keeplive() -> HashMap<String, String> {
     HashMap::new()
+}
+
+// ── Unit tests: the escape-aware scanner itself ────────────────────
+//
+// White-box tests against `scan_string_for_references` directly —
+// the exact byte-level fix for the 2026-07-23 incident. See the
+// integration battery in `tests/architecture_law_battery.rs` for the
+// same fix proven end-to-end through `assert_no_dangling_references`
+// on a real `Config`.
+#[cfg(test)]
+mod scan_tests {
+    use super::scan_string_for_references;
+
+    fn refs(s: &str) -> Vec<String> {
+        let mut out = vec![];
+        scan_string_for_references(s, &mut out);
+        out
+    }
+
+    #[test]
+    fn real_unescaped_reference_is_found() {
+        assert_eq!(refs("${aws_vpc.main.id}"), vec!["aws_vpc.main.id"]);
+    }
+
+    #[test]
+    fn escaped_dollar_brace_literal_yields_no_reference() {
+        // The exact incident shape: GitHub Actions' `${{ }}` (double
+        // brace) after HclContentEscaping.escape has doubled the `$`.
+        assert_eq!(refs("$${{ secrets.BOT_PAT }}"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn escaped_dollar_brace_single_brace_yields_no_reference() {
+        assert_eq!(refs("$${aws_vpc.foo.id}"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn escaped_percent_brace_literal_yields_no_reference() {
+        assert_eq!(refs("%%{if var.enabled}"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn unescaped_percent_brace_directive_is_not_treated_as_a_reference() {
+        // `%{if}` / `%{for}` are HCL2 template directives, not
+        // interpolations — this scanner only ever extracts `${...}`
+        // references, escaped or not. Unchanged from before the fix.
+        assert_eq!(refs("%{if var.enabled}yes%{endif}"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn mixed_escaped_and_real_reference_each_handled_on_their_own_terms() {
+        assert_eq!(
+            refs("$${aws_vpc.foo.id} plus real ${aws_vpc.main.id}"),
+            vec!["aws_vpc.main.id"],
+        );
+    }
+
+    #[test]
+    fn escaped_sequence_immediately_followed_by_a_real_reference() {
+        // No text between them — proves the escape consumption doesn't
+        // eat into or shift the start of the next, genuine `${`.
+        assert_eq!(refs("$${x}${aws_vpc.main.id}"), vec!["aws_vpc.main.id"],);
+    }
+
+    #[test]
+    fn two_real_references_back_to_back_are_both_found() {
+        assert_eq!(
+            refs("${aws_vpc.a.id}${aws_vpc.b.id}"),
+            vec!["aws_vpc.a.id", "aws_vpc.b.id"],
+        );
+    }
+
+    #[test]
+    fn escaped_sequence_at_the_very_start_of_the_string() {
+        assert_eq!(
+            refs("$${aws_vpc.main.id} trailing text"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn escaped_sequence_at_the_very_end_of_the_string() {
+        assert_eq!(
+            refs("leading text $${aws_vpc.main.id}"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn truncated_dollar_at_end_of_string_does_not_panic() {
+        // No `{` follows — must not index out of bounds.
+        assert_eq!(refs("trailing dollar $"), Vec::<String>::new());
+        assert_eq!(refs("trailing pair $$"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn no_interpolation_at_all_yields_no_references() {
+        assert_eq!(refs("plain string, nothing special"), Vec::<String>::new());
+    }
 }

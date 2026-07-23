@@ -167,6 +167,80 @@ fn builtin_references_dont_count_as_dangling() {
     assert_no_dangling_references(&cfg(v));
 }
 
+// ── Property 7b: HCL2-escaped literals are not dangling references ─
+//
+// Regression coverage for the 2026-07-23 pleme-io-opensource incident:
+// `HclContentEscaping.escape` (pangea-architectures) correctly doubles
+// `${` / `%{` to `$${` / `%%{` before opaque foreign content (e.g. a
+// GitHub Actions workflow's `${{ secrets.BOT_PAT }}`) lands in a
+// Terraform-JSON string — but the dangling-reference scanner used to
+// have no concept of that escape, misread the escaped sequence as a
+// real (and therefore always-dangling) reference, and rejected the
+// WHOLE 2,567-resource workspace. These prove the fix end-to-end
+// through the public `assert_no_dangling_references` entrypoint —
+// see `scan_tests` in `src/architecture.rs` for the byte-level unit
+// tests of the underlying scanner.
+
+#[test]
+fn escaped_github_actions_double_brace_is_not_a_dangling_reference() {
+    let v = json!({
+        "terraform": { "required_providers": { "github": { "source": "integrations/github" } } },
+        "resource": {
+            "github_repository_file": {
+                "ci_workflow": {
+                    "repository": "opensource-repo",
+                    "file":       ".github/workflows/ci.yml",
+                    // HclContentEscaping.escape output for a workflow
+                    // referencing `${{ secrets.BOT_PAT }}` — the exact
+                    // shape that broke pleme-io-opensource.
+                    "content":    "env:\n  TOKEN: $${{ secrets.BOT_PAT }}\n"
+                }
+            }
+        }
+    });
+    assert_no_dangling_references(&cfg(v));
+}
+
+#[test]
+fn escaped_dollar_brace_and_percent_brace_are_not_dangling_references() {
+    let v = json!({
+        "terraform": { "required_providers": { "github": { "source": "integrations/github" } } },
+        "resource": {
+            "github_repository_file": {
+                "example": {
+                    "repository": "example-repo",
+                    "file":       "example.tf.tmpl",
+                    // A literal, escaped resource-shaped reference AND
+                    // an escaped HCL2 template directive in the same
+                    // string — neither is a real interpolation.
+                    "content":    "literal: $${aws_vpc.main.id}, directive: %%{if true}yes%%{endif}"
+                }
+            }
+        }
+    });
+    assert_no_dangling_references(&cfg(v));
+}
+
+#[test]
+#[should_panic(expected = "dangling reference `aws_vpc.nonexistent.id`")]
+fn escaped_literal_and_real_dangling_reference_in_the_same_string_is_still_caught() {
+    // The escape fix must not make the law toothless: a REAL dangling
+    // reference sitting right next to an escaped literal is still
+    // rejected, and it's the escaped text (not the stray brace it
+    // used to leak) that is absent from the panic message.
+    let v = json!({
+        "terraform": { "required_providers": { "aws": { "source": "hashicorp/aws" } } },
+        "resource": {
+            "aws_subnet": {
+                "web": {
+                    "vpc_id": "$${aws_vpc.decoy.id} ${aws_vpc.nonexistent.id}"
+                }
+            }
+        }
+    });
+    assert_no_dangling_references(&cfg(v));
+}
+
 // ── Property 8: collect_declared_addresses + collect_all_references
 
 #[test]
