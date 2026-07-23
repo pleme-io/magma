@@ -1817,21 +1817,22 @@ fn partition_changes<'a>(
 /// structural apply's own dependency-graph ordering, `lib.rs`) reuses this
 /// same extraction rather than re-implementing it — one reference-scanning
 /// pass, shared by both apply engines.
+///
+/// Escape-aware (2026-07-23): HCL2's own escaping convention doubles `$`/`%`
+/// before a `{` (`$${`/`%%{`) to mean a literal `${`/`%{` that must NEVER be
+/// treated as interpolation. A naive `s.find("${")` misreads a correctly
+/// escaped value — e.g. `github_repository_file.content` carrying a GitHub
+/// Actions `$${{ secrets.BOT_PAT }}` — as a real reference, extracting the
+/// malformed path `{ secrets.BOT_PAT ` (the stray leading brace is the
+/// leftover second `{` of the double-brace `${{ }}` GitHub Actions syntax).
+/// Same root cause and same fix shape as `magma-test-laws`'s
+/// `assert_no_dangling_references` (see that crate's `architecture.rs` for
+/// the full incident writeup) — ported here because this function does its
+/// OWN independent scan, not a shared one.
 pub(crate) fn collect_refs(v: &serde_json::Value) -> Vec<String> {
     fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
         match v {
-            serde_json::Value::String(s) => {
-                let mut rest = s.as_str();
-                while let Some(start) = rest.find("${") {
-                    let after = &rest[start + 2..];
-                    if let Some(end) = after.find('}') {
-                        out.push(after[..end].trim().to_string());
-                        rest = &after[end + 1..];
-                    } else {
-                        break;
-                    }
-                }
-            }
+            serde_json::Value::String(s) => scan_refs(s, out),
             serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
             serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, out)),
             _ => {}
@@ -1840,6 +1841,41 @@ pub(crate) fn collect_refs(v: &serde_json::Value) -> Vec<String> {
     let mut out = Vec::new();
     walk(v, &mut out);
     out
+}
+
+/// Byte-indexed, escape-aware `${…}` reference scan shared by [`collect_refs`]
+/// and (via its own copy, `substitute_refs` below, since that function must
+/// also rewrite `$${`/`%%{` back to `${`/`%{` in its output — a distinct job
+/// from pure extraction). Walks `s` left to right; at each position prefers
+/// the 3-byte escape match (`$${`/`%%{`, consumed whole, never re-examined —
+/// this is what stops the trailing brace of an escaped `${{` from being
+/// mistaken for a fresh opener) over the 2-byte reference-open match (`${`).
+/// Slicing only ever happens immediately before/after one of `$`/`%`/`{`/`}`
+/// — all single-byte ASCII, so every slice point is a guaranteed UTF-8 char
+/// boundary regardless of what non-ASCII content surrounds it.
+fn scan_refs(s: &str, out: &mut Vec<String>) {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if i + 2 < bytes.len()
+            && (bytes[i] == b'$' || bytes[i] == b'%')
+            && bytes[i + 1] == bytes[i]
+            && bytes[i + 2] == b'{'
+        {
+            i += 3;
+            continue;
+        }
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            let after = &s[i + 2..];
+            if let Some(end) = after.find('}') {
+                out.push(after[..end].trim().to_string());
+                i += 2 + end + 1;
+                continue;
+            }
+            break;
+        }
+        i += 1;
+    }
 }
 
 /// The `(type, name)` a reference path targets — `github_repository.galho.node_id`
@@ -1885,6 +1921,20 @@ fn repo_name_ref_fallback(inner: &str) -> Option<String> {
 /// (the apply may then fail, surfacing the gap rather than masking it) — except
 /// a null/unresolvable `${github_repository.<name>.name}`, which falls back to
 /// `<name>` (see [`repo_name_ref_fallback`]).
+///
+/// Escape-aware (2026-07-23, same incident as [`collect_refs`]): a `$${`/`%%{`
+/// sequence is HCL2's own escape for a literal `${`/`%{` and is never treated
+/// as a reference. Unlike `collect_refs` (pure extraction), this function also
+/// REWRITES the escape back to its unescaped form in the output — real
+/// Terraform's own interpolation pass does exactly this on every string it
+/// renders, escaped or not, so a value containing ONLY escaped content still
+/// needs `$${` → `${` applied even though no actual reference resolution
+/// happens. Skipping this would ship the literal `$${{ secrets.BOT_PAT }}`
+/// (with the stray extra `$`) to whatever consumes the rendered value — for
+/// `github_repository_file.content`, that means a syntactically broken
+/// GitHub Actions workflow lands on GitHub, silently, since the resource
+/// still creates successfully; only the workflow itself would fail at
+/// GitHub's own YAML-expression-parse time, far downstream of this apply.
 fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::Value>) {
     match v {
         serde_json::Value::String(s) => {
@@ -1926,27 +1976,48 @@ fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::V
                     return;
                 }
             }
-            if s.contains("${") {
-                let mut result = String::new();
-                let mut rest = s.as_str();
-                while let Some(start) = rest.find("${") {
-                    result.push_str(&rest[..start]);
-                    let after = &rest[start + 2..];
-                    if let Some(end) = after.find('}') {
-                        let full = &rest[start..start + 2 + end + 1];
-                        match resolve_reference(full, sm) {
-                            Ok(serde_json::Value::String(rs)) => result.push_str(&rs),
-                            Ok(other) => result.push_str(&other.to_string()),
-                            Err(_) => result.push_str(full),
+            if s.contains("${") || s.contains("%{") {
+                let bytes = s.as_bytes();
+                let mut result = String::with_capacity(s.len());
+                let mut last_push = 0usize;
+                let mut i = 0usize;
+                while i < bytes.len() {
+                    // Escaped literal: $${ or %%{ -- rewrite to the unescaped
+                    // ${ or %{ (drop one $/%), never resolved as a reference.
+                    if i + 2 < bytes.len()
+                        && (bytes[i] == b'$' || bytes[i] == b'%')
+                        && bytes[i + 1] == bytes[i]
+                        && bytes[i + 2] == b'{'
+                    {
+                        result.push_str(&s[last_push..i]);
+                        result.push(bytes[i] as char); // '$' or '%' -- single-byte ASCII, safe
+                        result.push('{');
+                        i += 3;
+                        last_push = i;
+                        continue;
+                    }
+                    // Genuine, unescaped interpolation open.
+                    if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                        let after = &s[i + 2..];
+                        if let Some(end) = after.find('}') {
+                            result.push_str(&s[last_push..i]);
+                            let full = &s[i..i + 2 + end + 1];
+                            match resolve_reference(full, sm) {
+                                Ok(serde_json::Value::String(rs)) => result.push_str(&rs),
+                                Ok(other) => result.push_str(&other.to_string()),
+                                Err(_) => result.push_str(full),
+                            }
+                            i += 2 + end + 1;
+                            last_push = i;
+                            continue;
                         }
-                        rest = &after[end + 1..];
-                    } else {
-                        result.push_str(&rest[start..]);
-                        rest = "";
+                        // Unterminated `${` -- nothing left worth scanning;
+                        // the trailing plain text is pushed after the loop.
                         break;
                     }
+                    i += 1;
                 }
-                result.push_str(rest);
+                result.push_str(&s[last_push..]);
                 *s = result;
             }
         }
@@ -2004,6 +2075,68 @@ mod tests {
         let mut repo2 = serde_json::json!("${github_repository.breathe.name}");
         substitute_refs(&mut repo2, &sm2);
         assert_eq!(repo2, serde_json::json!("breathe"));
+    }
+
+    // ── Escape-aware collect_refs / substitute_refs (2026-07-23 incident) ──
+
+    #[test]
+    fn collect_refs_ignores_escaped_github_actions_double_brace() {
+        let v = serde_json::json!(
+            "name: auto-bump\njobs:\n  bump:\n    secrets:\n      BOT_PAT: $${{ secrets.BOT_PAT }}\n"
+        );
+        assert_eq!(collect_refs(&v), Vec::<String>::new());
+    }
+
+    #[test]
+    fn collect_refs_still_finds_a_real_reference_next_to_an_escaped_one() {
+        let v = serde_json::json!("$${{ secrets.BOT_PAT }} and ${github_repository.izumi.id}");
+        assert_eq!(
+            collect_refs(&v),
+            vec!["github_repository.izumi.id".to_string()]
+        );
+    }
+
+    #[test]
+    fn substitute_refs_unescapes_a_pure_literal_with_no_real_reference() {
+        // No entry in `sm` at all -- if this were (wrongly) treated as a
+        // reference, resolution would fail; it must never even try.
+        let sm: HashMap<String, serde_json::Value> = HashMap::new();
+        let mut content = serde_json::json!(
+            "jobs:\n  bump:\n    secrets:\n      BOT_PAT: $${{ secrets.BOT_PAT }}\n"
+        );
+        substitute_refs(&mut content, &sm);
+        assert_eq!(
+            content,
+            serde_json::json!("jobs:\n  bump:\n    secrets:\n      BOT_PAT: ${{ secrets.BOT_PAT }}\n")
+        );
+    }
+
+    #[test]
+    fn substitute_refs_unescapes_percent_brace_too() {
+        let sm: HashMap<String, serde_json::Value> = HashMap::new();
+        let mut v = serde_json::json!("literal directive: %%{if true}yes%%{endif}");
+        substitute_refs(&mut v, &sm);
+        assert_eq!(v, serde_json::json!("literal directive: %{if true}yes%{endif}"));
+    }
+
+    #[test]
+    fn substitute_refs_resolves_a_real_reference_sitting_next_to_an_escaped_literal() {
+        let mut sm: HashMap<String, serde_json::Value> = HashMap::new();
+        sm.insert(
+            "github_repository".into(),
+            serde_json::json!({ "izumi": { "id": "R_kgAizumi" } }),
+        );
+        let mut v = serde_json::json!("$${{ secrets.BOT_PAT }} repo=${github_repository.izumi.id}");
+        substitute_refs(&mut v, &sm);
+        assert_eq!(v, serde_json::json!("${{ secrets.BOT_PAT }} repo=R_kgAizumi"));
+    }
+
+    #[test]
+    fn substitute_refs_does_not_corrupt_multi_byte_utf8_around_escaped_content() {
+        let sm: HashMap<String, serde_json::Value> = HashMap::new();
+        let mut v = serde_json::json!("caf\u{e9} $${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}");
+        substitute_refs(&mut v, &sm);
+        assert_eq!(v, serde_json::json!("caf\u{e9} ${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}"));
 
         // A null NON-`.name` ref keeps prior behavior (replace-with-null, no fallback).
         let mut node = serde_json::json!("${github_repository.izumi.node_id}");
