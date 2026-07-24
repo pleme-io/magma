@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8de5d997deab7efe6a80401645c7b48e09e40e70b5b0f7660aa4e01cc3b168e6 # shrinks to payloads = [ApplyOutcome { reconciler: "owdtzywqvfj", plan_id: PlanId("befc8f6e75a890ea155bba6be6c58c6cabb7296f52daf68db4efa57f3a5d08c0"), applied: 26, failed: 5 }, ApplyOutcome { reconciler: "mvbuxaqzqey", plan_id: PlanId("2ca867ae216b16e94f9daa14d11ad600d83fd6753b2c7f05db0c84b9e3eeeeea"), applied: 17, failed: 1 }, ApplyOutcome { reconciler: "ehqxdbrfyw", plan_id: PlanId("b74060d081bdfe259fbf92ff5996cffb8d06dd3344fec8fa42f6e9ac83836782"), applied: 26, failed: 3 }, DriftClassified { reconciler: "imhmwkkzh", plan_id: PlanId("d52ff58c2d781bbd6ec48cfafbaec7b6acc7174671b2a57be38ac2202e763c7a"), total: 6, auto_corrected: 3, auto_corrected_with_alert: 9, awaiting_approval: 0, refused: 5 }, ApplyOutcome { reconciler: "ogeals", plan_id: PlanId("89660e3712a6ededfabbff8cdf82319e1661fa8f683b02baff025b5f49942cd0"), applied: 21, failed: 5 }, Custom { category: "gxywyghsteut", message: "nzh bg  yfej" }]
