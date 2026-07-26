@@ -569,6 +569,36 @@ pub struct CycleStats {
     pub nodes_remaining: usize,
     /// Dependency waves entered this cycle.
     pub waves_entered: usize,
+    /// The widest wave in this cycle's graph — the maximum in-wave
+    /// concurrency the dependency structure ever offers. An executor cannot
+    /// usefully run more workers than this however large its budget, so it
+    /// is the structural ceiling to compare any concurrency setting against.
+    pub max_wave_width: usize,
+    /// Total time blocked in the rate limiter before mutation RPCs, summed
+    /// over nodes.
+    ///
+    /// This field and `node_rpc_ms_total` exist to answer ONE question that
+    /// decides whether concurrency is worth anything: **is this apply
+    /// rate-bound or latency-bound?**
+    ///
+    /// * `pacer_wait_ms_total` ≫ `node_rpc_ms_total` → rate-bound. The
+    ///   shared 1 req/s bucket is the constraint; more workers would simply
+    ///   queue on it and buy nothing. Chunked resumption is the only lever.
+    /// * `node_rpc_ms_total` ≫ `pacer_wait_ms_total` → latency-bound. The
+    ///   providers are slow relative to the pace, and concurrency up to
+    ///   roughly `rate × latency` is real throughput.
+    ///
+    /// Measured rather than assumed, per "perf decisions from data": every
+    /// prior estimate of where an apply's wall-clock goes was arithmetic on
+    /// a plan size, not an observation of a run.
+    pub pacer_wait_ms_total: u64,
+    /// Total time inside provider RPCs for mutations, summed over nodes —
+    /// excluding rate-limiter wait. Pairs with `pacer_wait_ms_total`.
+    pub node_rpc_ms_total: u64,
+    /// The slowest single node's RPC time. A high max against a modest
+    /// total marks one pathological resource rather than a slow provider,
+    /// which is a different fix.
+    pub node_rpc_ms_max: u64,
     /// Deferred data-source reads served from the cursor instead of re-read.
     pub data_reads_cached: usize,
     /// Deferred data-source reads attempted via RPC this cycle. Counts

@@ -535,7 +535,14 @@ pub async fn run_plan_with_providers_resumable(
     let (datas, noops, reals) = partition_changes(&plan.resource_changes);
 
     for change in noops {
-        match apply_one(change, state, &mut registry).await {
+        // A NoOp returns before any RPC or state write, so this record is
+        // empty in practice. Committing it anyway keeps the call total: if
+        // `partition_changes` ever routes a non-NoOp through here, its writes
+        // reach state instead of being silently dropped.
+        let mut rec = NodeRecord::default();
+        let outcome = apply_one(change, &mut rec, &mut registry).await;
+        rec.commit(state);
+        match outcome {
             Ok(a) => applied.push(a),
             Err(e) => failed.push(mkfail(change, e)),
         }
@@ -738,27 +745,34 @@ pub async fn run_plan_with_providers_resumable(
     //
     // On a cycle / graph error, fall back to plan order as one big wave —
     // attempt the apply rather than refuse the whole cycle.
-    let waves: Vec<Vec<ResourceAddress>> = if prologue_exhausted || checkpoint_failed {
+    let waves: magma_graph::Waves = if prologue_exhausted || checkpoint_failed {
         // The prologue was cut short — by the quantum, or by a checkpoint we
         // could not make durable — so the resolution map is incomplete.
         // Applying now would substitute *wrong* values, not merely fewer of
         // them. Do nothing this cycle and let the yield carry the reads we did
         // cache.
-        Vec::new()
+        magma_graph::Waves::empty()
     } else {
         match graph.waves() {
             Ok(w) => w,
             Err(e) => {
                 tracing::warn!(error = %e, "magma: dependency-graph error — applying in plan order");
-                vec![pending.iter().map(|c| c.address.clone()).collect()]
+                // Plan order as ONE wave would assert an antichain that the
+                // graph just failed to prove — and the concurrent executor
+                // below would then run mutually-dependent changes at once.
+                // Degrade to one address per wave instead: same plan order,
+                // but every node is its own dependency step, so a graph error
+                // costs parallelism and never correctness.
+                magma_graph::Waves::sequential(pending.iter().map(|c| c.address.clone()))
             }
         }
     };
+    stats.max_wave_width = waves.max_width();
 
     let mut out_of_quantum = prologue_exhausted || checkpoint_failed;
     'waves: for wave in &waves {
         stats.waves_entered += 1;
-        for addr in wave {
+        for addr in wave.iter() {
             // The quantum is checked only BETWEEN nodes — an in-flight
             // provider RPC is never cancelled. Cancelling mid-RPC would widen
             // the window in which a create commits provider-side without being
@@ -779,16 +793,30 @@ pub async fn run_plan_with_providers_resumable(
             if let Some(after) = resolved.after.as_mut() {
                 substitute_refs(after, &state_map);
             }
-            match apply_one(&resolved, state, &mut registry).await {
+            // `apply_one` RECORDS its state writes into `rec` rather than
+            // performing them, so the write is applied here, at a point the
+            // caller controls, immediately before the checkpoint. The commit
+            // runs on BOTH arms: a replace that destroyed the old instance and
+            // then failed to create its replacement has really destroyed it,
+            // and state must say so.
+            let mut rec = NodeRecord::default();
+            let outcome = apply_one(&resolved, &mut rec, &mut registry).await;
+            rec.commit(state);
+            stats.pacer_wait_ms_total = stats
+                .pacer_wait_ms_total
+                .saturating_add(rec.pacer_wait_ms);
+            stats.node_rpc_ms_total = stats.node_rpc_ms_total.saturating_add(rec.rpc_ms);
+            stats.node_rpc_ms_max = stats.node_rpc_ms_max.max(rec.rpc_ms);
+            match outcome {
                 Ok(a) => {
                     if let Some(attrs) = &a.after {
                         // Provider-returned new_state feeds dependents' references.
                         sm_insert(&mut state_map, &change.address, attrs);
                     }
                     stats.nodes_completed += 1;
-                    // Durability point. `state` was just mutated by
-                    // `apply_one`, so the sink sees a consistent pair:
-                    // everything the cursor claims, state proves.
+                    // Durability point. `state` carries this node's writes
+                    // (just committed above), so the sink sees a consistent
+                    // pair: everything the cursor claims, state proves.
                     // Checkpointing HERE rather than at the end of the cycle is
                     // what bounds a crash's loss at one node.
                     //
@@ -1693,9 +1721,108 @@ async fn discover_via_spec(
     Ok(matched.and_then(|row| crate::adopt::render_import_id(&spec.id_template, after, row)))
 }
 
+/// One state mutation a node's apply performed.
+///
+/// Both variants are keyed on the node's OWN address, which is unique
+/// within a plan — so the deltas of two nodes in the same wave touch
+/// disjoint state entries **by construction**. That disjointness is what
+/// makes in-wave concurrency safe against `State`: there is no shared
+/// mutable entry to race over, only a shared container whose writes are
+/// replayed serially by the caller.
+#[derive(Debug, Clone)]
+pub(crate) enum StateOp {
+    Insert {
+        address: ResourceAddress,
+        attrs: serde_json::Value,
+        schema_version: u64,
+    },
+    Remove {
+        address: ResourceAddress,
+    },
+}
+
+/// Everything one node's apply produced besides its `AppliedChange`: the
+/// state writes it wants committed, and what its wall-clock went to.
+///
+/// The state writes are *recorded* rather than *performed* so that
+/// `apply_one` no longer needs `&mut State`, which is the single change
+/// that lets a wave's nodes run concurrently. The caller replays them in
+/// wave order, keeping the state-commit / cursor-record / checkpoint
+/// sequence exactly as serial and as ordered as it was before.
+///
+/// Deltas accumulate on the **error** path too, and must: a replace that
+/// destroys the old instance and then fails to create the replacement has
+/// genuinely removed it, and dropping that removal would leave state
+/// claiming a resource the cloud no longer has.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NodeRecord {
+    ops: Vec<StateOp>,
+    /// Time blocked in the rate limiter before this node's RPCs.
+    pacer_wait_ms: u64,
+    /// Time inside this node's provider RPCs, excluding pacer wait.
+    rpc_ms: u64,
+}
+
+impl NodeRecord {
+    fn insert(&mut self, address: &ResourceAddress, attrs: serde_json::Value, schema_version: u64) {
+        self.ops.push(StateOp::Insert {
+            address: address.clone(),
+            attrs,
+            schema_version,
+        });
+    }
+
+    fn remove(&mut self, address: &ResourceAddress) {
+        self.ops.push(StateOp::Remove {
+            address: address.clone(),
+        });
+    }
+
+    /// Replay this node's writes onto the real state, in the order they
+    /// were performed. Ordering matters within a node — a replace records
+    /// `Remove` then `Insert`, and swapping them would leave the resource
+    /// absent.
+    fn commit(&self, state: &mut State) {
+        for op in &self.ops {
+            match op {
+                StateOp::Insert {
+                    address,
+                    attrs,
+                    schema_version,
+                } => insert_resource(state, address, attrs.clone(), *schema_version),
+                StateOp::Remove { address } => remove_resource(state, address),
+            }
+        }
+    }
+}
+
+/// Apply one change, recording its state writes and its timing into `rec`.
+///
+/// A thin timing wrapper over [`apply_one_inner`], which holds the real
+/// logic. Splitting it this way keeps the measurement total — the inner
+/// function has many early returns (per action, per RPC failure, per adopt
+/// branch) and threading a stopwatch through every one of them would
+/// guarantee that some future path forgets to stop the clock and silently
+/// under-reports. Timing the whole call and subtracting the pacer wait the
+/// inner already measured cannot miss a path.
 async fn apply_one(
     change: &ResourceChange,
-    state: &mut State,
+    rec: &mut NodeRecord,
+    reg: &mut Registry<'_>,
+) -> Result<AppliedChange, EngineError> {
+    let started = std::time::Instant::now();
+    let out = apply_one_inner(change, rec, reg).await;
+    let total = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    // Whatever was not spent waiting on the rate limiter was spent in (or
+    // on the way to) the provider. `saturating_sub` because the two clocks
+    // are read separately and could in principle disagree by a tick.
+    rec.rpc_ms = total.saturating_sub(rec.pacer_wait_ms);
+    out
+}
+
+async fn apply_one_inner(
+    change: &ResourceChange,
+    rec: &mut NodeRecord,
     reg: &mut Registry<'_>,
 ) -> Result<AppliedChange, EngineError> {
     if change.action == Action::NoOp {
@@ -1711,9 +1838,16 @@ async fn apply_one(
     // limit. Cloned (cheap Arc) before the mutable `reg` borrow below.
     // NoOps returned above never reach here, so all-matched cycles pay
     // zero pacing latency.
+    //
+    // The wait is MEASURED, not just incurred. Time spent here versus time
+    // spent in the RPCs below is exactly the rate-bound-vs-latency-bound
+    // question, and it is the only honest basis for deciding whether
+    // raising `ApplyContext::concurrency` above 1 can help at all.
     let pacer = reg.ctx.pacer.clone();
     if let Some(p) = pacer.as_deref() {
+        let waited = std::time::Instant::now();
         let _ = p.acquire().await;
+        rec.pacer_wait_ms = u64::try_from(waited.elapsed().as_millis()).unwrap_or(u64::MAX);
     }
 
     let type_name = change.address.type_id.0.clone();
@@ -1756,7 +1890,7 @@ async fn apply_one(
                     &e.to_string(),
                 ));
             }
-            remove_resource(state, &change.address);
+            rec.remove(&change.address);
             Ok(AppliedChange {
                 address: change.address.clone(),
                 action: change.action,
@@ -1828,7 +1962,7 @@ async fn apply_one(
                     &provider_name,
                     lp,
                     pacer.as_deref(),
-                    state,
+                    rec,
                     current_schema_version,
                 )
                 .await;
@@ -1919,8 +2053,7 @@ async fn apply_one(
                                         "magma apply: adopt ReadResource could not confirm a name after retry; backfilled identity from import id (computed attrs may be incomplete)"
                                     );
                                 }
-                                insert_resource(
-                                    state,
+                                rec.insert(
                                     &change.address,
                                     attrs.clone(),
                                     current_schema_version,
@@ -1957,12 +2090,7 @@ async fn apply_one(
             let new_attrs = new_dv
                 .to_json(&implied)
                 .map_err(|e| EngineError::Cty(e.to_string()))?;
-            insert_resource(
-                state,
-                &change.address,
-                new_attrs.clone(),
-                current_schema_version,
-            );
+            rec.insert(&change.address, new_attrs.clone(), current_schema_version);
             Ok(AppliedChange {
                 address: change.address.clone(),
                 action: change.action,
@@ -2008,7 +2136,7 @@ async fn apply_replace(
     provider_name: &str,
     lp: &mut LiveProvider,
     pacer: Option<&LeakyBucket>,
-    state: &mut State,
+    rec: &mut NodeRecord,
     current_schema_version: u64,
 ) -> Result<AppliedChange, EngineError> {
     let null_dv = DynamicValue::from_json(&serde_json::Value::Null, implied)
@@ -2029,7 +2157,11 @@ async fn apply_replace(
             &e.to_string(),
         ));
     }
-    remove_resource(state, &change.address);
+    // The destroy HAPPENED. Record it before the create half is even
+    // attempted: if step 3 fails, this node returns Err, and the delta must
+    // STILL carry the removal — state claiming a resource the provider just
+    // destroyed is worse than either outcome alone.
+    rec.remove(&change.address);
 
     // 2. Re-plan the create half from a clean slate.
     let create_planned = match rpc_retry!(
@@ -2076,12 +2208,7 @@ async fn apply_replace(
     let new_attrs = new_dv
         .to_json(implied)
         .map_err(|e| EngineError::Cty(e.to_string()))?;
-    insert_resource(
-        state,
-        &change.address,
-        new_attrs.clone(),
-        current_schema_version,
-    );
+    rec.insert(&change.address, new_attrs.clone(), current_schema_version);
     Ok(AppliedChange {
         address: change.address.clone(),
         // Record what ACTUALLY happened (destroy + create), not
@@ -3483,6 +3610,163 @@ mod tests {
         let mut ctx = ApplyContext::new(dir.to_path_buf());
         ctx.pacer = None;
         ctx
+    }
+
+    /// The delta a node records is replayed onto state verbatim, in order.
+    ///
+    /// Order within a node is load-bearing: a replace records `Remove` then
+    /// `Insert`, and committing them the other way round would leave the
+    /// resource absent from state while it exists in the cloud.
+    #[test]
+    fn a_node_record_commits_its_writes_in_the_order_they_happened() {
+        let addr = repo_addr("r");
+        let mut rec = NodeRecord::default();
+        rec.remove(&addr);
+        rec.insert(&addr, serde_json::json!({ "name": "r" }), 3);
+
+        let mut state = empty_state();
+        rec.commit(&mut state);
+
+        let stored = state
+            .resources
+            .iter()
+            .find(|r| r.address.name == addr.name)
+            .expect("replace leaves the resource present, not removed");
+        assert_eq!(
+            stored.instances[0].schema_version, 3,
+            "the provider's real schema version must survive the delta round-trip"
+        );
+
+        // And the reverse order really would lose it — which is why `commit`
+        // replays rather than folding into a set.
+        let mut backwards = NodeRecord::default();
+        backwards.insert(&addr, serde_json::json!({ "name": "r" }), 3);
+        backwards.remove(&addr);
+        let mut state2 = empty_state();
+        backwards.commit(&mut state2);
+        assert!(
+            state2.resources.iter().all(|r| r.address.name != addr.name),
+            "ordering is not incidental — reversing it changes the outcome"
+        );
+    }
+
+    /// An empty record is a no-op, so the NoOp fold cannot perturb state.
+    #[test]
+    fn an_empty_node_record_leaves_state_untouched() {
+        let mut state = empty_state();
+        let before = serde_json::to_string(&state).unwrap();
+        NodeRecord::default().commit(&mut state);
+        assert_eq!(before, serde_json::to_string(&state).unwrap());
+    }
+
+    /// The state writes of two nodes in one wave are disjoint.
+    ///
+    /// This is the property that would make in-wave concurrency safe against
+    /// `State`: every op a node records is keyed on that node's OWN address,
+    /// and addresses are unique within a plan, so two nodes can never contend
+    /// for the same entry. Asserted here rather than assumed, because it is
+    /// the precondition any future concurrent executor inherits.
+    #[test]
+    fn two_nodes_in_a_wave_record_disjoint_state_writes() {
+        let a = repo_addr("a");
+        let b = repo_addr("b");
+        let mut ra = NodeRecord::default();
+        ra.insert(&a, serde_json::json!({ "name": "a" }), 0);
+        let mut rb = NodeRecord::default();
+        rb.insert(&b, serde_json::json!({ "name": "b" }), 0);
+
+        let touched = |r: &NodeRecord| -> Vec<String> {
+            r.ops
+                .iter()
+                .map(|op| match op {
+                    StateOp::Insert { address, .. } | StateOp::Remove { address } => {
+                        address.name.clone()
+                    }
+                })
+                .collect()
+        };
+        let ta = touched(&ra);
+        let tb = touched(&rb);
+        assert!(
+            ta.iter().all(|x| !tb.contains(x)),
+            "nodes in one wave must touch disjoint state entries; got {ta:?} vs {tb:?}"
+        );
+
+        // Committing in either order yields the same state — the definition
+        // of disjointness for this purpose.
+        let (mut s1, mut s2) = (empty_state(), empty_state());
+        ra.commit(&mut s1);
+        rb.commit(&mut s1);
+        rb.commit(&mut s2);
+        ra.commit(&mut s2);
+        let mut n1: Vec<_> = s1.resources.iter().map(|r| r.address.name.clone()).collect();
+        let mut n2: Vec<_> = s2.resources.iter().map(|r| r.address.name.clone()).collect();
+        n1.sort();
+        n2.sort();
+        assert_eq!(n1, n2, "commit order must not change the resulting state");
+    }
+
+    /// The cycle receipt carries the rate-bound-vs-latency-bound split.
+    ///
+    /// Without these two numbers, "should we add workers?" can only be
+    /// answered by intuition. With them it is arithmetic: a cycle whose wall
+    /// clock is dominated by `pacer_wait_ms_total` cannot be sped up by any
+    /// number of workers drawing on the same bucket.
+    #[tokio::test]
+    async fn the_receipt_reports_where_a_node_s_wall_clock_went() {
+        let plan = plan_of_creates(&["a", "b"]);
+        let td = tempfile::tempdir().unwrap();
+        let ctx = unpaced_ctx(td.path());
+        let mut state = empty_state();
+
+        let out =
+            run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None, None).await;
+        let stats = out.stats();
+
+        assert_eq!(stats.nodes_attempted, 2);
+        // Pacing is off in this harness, so the wait must be zero — proving
+        // the counter tracks the pacer rather than incidentally accumulating
+        // elapsed time.
+        assert_eq!(
+            stats.pacer_wait_ms_total, 0,
+            "an unpaced context must report zero rate-limiter wait"
+        );
+        // Every attempted node contributes to the max, even a failing one:
+        // the providers are unreachable here, and that failure still costs
+        // real time that an operator needs to see.
+        assert!(
+            stats.node_rpc_ms_max <= stats.node_rpc_ms_total,
+            "max ({}) cannot exceed total ({})",
+            stats.node_rpc_ms_max,
+            stats.node_rpc_ms_total
+        );
+    }
+
+    /// The receipt reports the structural concurrency ceiling.
+    ///
+    /// `max_wave_width` is what the old `waves().flatten()` destroyed. A plan
+    /// of independent creates is one wide wave; reporting its width is how an
+    /// operator learns whether concurrency has any room to work with at all —
+    /// separately from whether the pacer would let it.
+    #[tokio::test]
+    async fn the_receipt_reports_the_widest_wave() {
+        let plan = plan_of_creates(&["a", "b", "c", "d"]);
+        let td = tempfile::tempdir().unwrap();
+        let ctx = unpaced_ctx(td.path());
+        let mut state = empty_state();
+
+        let out =
+            run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None, None).await;
+        let stats = out.stats();
+
+        assert_eq!(
+            stats.max_wave_width, 4,
+            "four independent creates are mutually concurrent — one wave of width 4"
+        );
+        assert_eq!(
+            stats.waves_entered, 1,
+            "and they form exactly one dependency wave"
+        );
     }
 
     /// I2 — a resumed cycle re-executes NO completed node.

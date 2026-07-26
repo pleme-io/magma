@@ -87,7 +87,10 @@ proptest! {
             g.depend(addrs[hi].clone(), addrs[lo].clone());
         }
         let waves = g.waves().unwrap();
-        let flat: HashSet<_> = waves.iter().flatten().collect();
+        // `.flat_map(Wave::iter)` rather than `.flatten()`: `Wave` is not
+        // `IntoIterator` precisely so that collapsing the decomposition is
+        // always an explicit, greppable act. See `magma_graph::Waves`.
+        let flat: HashSet<_> = waves.iter().flat_map(magma_graph::Wave::iter).collect();
         let want: HashSet<_> = addrs.iter().collect();
         prop_assert_eq!(flat, want);
     }

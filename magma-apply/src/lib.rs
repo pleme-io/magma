@@ -21,13 +21,50 @@
 //! address alone, so a recorded entry can never cause a *different* change to
 //! the same resource to be silently skipped.
 //!
-//! Still outstanding, and deliberately separate: `shigoto::Scheduler`-driven
-//! **concurrency** within a wave, plus budget enforcement. The waves already
-//! carry the available parallelism (see the wave loop in [`engine`]); nothing
-//! consumes it yet. Note the ceiling before assuming that is the big win — the
-//! default mutation pacer is a strict 1 req/s shared bucket, so useful
-//! concurrency is a small constant, and concurrency changes how *fast* an
-//! apply converges, never *whether* it does.
+//! ## Why execution is still sequential — the measured answer, not an omission
+//!
+//! In-wave **concurrency** is deliberately NOT implemented, and the reason is
+//! arithmetic rather than effort:
+//!
+//! * `apply_one` acquires one token from a **single shared** `LeakyBucket`
+//!   before every non-NoOp change. The default is `burst = 1` at 3600 rph —
+//!   strict 1 request/second, no bursting (bursts are what trip a provider's
+//!   secondary rate limit).
+//! * A shared bucket is shared by *workers* too. For `N` mutations the
+//!   makespan is `max(N / rate, N × rpc_latency / W)`; with `rate = 1/s` and
+//!   sub-second provider RPCs the first term dominates for every `W`. Little's
+//!   Law puts the useful worker count at `W* ≈ rate × rpc_latency ≈ 1`.
+//! * Concretely: the pleme-io-opensource plan that motivated resumable cycles
+//!   carries ~1040 mutations. At strict 1 req/s that is ~1040 s of pure pacing
+//!   against a 600 s window — a 1.7× overrun that **no number of workers
+//!   changes**, because they all queue on the same bucket.
+//!
+//! So the sequential loop is already at the rate ceiling, and adding workers
+//! to it would buy nothing while adding real risk on the one code path that
+//! mutates live cloud resources. What removes plan size as a precondition is
+//! chunked resumption above, which is shipped.
+//!
+//! What IS shipped for concurrency is everything that must be true *before*
+//! it could be turned on safely, so the decision rests on data rather than
+//! intuition:
+//!
+//! * `apply_one` no longer takes `&mut State`. It records its writes into a
+//!   [`engine::NodeRecord`] the caller replays, and those writes are keyed on
+//!   the node's own address — so two nodes in one wave are disjoint **by
+//!   construction**, not by convention.
+//! * The wave decomposition is an opaque `magma_graph::Waves`; the accidental
+//!   `.flatten()` that discarded it no longer compiles.
+//! * Each cycle's receipt reports `pacer_wait_ms_total` vs `node_rpc_ms_total`
+//!   — the rate-bound-vs-latency-bound split. Concurrency is worth revisiting
+//!   exactly when a real receipt shows the latter dominating.
+//!
+//! The genuinely load-bearing next step is **not** a worker pool: it is that
+//! the bucket is shared across *all* providers, so a plan touching github and
+//! cloudflare is paced as though they were one API. Per-provider pacing (plus
+//! per-provider grouping within a wave, which needs no connection cloning
+//! because each provider already owns a distinct `LiveProvider`) is what would
+//! raise the aggregate rate — and only then does concurrency have anything to
+//! convert into throughput.
 //!
 //! The typed shape matches §II.9 — every apply operation surfaces as
 //! a typed `ApplyChange` Job.
@@ -333,9 +370,16 @@ fn dependency_ordered<'a>(changes: &[&'a ResourceChange]) -> Vec<&'a ResourceCha
     }
 
     match graph.waves() {
+        // The ONE legitimate collapse of the wave decomposition in the
+        // workspace. This is the structural, provider-free apply: it talks
+        // to nothing, has no concurrency to gain, and genuinely wants a
+        // single dependency-respecting order. Asking for that by name
+        // (rather than `.flatten()`) is what keeps the *accidental* collapse
+        // — the one that silently discarded the real engine's parallelism —
+        // a compile error everywhere else.
         Ok(waves) => waves
+            .into_sequential_order()
             .into_iter()
-            .flatten()
             .filter_map(|a| by_key.get(&(a.type_id.0.clone(), a.name.clone())).copied())
             .collect(),
         Err(e) => {
