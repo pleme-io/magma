@@ -398,6 +398,35 @@ impl ApplyCursor {
             .is_some_and(|fp| *fp == ChangeFingerprint::of(change))
     }
 
+    /// The changes a resumed cycle still has to apply: everything this cursor
+    /// does not already cover, in the order given.
+    ///
+    /// # Why this is a named function and not an inline filter
+    ///
+    /// This one line is the whole reason plan size stops governing
+    /// convergence. Each cycle applies some prefix of the frontier and records
+    /// it; the next cycle's frontier is strictly smaller by exactly what was
+    /// recorded; the plan is finished when the frontier is empty. That is the
+    /// induction, and naming it makes it *directly* testable at sizes no
+    /// end-to-end run could reach — see `convergence_is_independent_of_plan_size`,
+    /// which drives this exact function to 10,000 changes.
+    ///
+    /// The engine consumes the result as the *only* source of nodes it will
+    /// execute: excluded changes are never added to the dependency graph, so
+    /// they appear in no wave and in no lookup table. Re-application is
+    /// therefore structurally impossible rather than guarded by a runtime
+    /// check — there is no code path from a covered change to a provider RPC.
+    ///
+    /// Exclusion tests [`Self::covers`] (address **and** fingerprint), not
+    /// address alone, so a stale entry can never silently swallow a genuinely
+    /// different change to the same resource.
+    pub fn frontier<'a>(
+        &self,
+        reals: impl IntoIterator<Item = &'a ResourceChange>,
+    ) -> Vec<&'a ResourceChange> {
+        reals.into_iter().filter(|c| !self.covers(c)).collect()
+    }
+
     /// A previously-cached deferred data-source read, if this cursor has one.
     ///
     /// Consulting this is what stops a resumed cycle re-paying the paced
@@ -922,5 +951,262 @@ mod tests {
             Some(&serde_json::json!(1)),
             "re-recording must not overwrite"
         );
+    }
+
+    // ── T4 forcing functions ───────────────────────────────────────
+    //
+    // The tests below exist to BITE: each one fails if the property it
+    // names regresses. Where a property is a compile-time fact rather than
+    // a runtime one, the test is written so that breaking the property
+    // stops it compiling — stated per test, never rounded up.
+
+    // ── I1 · plan length is irrelevant ─────────────────────────────
+
+    /// The frontier is exactly "everything not yet covered", order preserved.
+    ///
+    /// The base case of the convergence induction: what one cycle leaves
+    /// behind is precisely what the next one picks up — no gap (a silent drop)
+    /// and no overlap (a re-application).
+    #[test]
+    fn the_frontier_is_exactly_what_the_cursor_does_not_cover() {
+        let changes: Vec<ResourceChange> = ["a", "b", "c", "d"].iter().map(|n| create(n)).collect();
+        let mut c = ApplyCursor::empty(plan_id(1));
+        c.complete(&changes[1]);
+        c.complete(&changes[3]);
+
+        let front = c.frontier(changes.iter());
+        let names: Vec<&str> = front.iter().map(|c| c.address.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["a", "c"],
+            "the frontier must drop covered changes and keep the rest in order"
+        );
+    }
+
+    /// ★ THE SCALING TEST (algebraic half).
+    ///
+    /// Drives the REAL [`ApplyCursor::frontier`] — the same function the engine
+    /// calls — through a full convergence loop at sizes no end-to-end run could
+    /// reach, and asserts the three facts that together mean *plan length does
+    /// not govern convergence*:
+    ///
+    /// 1. **It terminates**, in exactly `ceil(n / k)` cycles, for every `n`.
+    ///    Cycle count scales with size; whether it converges does not.
+    /// 2. **Every change is applied exactly once** across all cycles — no
+    ///    duplicate (I2) and no silent drop.
+    /// 3. **The frontier shrinks strictly** every cycle, which is what forbids
+    ///    the livelock: a cycle that made progress cannot hand its successor
+    ///    the same work.
+    ///
+    /// `n` runs to 10,000 — nearly 4x the 2,665-resource plan that motivated
+    /// all of this — and the per-cycle budget `k` is varied independently, so
+    /// the assertion is genuinely over the (size, budget) product and not one
+    /// lucky pairing.
+    ///
+    /// # On the pairings
+    ///
+    /// They are chosen to bound this test's own runtime, and the reason is
+    /// worth stating because it is a real property of the code: [`Self::covers`]
+    /// computes a fingerprint (JSON encode + BLAKE3) per call, and the frontier
+    /// is an O(n) scan, so driving a whole convergence costs O(n²/k) hashes.
+    /// The smallest budget therefore rides the smaller sizes and the largest
+    /// size rides the larger budgets — every `n` is still driven to
+    /// convergence, and `k = 1` (the worst case, one node per cycle) is still
+    /// exercised to n = 1,000.
+    ///
+    /// In production that cost is real but negligible: a 2,665-resource plan at
+    /// one node per cycle is ~7M hashes spread over the whole convergence —
+    /// seconds in total, against the ~2,665 seconds the 1 req/s pacer spends on
+    /// the same plan. Rate, not hashing, is the term that matters.
+    #[test]
+    fn convergence_is_independent_of_plan_size() {
+        const PAIRINGS: &[(usize, usize)] = &[
+            // Worst-case budget: one node per cycle, so cycles == n.
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (10, 1),
+            (100, 1),
+            (1_000, 1),
+            // Mid budgets.
+            (100, 7),
+            (1_000, 7),
+            (2_665, 7), // the plan size that motivated this work
+            // Large sizes at budgets that keep the scan cost bounded.
+            (10_000, 64),
+            (10_000, 512),
+        ];
+
+        for &(n, k) in PAIRINGS {
+            let changes: Vec<ResourceChange> = (0..n).map(|i| create(&format!("r{i}"))).collect();
+            let mut cursor = ApplyCursor::empty(plan_id(1));
+
+            let mut cycles = 0usize;
+            let mut applied_order: Vec<String> = Vec::new();
+            let mut last_len = usize::MAX;
+
+            loop {
+                let front = cursor.frontier(changes.iter());
+                if front.is_empty() {
+                    break; // converged
+                }
+                assert!(
+                    front.len() < last_len,
+                    "n={n} k={k}: frontier must shrink strictly every cycle \
+                         (got {} then {}) — equal-sized frontiers are the livelock",
+                    last_len,
+                    front.len()
+                );
+                last_len = front.len();
+
+                // One cycle: apply up to `k` nodes off the frontier.
+                for change in front.into_iter().take(k) {
+                    applied_order.push(change.address.name.clone());
+                    cursor.complete(change);
+                }
+                cycles += 1;
+
+                assert!(
+                    cycles <= n + 1,
+                    "n={n} k={k}: did not converge in a bounded number of cycles"
+                );
+            }
+
+            assert_eq!(
+                cycles,
+                n.div_ceil(k),
+                "n={n} k={k}: a cycle must consume a full budget while work remains"
+            );
+            assert_eq!(
+                applied_order.len(),
+                n,
+                "n={n} k={k}: every change must be applied exactly once"
+            );
+            let unique: std::collections::BTreeSet<&String> = applied_order.iter().collect();
+            assert_eq!(
+                unique.len(),
+                n,
+                "n={n} k={k}: an address was applied more than once"
+            );
+        }
+    }
+
+    /// A cycle that completes nothing hands its successor an identical
+    /// frontier — the livelock the `Stalled` arm exists to name.
+    ///
+    /// Asserted here so the property the scaling test relies on (strict
+    /// shrinkage ⟺ progress) is pinned from both sides: shrinkage is not
+    /// automatic, it is *caused* by recording completions.
+    #[test]
+    fn a_cycle_that_records_nothing_cannot_shrink_the_frontier() {
+        let changes: Vec<ResourceChange> = ["a", "b"].iter().map(|n| create(n)).collect();
+        let cursor = ApplyCursor::empty(plan_id(1));
+        let before = cursor.frontier(changes.iter()).len();
+        // No `complete` calls — i.e. a cycle whose quantum could not cover the
+        // prologue.
+        let after = cursor.frontier(changes.iter()).len();
+        assert_eq!(
+            before, after,
+            "without a recorded completion the next cycle repeats the same work; \
+             this is why a zero-progress cycle must land in Stalled, not Yielded"
+        );
+    }
+
+    // ── I2 · monotone progress ─────────────────────────────────────
+
+    /// A recorded address whose *content* differs is re-applied, not skipped.
+    ///
+    /// The direction matters and is not symmetric: re-applying is absorbed by
+    /// adopt-on-conflict, whereas skipping would be a real change silently not
+    /// made and still reported as success. Complements
+    /// `covers_requires_the_fingerprint_to_match_not_just_the_address` by
+    /// asserting the consequence at the frontier — the place the decision is
+    /// actually acted on.
+    #[test]
+    fn a_changed_intent_at_a_recorded_address_stays_on_the_frontier() {
+        let old = change("r", serde_json::json!({ "visibility": "private" }));
+        let new = change("r", serde_json::json!({ "visibility": "public" }));
+
+        let mut c = ApplyCursor::empty(plan_id(1));
+        c.complete(&old);
+
+        assert!(
+            c.covers(&old),
+            "the recorded intent itself must be covered — otherwise nothing is skipped ever"
+        );
+        let front = c.frontier(std::slice::from_ref(&new));
+        assert_eq!(
+            front.len(),
+            1,
+            "a different desired value at a recorded address must survive the frontier; \
+             dropping it would be a silent no-op reported as success"
+        );
+    }
+
+    // ── I3 · the FSM models partial application ────────────────────
+
+    /// Every arm that is not `Completed` carries a resumable position.
+    ///
+    /// This is a **compile-time** forcing function, not a runtime one. The
+    /// match is exhaustive with no wildcard, so adding a `CycleOutcome` arm
+    /// that stops mid-plan *without* a cursor would fail to compile here —
+    /// which is the point. "Applied, position unknown" has no inhabitant.
+    #[test]
+    fn every_unfinished_outcome_carries_a_resumable_position() {
+        fn position(o: &CycleOutcome) -> Option<&ApplyCursor> {
+            match o {
+                // The only arm permitted to have no position, because there is
+                // nothing left to resume.
+                CycleOutcome::Completed { .. } => None,
+                CycleOutcome::Yielded { cursor, .. } => Some(cursor),
+                CycleOutcome::Stalled { cursor, .. } => Some(cursor),
+            }
+        }
+
+        let outcome = ApplyOutcome {
+            plan_id: plan_id(1),
+            state: magma_state::empty_state(),
+            applied: vec![],
+            failed: vec![],
+            started_at: chrono::Utc::now(),
+            finished_at: chrono::Utc::now(),
+        };
+        let cursor = ApplyCursor::empty(plan_id(1));
+        let stats = CycleStats::default();
+
+        let yielded = CycleOutcome::Yielded {
+            partial: outcome.clone(),
+            cursor: cursor.clone(),
+            progress: Progress::new(vec![addr("a")]).expect("non-empty"),
+            stats,
+        };
+        let stalled = CycleOutcome::Stalled {
+            partial: outcome.clone(),
+            cursor,
+            stats,
+        };
+        let completed = CycleOutcome::Completed { outcome, stats };
+
+        assert!(
+            position(&yielded).is_some(),
+            "a yield must know where it is"
+        );
+        assert!(
+            position(&stalled).is_some(),
+            "a stall must know where it is"
+        );
+        assert!(position(&completed).is_none());
+
+        // And the public accessor agrees with the exhaustive match above, so
+        // the guarantee cannot drift between them.
+        for o in [&yielded, &stalled] {
+            assert!(o.cursor().is_some());
+            assert!(
+                o.needs_another_cycle(),
+                "an unfinished cycle must ask to be re-run"
+            );
+        }
+        assert!(completed.cursor().is_none());
+        assert!(!completed.needs_another_cycle());
     }
 }

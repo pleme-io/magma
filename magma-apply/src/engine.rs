@@ -702,11 +702,7 @@ pub async fn run_plan_with_providers_resumable(
     // something at this address. Dropping a real change because an older,
     // different change to the same resource was recorded would be a silent
     // no-op reported as success.
-    let pending: Vec<&ResourceChange> = reals
-        .iter()
-        .copied()
-        .filter(|c| !cursor.covers(c))
-        .collect();
+    let pending: Vec<&ResourceChange> = cursor.frontier(reals.iter().copied());
 
     let real_keys: HashSet<(String, String)> = pending
         .iter()
@@ -4223,6 +4219,179 @@ mod tests {
             out.stats().nodes_attempted,
             3,
             "all three are outstanding — the stale entry covers none of them"
+        );
+    }
+
+    // ── T4 forcing functions ───────────────────────────────────────
+
+    // ── I4 · the wave structure is used, not discarded ─────────────
+
+    /// The apply path never re-linearises the wave decomposition.
+    ///
+    /// # Tier — read this before trusting it
+    ///
+    /// The *accidental* flatten is already truly-unrepresentable: `Waves` and
+    /// `Wave` are opaque, neither is `IntoIterator` and neither `Deref`s to a
+    /// slice, so `waves.into_iter().flatten().collect()` — the exact shape of
+    /// the original defect at the old engine.rs:547 — does not compile.
+    ///
+    /// A *deliberate* linearisation still compiles, and is meant to:
+    /// `Waves::into_sequential_order` exists for the provider-free structural
+    /// apply, which really is sequential. Sealing intent is not something the
+    /// type system does, and is not claimed.
+    ///
+    /// So this is a **CI-caught forcing function**, not a compile error: it
+    /// asserts the provider-backed engine — the one path where losing the wave
+    /// structure would silently discard the parallelism the graph computed — is
+    /// not the caller that reaches for it. Written against `include_str!`, so
+    /// it is hermetic (the source is embedded at compile time; no filesystem
+    /// path is resolved at run time).
+    #[test]
+    fn the_provider_apply_never_linearises_the_wave_decomposition() {
+        // Assembled from fragments so the needles do not match this test's own
+        // source text — otherwise the lint would trip on itself.
+        let source = include_str!("engine.rs");
+        let linearise = ["into_", "sequential_order"].concat();
+        let flatten = [".flat_map(", "Wave::iter)"].concat();
+
+        for needle in [linearise.as_str(), flatten.as_str()] {
+            let hits: Vec<(usize, &str)> = source
+                .lines()
+                .enumerate()
+                .map(|(i, l)| (i + 1, l.trim()))
+                // A mention in prose is not a call site. Skipping comments is
+                // what lets the rule be *explained* in this file without the
+                // explanation tripping it.
+                .filter(|(_, l)| !l.starts_with("//"))
+                .filter(|(_, l)| l.contains(needle))
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "the provider-backed apply must consume waves AS waves — \
+                 `{needle}` collapses the dependency structure the graph just \
+                 computed, which is the defect this seal exists to prevent. \
+                 Found at: {hits:?}"
+            );
+        }
+    }
+
+    /// A graph error costs parallelism, never correctness.
+    ///
+    /// The latent hazard this pins: the old fallback built ONE wide wave from
+    /// plan order, which *asserts an antichain* — "none of these depend on each
+    /// other" — precisely the fact that just failed to be established. Harmless
+    /// while execution was sequential; a concurrent executor would have acted on
+    /// it and run mutually-dependent changes at once.
+    ///
+    /// So the fallback must have width 1. This test fails if anyone widens it.
+    #[test]
+    fn a_graph_error_degrades_to_width_one_never_false_parallelism() {
+        let addrs: Vec<ResourceAddress> = ["a", "b", "c"].iter().map(|n| repo_addr(n)).collect();
+        let waves = magma_graph::Waves::sequential(addrs.clone());
+
+        assert_eq!(
+            waves.max_width(),
+            1,
+            "the graph-error fallback must not claim that unordered changes are \
+             independent — a concurrent executor would believe it"
+        );
+        assert_eq!(
+            waves.iter().count(),
+            addrs.len(),
+            "every address becomes its own dependency step"
+        );
+    }
+
+    // ── I5 · concurrency never exceeds the safe rate ───────────────
+
+    /// The configured rate bound is *enforced*, not hoped for.
+    ///
+    /// Needs no provider, and that is the point: `apply_one` acquires its
+    /// rate-limiter token **before** it resolves the provider, so an
+    /// unreachable provider still pays the pace. The bound is therefore a
+    /// property of the engine's own control flow rather than of any particular
+    /// provider's behaviour, and this test measures it directly.
+    ///
+    /// # Scope — what this does NOT cover
+    ///
+    /// The **mutation** path only. `refresh_state` reads pass
+    /// `None::<&LeakyBucket>` and are genuinely unpaced today; this test would
+    /// not notice. Closing that needs a type — a `Paced<'_>` witness the
+    /// mutating provider methods demand, which would make "forgot the pacer"
+    /// a compile error instead of a reviewer's job — and that is NOT built.
+    /// So the honest statement is: the mutation path's pacing is *tested*, the
+    /// refresh path's absence of pacing is *known and unsealed*.
+    ///
+    /// # Tier
+    ///
+    /// Only-mitigated, and a **C2/C4 ceiling** rather than debt: the provider's
+    /// true safe rate is an external-world fact discovered from response
+    /// headers. What is sealed here is that the rate the engine was *told* to
+    /// hold is actually held — the plumbing, not the number.
+    #[tokio::test]
+    async fn the_configured_rate_bound_is_enforced_not_hoped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // 60 requests/hour would be a minute apart; scale to something a test
+        // can wait on: 36_000 rph = 10/s = one mutation per ~100ms.
+        let ctx = unpaced_ctx(dir.path()).with_pace_rph(36_000.0);
+        assert!(
+            ctx.pacer.is_some(),
+            "the pacer must be configured for this test to mean anything"
+        );
+
+        let plan = plan_of_creates(&["a", "b", "c"]);
+        let mut state = empty_state();
+
+        let start = std::time::Instant::now();
+        let out =
+            run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None, None).await;
+        let elapsed = start.elapsed();
+
+        // Three mutations at 10/s. The bucket permits an initial token
+        // immediately (burst = 1), so the floor is the two *subsequent*
+        // waits: >= ~200ms. Asserted with slack so a loaded machine cannot
+        // make this flaky in the false-failure direction.
+        assert!(
+            elapsed >= std::time::Duration::from_millis(150),
+            "three paced mutations finished in {elapsed:?} — the rate bound was \
+             not applied; an unpaced apply is how a provider's secondary rate \
+             limit gets tripped"
+        );
+        assert_eq!(
+            out.stats().nodes_attempted,
+            3,
+            "all three must have been attempted — otherwise the elapsed time \
+             above proves nothing about pacing"
+        );
+        assert!(
+            out.stats().pacer_wait_ms_total >= 150,
+            "the pacer wait must be MEASURED, not merely incurred — this number \
+             is what decides whether concurrency could ever help; got {}ms",
+            out.stats().pacer_wait_ms_total
+        );
+    }
+
+    /// Turning the pacer off really does remove the bound.
+    ///
+    /// Without this, the test above could pass on a machine slow enough to
+    /// spend 150ms doing nothing in particular — it would be measuring the
+    /// machine, not the pacer. This is the negative control that makes the
+    /// positive assertion mean something.
+    #[tokio::test]
+    async fn an_unpaced_apply_pays_no_rate_limiter_wait() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = unpaced_ctx(dir.path());
+        assert!(ctx.pacer.is_none());
+
+        let plan = plan_of_creates(&["a", "b", "c"]);
+        let mut state = empty_state();
+        let out =
+            run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None, None).await;
+
+        assert_eq!(
+            out.stats().pacer_wait_ms_total,
+            0,
+            "no pacer configured must mean no pacer wait"
         );
     }
 }
