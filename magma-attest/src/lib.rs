@@ -9,17 +9,33 @@
 use blake3::Hasher;
 use magma_types::PlanId;
 
+/// BLAKE3 of `bytes` as a raw 32-byte content address.
+///
+/// The one hashing primitive in magma. Every content address the executor
+/// mints — a [`PlanId`], a change fingerprint, an artifact hash — goes through
+/// here rather than reaching for `blake3` at the call site, so "what algorithm
+/// addresses our content" has exactly one answer and cannot drift between
+/// crates.
+///
+/// Like [`hash_plan_inputs`], this imposes no canonicalization: ordering the
+/// bytes deterministically is the caller's job, because only the caller knows
+/// what "the same thing" means for its domain.
+#[must_use]
+pub fn hash_bytes32(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Hasher::new();
+    hasher.update(bytes);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hasher.finalize().as_bytes());
+    out
+}
+
 /// Compute a `PlanId` (BLAKE3) over the canonical-bytes serialization of a
 /// plan's inputs. Bytes must be ordered deterministically by the caller —
 /// `magma-attest` does not impose a canonicalization here; that's a Plan
 /// concern.
 #[must_use]
 pub fn hash_plan_inputs(bytes: &[u8]) -> PlanId {
-    let mut hasher = Hasher::new();
-    hasher.update(bytes);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(hasher.finalize().as_bytes());
-    PlanId(out)
+    PlanId(hash_bytes32(bytes))
 }
 
 #[cfg(test)]

@@ -44,6 +44,12 @@
 //!   at parse time (see [`CursorError`]), so the tier there is
 //!   *parse-time-rejected*, not truly-unrepresentable. Both halves are stated
 //!   because they are genuinely different guarantees.
+//! * **No silent skip of a different change.** Each entry records a
+//!   [`ChangeFingerprint`] — a content address over the change's *intent* —
+//!   and [`ApplyCursor::covers`] requires it to match before skipping. An
+//!   address-keyed cursor could quietly not apply a real change whose address
+//!   happened to be recorded; a fingerprint-keyed one cannot. The predicate is
+//!   safety-monotone: it can only cause more re-application, never less.
 //! * **No resume against the wrong plan.** A cursor is bound to the
 //!   [`PlanId`] it was created for, and [`PlanId`] is already a BLAKE3 hash
 //!   of `(changes, state_serial, state_lineage)` — magma had the content
@@ -52,20 +58,29 @@
 //!   there is no expressible program that resumes one plan's progress into a
 //!   different plan.
 //!
+//! # Durability is a separate concern, and it is [`crate::checkpoint`]'s
+//!
+//! A cursor held only in memory is lost when the process dies, so on its own
+//! this type bounds the loss at one *cycle*, not one node. Writing
+//! `(state, cursor)` durably as each node completes is what actually shrinks
+//! the window, and that is [`crate::checkpoint::CheckpointSink`]'s job. The
+//! two are designed together: the cursor is the position, the checkpoint makes
+//! the position survive.
+//!
 //! What is deliberately *not* claimed: that a resumed apply can never
 //! duplicate a create against the real cloud. Cloud I/O is not
 //! transactional — a create can commit provider-side in the instant between
 //! the RPC returning and the checkpoint committing. No type removes that.
 //! The honest claim is at-least-once with typed adopt-on-conflict (see
-//! `import_prepass::import_on_conflict`), and what chunking buys is that the
-//! exposure window shrinks from a whole cycle to a single node.
+//! `import_prepass::import_on_conflict`), and what per-node checkpointing buys
+//! is that the exposure window shrinks from a whole cycle to a single node.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use magma_types::{PlanId, Plan, ResourceAddress};
-use serde::{Deserialize, Serialize};
+use magma_types::{Action, Plan, PlanId, ResourceAddress, ResourceChange};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 use crate::ApplyOutcome;
@@ -172,6 +187,116 @@ impl From<Progress> for Vec<ResourceAddress> {
     }
 }
 
+// ── ChangeFingerprint ──────────────────────────────────────────────
+
+/// Content address of a change's *intent*: BLAKE3 over `(address, action,
+/// after)`.
+///
+/// # Why the cursor is keyed on this and not on the address alone
+///
+/// An address-keyed cursor says "we did something to `github_repository.foo`".
+/// A fingerprint-keyed one says "we drove `github_repository.foo` to *this*
+/// desired value". Only the second is self-verifying: it carries, in the entry
+/// itself, a proof of which change it recorded, instead of inheriting that
+/// meaning from an external plan-identity check.
+///
+/// That matters because the skip is a *silent* operation. If a cursor entry's
+/// address matched but the plan's change for that address had different
+/// content, an address-keyed skip would quietly not apply a real change and
+/// still report success — the same silent-drop failure class the checkpoint
+/// seam defends from the other side (see [`crate::checkpoint`]).
+///
+/// The predicate is safety-monotone with respect to the address-only one it
+/// replaces: requiring fingerprint equality *as well as* address equality can
+/// only ever cause **more** re-application, never less. Re-application is the
+/// safe direction (a duplicate is rejected and adopted); a silent drop is not.
+///
+/// # What is hashed, and what is deliberately not
+///
+/// * `address` and `action` — identity and verb.
+/// * `after` — the desired end value. This is the intent.
+/// * **not** `before` — the pre-apply value, read from state. Two changes that
+///   drive a resource to the same `after` are the same intent even if their
+///   starting points differ, and if we have already driven the resource there,
+///   skipping is correct. Including `before` would also make the fingerprint
+///   sensitive to unrelated state churn, causing needless re-application.
+/// * **not** `reasons` — explanatory metadata, not intent.
+///
+/// The bytes are `serde_json` over a fixed field order, and `serde_json::Map`
+/// is a `BTreeMap` in this workspace (the `preserve_order` feature is off), so
+/// object keys are sorted and the hash is stable under key reordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ChangeFingerprint([u8; 32]);
+
+/// The exact bytes hashed. A named struct rather than a tuple so the field
+/// order is explicit and reviewable — changing it changes every fingerprint.
+#[derive(Serialize)]
+struct FingerprintInputs<'a> {
+    address: &'a ResourceAddress,
+    action: Action,
+    after: Option<&'a serde_json::Value>,
+}
+
+impl ChangeFingerprint {
+    /// Fingerprint a change.
+    ///
+    /// Serialization of a `ResourceChange`'s own fields cannot fail (it is
+    /// plain data that round-trips through the plan artifact already), but
+    /// rather than unwrap, an encode error degrades to a distinct sentinel
+    /// hash. A sentinel compares unequal to any real fingerprint, so the
+    /// failure mode is "this never matches, so never skip" — the safe
+    /// direction, by construction.
+    #[must_use]
+    pub fn of(change: &ResourceChange) -> Self {
+        let inputs = FingerprintInputs {
+            address: &change.address,
+            action: change.action,
+            after: change.after.as_ref(),
+        };
+        match serde_json::to_vec(&inputs) {
+            Ok(bytes) => Self(magma_attest::hash_bytes32(&bytes)),
+            Err(_) => Self([0u8; 32]),
+        }
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        hex::encode(self.0)
+    }
+}
+
+/// Hex on the wire — a cursor is read by humans in a Postgres row, and 32
+/// decimal numbers in a JSON array is not that.
+impl Serialize for ChangeFingerprint {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for ChangeFingerprint {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let s = String::deserialize(d)?;
+        let raw = hex::decode(&s).map_err(D::Error::custom)?;
+        let bytes: [u8; 32] = raw
+            .try_into()
+            .map_err(|_| D::Error::custom("change fingerprint must be 32 bytes"))?;
+        Ok(Self(bytes))
+    }
+}
+
+/// One applied change: which resource, and which version of the change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletedChange {
+    pub address: ResourceAddress,
+    pub fingerprint: ChangeFingerprint,
+}
+
 // ── ApplyCursor ────────────────────────────────────────────────────
 
 /// One cached deferred data-source read.
@@ -186,7 +311,7 @@ pub struct DataResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApplyCursorWire {
     plan_id: PlanId,
-    completed: Vec<ResourceAddress>,
+    completed: Vec<CompletedChange>,
     #[serde(default)]
     data_results: Vec<DataResult>,
 }
@@ -205,10 +330,10 @@ struct ApplyCursorWire {
 #[serde(try_from = "ApplyCursorWire", into = "ApplyCursorWire")]
 pub struct ApplyCursor {
     plan_id: PlanId,
-    completed: Vec<ResourceAddress>,
-    completed_set: HashSet<ResourceAddress>,
+    completed: Vec<CompletedChange>,
+    completed_index: HashMap<ResourceAddress, ChangeFingerprint>,
     data_results: Vec<DataResult>,
-    data_set: HashSet<ResourceAddress>,
+    data_index: HashMap<ResourceAddress, usize>,
 }
 
 impl ApplyCursor {
@@ -217,9 +342,9 @@ impl ApplyCursor {
         Self {
             plan_id,
             completed: Vec::new(),
-            completed_set: HashSet::new(),
+            completed_index: HashMap::new(),
             data_results: Vec::new(),
-            data_set: HashSet::new(),
+            data_index: HashMap::new(),
         }
     }
 
@@ -227,9 +352,14 @@ impl ApplyCursor {
         self.plan_id
     }
 
-    /// Addresses applied so far, in completion order.
-    pub fn completed(&self) -> &[ResourceAddress] {
+    /// Changes applied so far, in completion order.
+    pub fn completed(&self) -> &[CompletedChange] {
         &self.completed
+    }
+
+    /// Just the addresses, in completion order.
+    pub fn completed_addresses(&self) -> impl Iterator<Item = &ResourceAddress> {
+        self.completed.iter().map(|c| &c.address)
     }
 
     pub fn len(&self) -> usize {
@@ -240,8 +370,32 @@ impl ApplyCursor {
         self.completed.is_empty() && self.data_results.is_empty()
     }
 
+    /// Has *some* change for this address been applied?
+    ///
+    /// The weaker of the two questions, and deliberately **not** what the
+    /// engine skips on — see [`ApplyCursor::covers`]. Kept for introspection
+    /// and for callers that genuinely want the address-level fact.
     pub fn contains(&self, addr: &ResourceAddress) -> bool {
-        self.completed_set.contains(addr)
+        self.completed_index.contains_key(addr)
+    }
+
+    /// The fingerprint recorded for this address, if any.
+    pub fn fingerprint_of(&self, addr: &ResourceAddress) -> Option<ChangeFingerprint> {
+        self.completed_index.get(addr).copied()
+    }
+
+    /// Is **this exact change** already applied?
+    ///
+    /// The skip predicate. Both the address and the fingerprint must match, so
+    /// a cursor entry can never cause a *different* change to the same resource
+    /// to be silently skipped. A mismatch means the recorded change and the
+    /// planned change are not the same intent, and the honest answer is to
+    /// apply — re-application is absorbed by adopt-on-conflict, a silent drop
+    /// is not absorbed by anything.
+    pub fn covers(&self, change: &ResourceChange) -> bool {
+        self.completed_index
+            .get(&change.address)
+            .is_some_and(|fp| *fp == ChangeFingerprint::of(change))
     }
 
     /// A previously-cached deferred data-source read, if this cursor has one.
@@ -251,12 +405,9 @@ impl ApplyCursor {
     /// *not* persisted in `State`, so without the cache every cycle would
     /// re-run all of them before reaching any new mutation.
     pub fn data_result(&self, addr: &ResourceAddress) -> Option<&serde_json::Value> {
-        if !self.data_set.contains(addr) {
-            return None;
-        }
-        self.data_results
-            .iter()
-            .find(|d| &d.address == addr)
+        self.data_index
+            .get(addr)
+            .and_then(|i| self.data_results.get(*i))
             .map(|d| &d.value)
     }
 
@@ -264,22 +415,38 @@ impl ApplyCursor {
         &self.data_results
     }
 
-    /// Record an applied address. Idempotent; returns `true` if this call
+    /// Record an applied change. Idempotent; returns `true` if this call
     /// actually advanced the cursor.
-    pub fn complete(&mut self, addr: ResourceAddress) -> bool {
-        if !self.completed_set.insert(addr.clone()) {
+    ///
+    /// Takes the change rather than the address so the entry carries its own
+    /// fingerprint — the cursor records *what* was applied, not merely *that*
+    /// something was.
+    pub fn complete(&mut self, change: &ResourceChange) -> bool {
+        let fingerprint = ChangeFingerprint::of(change);
+        if self
+            .completed_index
+            .insert(change.address.clone(), fingerprint)
+            .is_some()
+        {
+            // Already recorded. Note this does not overwrite the stored entry's
+            // fingerprint in `completed` — append-only means the first record
+            // stands.
             return false;
         }
-        self.completed.push(addr);
+        self.completed.push(CompletedChange {
+            address: change.address.clone(),
+            fingerprint,
+        });
         true
     }
 
     /// Cache a deferred data-source read. Idempotent; returns `true` if this
     /// call actually advanced the cursor.
     pub fn record_data(&mut self, addr: ResourceAddress, value: serde_json::Value) -> bool {
-        if !self.data_set.insert(addr.clone()) {
+        if self.data_index.contains_key(&addr) {
             return false;
         }
+        self.data_index.insert(addr.clone(), self.data_results.len());
         self.data_results.push(DataResult {
             address: addr,
             value,
@@ -325,17 +492,20 @@ impl TryFrom<ApplyCursorWire> for ApplyCursor {
     type Error = CursorError;
 
     fn try_from(w: ApplyCursorWire) -> Result<Self, Self::Error> {
-        let mut completed_set = HashSet::with_capacity(w.completed.len());
-        for a in &w.completed {
-            if !completed_set.insert(a.clone()) {
+        let mut completed_index = HashMap::with_capacity(w.completed.len());
+        for c in &w.completed {
+            if completed_index
+                .insert(c.address.clone(), c.fingerprint)
+                .is_some()
+            {
                 return Err(CursorError::DuplicateCompleted {
-                    address: describe(a),
+                    address: describe(&c.address),
                 });
             }
         }
-        let mut data_set = HashSet::with_capacity(w.data_results.len());
-        for d in &w.data_results {
-            if !data_set.insert(d.address.clone()) {
+        let mut data_index = HashMap::with_capacity(w.data_results.len());
+        for (i, d) in w.data_results.iter().enumerate() {
+            if data_index.insert(d.address.clone(), i).is_some() {
                 return Err(CursorError::DuplicateDataResult {
                     address: describe(&d.address),
                 });
@@ -344,9 +514,9 @@ impl TryFrom<ApplyCursorWire> for ApplyCursor {
         Ok(Self {
             plan_id: w.plan_id,
             completed: w.completed,
-            completed_set,
+            completed_index,
             data_results: w.data_results,
-            data_set,
+            data_index,
         })
     }
 }
@@ -405,6 +575,13 @@ pub struct CycleStats {
     /// attempts, not successes — each one spends a rate-limiter token either
     /// way, and this exists to measure what the prologue actually costs.
     pub data_reads_performed: usize,
+    /// Durable checkpoints accepted this cycle — one per applied node plus one
+    /// per newly-cached deferred read. Zero with no sink configured.
+    pub checkpoints_written: usize,
+    /// Checkpoints the sink rejected. Any non-zero value means the cycle
+    /// stopped early to keep the unrecorded set bounded, and that durability
+    /// — not the quantum, not the providers — is the thing to fix.
+    pub checkpoint_failures: usize,
 }
 
 // ── CycleOutcome ───────────────────────────────────────────────────
@@ -508,6 +685,21 @@ mod tests {
         PlanId([b; 32])
     }
 
+    /// A `Create` change driving `name` to `after`.
+    fn change(name: &str, after: serde_json::Value) -> ResourceChange {
+        ResourceChange {
+            address: addr(name),
+            action: Action::Create,
+            before: None,
+            after: Some(after),
+            reasons: vec![],
+        }
+    }
+
+    fn create(name: &str) -> ResourceChange {
+        change(name, serde_json::json!({ "name": name }))
+    }
+
     #[test]
     fn quantum_rejects_zero() {
         assert!(Quantum::new(Duration::ZERO).is_none());
@@ -531,9 +723,9 @@ mod tests {
     #[test]
     fn cursor_is_append_only_and_idempotent() {
         let mut c = ApplyCursor::empty(plan_id(1));
-        assert!(c.complete(addr("a")));
-        assert!(!c.complete(addr("a")), "re-completing must not advance");
-        assert!(c.complete(addr("b")));
+        assert!(c.complete(&create("a")));
+        assert!(!c.complete(&create("a")), "re-completing must not advance");
+        assert!(c.complete(&create("b")));
         assert_eq!(c.len(), 2);
         assert!(c.contains(&addr("a")));
         assert!(!c.contains(&addr("z")));
@@ -542,8 +734,8 @@ mod tests {
     #[test]
     fn cursor_round_trips_through_serde() {
         let mut c = ApplyCursor::empty(plan_id(7));
-        c.complete(addr("a"));
-        c.complete(addr("b"));
+        c.complete(&create("a"));
+        c.complete(&create("b"));
         c.record_data(addr("d1"), serde_json::json!({"id": "x"}));
 
         let json = serde_json::to_string(&c).expect("serialize");
@@ -551,6 +743,10 @@ mod tests {
 
         assert_eq!(back.plan_id(), plan_id(7));
         assert_eq!(back.completed(), c.completed());
+        assert!(
+            back.covers(&create("a")),
+            "a round-tripped cursor must still cover what it recorded"
+        );
         assert_eq!(
             back.data_result(&addr("d1")),
             Some(&serde_json::json!({"id": "x"}))
@@ -562,9 +758,13 @@ mod tests {
         // A hand-edited or corrupted cursor must not be able to smuggle a
         // non-monotone completed set past the boundary.
         let pid = serde_json::to_value(plan_id(0)).expect("plan id serializes");
+        let entry = serde_json::json!({
+            "address": addr("a"),
+            "fingerprint": ChangeFingerprint::of(&create("a")).to_hex(),
+        });
         let wire = serde_json::json!({
             "plan_id": pid,
-            "completed": [addr("a"), addr("a")],
+            "completed": [entry, entry],
             "data_results": [],
         });
         let err = serde_json::from_value::<ApplyCursor>(wire).unwrap_err();
@@ -572,6 +772,93 @@ mod tests {
             err.to_string().contains("more than once"),
             "unexpected error: {err}"
         );
+    }
+
+    // ── Content-addressed identity ─────────────────────────────────
+
+    #[test]
+    fn a_fingerprint_is_stable_and_intent_sensitive() {
+        let a1 = ChangeFingerprint::of(&create("a"));
+        let a2 = ChangeFingerprint::of(&create("a"));
+        assert_eq!(a1, a2, "the same change must fingerprint identically");
+
+        // A different desired value is a different intent.
+        let different_after = ChangeFingerprint::of(&change("a", serde_json::json!({"name": "z"})));
+        assert_ne!(a1, different_after);
+
+        // A different address is a different change.
+        assert_ne!(a1, ChangeFingerprint::of(&create("b")));
+
+        // A different verb is a different change.
+        let mut updated = create("a");
+        updated.action = Action::Update;
+        assert_ne!(a1, ChangeFingerprint::of(&updated));
+    }
+
+    #[test]
+    fn a_fingerprint_ignores_before_and_reasons() {
+        // `before` is where the resource started; the fingerprint records where
+        // we drove it. Two changes with the same destination are the same
+        // intent, and skipping the second is correct.
+        let mut with_before = create("a");
+        with_before.before = Some(serde_json::json!({"name": "stale"}));
+        with_before.reasons = vec![];
+        assert_eq!(
+            ChangeFingerprint::of(&create("a")),
+            ChangeFingerprint::of(&with_before)
+        );
+    }
+
+    #[test]
+    fn a_fingerprint_is_stable_under_json_key_order() {
+        // `serde_json::Map` is a BTreeMap in this workspace, so an `after`
+        // written with keys in a different order hashes the same. If someone
+        // ever turns on `preserve_order`, this test is the tripwire.
+        let one = change("a", serde_json::json!({ "x": 1, "y": 2 }));
+        let other = change("a", serde_json::json!({ "y": 2, "x": 1 }));
+        assert_eq!(
+            ChangeFingerprint::of(&one),
+            ChangeFingerprint::of(&other),
+            "object key order must not change a fingerprint"
+        );
+    }
+
+    #[test]
+    fn covers_requires_the_fingerprint_to_match_not_just_the_address() {
+        let mut c = ApplyCursor::empty(plan_id(1));
+        c.complete(&create("a"));
+
+        assert!(c.covers(&create("a")), "the recorded change is covered");
+        assert!(
+            c.contains(&addr("a")),
+            "the address-level question is still true"
+        );
+
+        // Same address, different intent. The address-only predicate would say
+        // "skip" and silently drop this change; `covers` must not.
+        let redirected = change("a", serde_json::json!({ "name": "somewhere-else" }));
+        assert!(
+            !c.covers(&redirected),
+            "a different change to a recorded address must NOT be skipped"
+        );
+        assert!(
+            c.contains(&redirected.address),
+            "…even though the weaker address predicate still matches — which is \
+             exactly why the engine skips on `covers`, not `contains`"
+        );
+    }
+
+    #[test]
+    fn a_fingerprint_round_trips_as_hex() {
+        let fp = ChangeFingerprint::of(&create("a"));
+        let json = serde_json::to_string(&fp).expect("serialize");
+        assert!(json.starts_with('"'), "fingerprints serialize as hex: {json}");
+        let back: ChangeFingerprint = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(fp, back);
+
+        // Wrong length is rejected at the boundary rather than truncated.
+        assert!(serde_json::from_str::<ChangeFingerprint>("\"abcd\"").is_err());
+        assert!(serde_json::from_str::<ChangeFingerprint>("\"zz\"").is_err());
     }
 
     #[test]
@@ -594,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn data_result_cache_is_a_hit_only_for_recorded_addresses() {
+    fn cursor_data_reads_are_a_hit_only_for_recorded_addresses() {
         let mut c = ApplyCursor::empty(plan_id(1));
         assert!(c.data_result(&addr("d")).is_none());
         assert!(c.record_data(addr("d"), serde_json::json!(1)));

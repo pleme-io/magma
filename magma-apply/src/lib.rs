@@ -5,10 +5,21 @@
 //! come from `shigoto::Scheduler` (per `theory/MAGMA.md` §II.9).
 //!
 //! Execution is **sequential** within and across dependency waves, but it is
-//! **resumable**: [`engine::run_plan_with_providers_resumable`] does bounded
-//! work per cycle and records it in an [`ApplyCursor`], so a plan too large to
-//! finish in one window converges over N cycles instead of failing. That is
-//! what removes plan size as a precondition for convergence.
+//! **resumable** and **durable**:
+//!
+//! * [`engine::run_plan_with_providers_resumable`] does bounded work per cycle
+//!   and records it in an [`ApplyCursor`], so a plan too large to finish in one
+//!   window converges over N cycles instead of failing. That is what removes
+//!   plan size as a precondition for convergence.
+//! * Given a [`checkpoint::CheckpointSink`], it writes `(state, cursor)`
+//!   durably after **every** applied node and every newly-cached deferred read,
+//!   so a process killed mid-cycle loses at most one node's work rather than
+//!   the cycle's. Resumption without that is only bounded-loss on paper: the
+//!   cursor a cycle returns is worth nothing to a process that never returns.
+//!
+//! The cursor is keyed on a content-addressed [`ChangeFingerprint`], not on the
+//! address alone, so a recorded entry can never cause a *different* change to
+//! the same resource to be silently skipped.
 //!
 //! Still outstanding, and deliberately separate: `shigoto::Scheduler`-driven
 //! **concurrency** within a wave, plus budget enforcement. The waves already
@@ -22,13 +33,17 @@
 //! a typed `ApplyChange` Job.
 
 pub mod adopt;
+pub mod checkpoint;
 pub mod cursor;
 pub mod engine;
 pub mod import_prepass;
 pub mod shigoto_jobs;
 
+pub use checkpoint::{CheckpointError, CheckpointSink, MemoryCheckpointSink, NullCheckpointSink};
+
 pub use cursor::{
-    ApplyCursor, CursorError, CycleOutcome, CycleStats, DataResult, Progress, Quantum, Resume,
+    ApplyCursor, ChangeFingerprint, CompletedChange, CursorError, CycleOutcome, CycleStats,
+    DataResult, Progress, Quantum, Resume,
 };
 
 pub use import_prepass::{

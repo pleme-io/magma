@@ -30,6 +30,7 @@ use magma_types::{
     StateResource,
 };
 
+use crate::checkpoint::CheckpointSink;
 use crate::cursor::{ApplyCursor, CycleOutcome, CycleStats, Progress, Quantum, Resume};
 use crate::{AppliedChange, ApplyOutcome, FailedChange, insert_resource, remove_resource};
 
@@ -394,7 +395,9 @@ pub async fn run_plan_with_providers(
 ) -> ApplyOutcome {
     // No quantum ⇒ no yield point ⇒ `Completed` is the only reachable arm.
     // `into_outcome` keeps this wrapper total instead of asserting that.
-    run_plan_with_providers_resumable(plan, state, ctx, None, None)
+    // No checkpoint sink ⇒ nothing is written mid-cycle, so this path is
+    // byte-identical to the pre-resumption engine.
+    run_plan_with_providers_resumable(plan, state, ctx, None, None, None)
         .await
         .into_outcome()
 }
@@ -426,6 +429,24 @@ pub async fn run_plan_with_providers(
 /// they are not in any wave and have no path to execution — re-application is
 /// structurally impossible rather than guarded by a runtime check.
 ///
+/// # How progress survives a crash
+///
+/// Yielding a cursor at the end of a cycle only bounds the loss at one *cycle*
+/// — a process killed mid-cycle (spot reclaim, OOM, node roll) takes the whole
+/// record with it. Pass a [`CheckpointSink`] and the engine durably records
+/// `(state, cursor)` after **every** node it applies and every deferred read it
+/// caches, so at most one node's work is ever unrecorded.
+///
+/// The sink takes both halves in one call because the failure directions are
+/// not symmetric: a cursor written ahead of state makes a resumed cycle *skip*
+/// a resource that was never created — a silent drop — whereas state written
+/// ahead of the cursor merely re-attempts, which adopt-on-conflict absorbs.
+/// See [`crate::checkpoint`] for the full argument.
+///
+/// A checkpoint that fails stops the cycle. Continuing would grow the set of
+/// nodes whose work is not durably recorded, which is exactly the quantity
+/// checkpointing exists to bound.
+///
 /// # What this does not promise
 ///
 /// The quantum is only ever checked *between* nodes; an in-flight provider RPC
@@ -433,14 +454,15 @@ pub async fn run_plan_with_providers(
 /// window in which a create commits provider-side without being recorded. That
 /// window still exists (cloud I/O is not transactional), so the guarantee here
 /// is at-least-once with typed adopt-on-conflict, not exactly-once. What
-/// bounded cycles buy is that the window shrinks from a whole cycle to one
-/// node.
+/// per-node checkpointing buys is that the window shrinks from a whole cycle to
+/// one node.
 pub async fn run_plan_with_providers_resumable(
     plan: &Plan,
     state: &mut State,
     ctx: &ApplyContext,
     resume: Option<Resume<'_>>,
     quantum: Option<Quantum>,
+    checkpoint: Option<&dyn CheckpointSink>,
 ) -> CycleOutcome {
     let started_at = Utc::now();
     let cycle_start = Instant::now();
@@ -466,6 +488,11 @@ pub async fn run_plan_with_providers_resumable(
     // partially-populated resolution map is a correctness hazard, not just an
     // incomplete one.
     let mut prologue_exhausted = false;
+    // Set when a checkpoint could not be made durable. Treated exactly like an
+    // exhausted quantum: stop doing work, keep what we have, hand the caller a
+    // cursor. Pressing on would grow the set of nodes whose work is not
+    // durably recorded, which is the quantity checkpointing exists to bound.
+    let mut checkpoint_failed = false;
 
     let mut registry = Registry::new(ctx);
     let mut applied = Vec::new();
@@ -614,7 +641,20 @@ pub async fn run_plan_with_providers_resumable(
                 // workspace whose prologue is dominated by paced reads advances
                 // by exactly this each cycle, and calling that a stall would
                 // hide a working system.
-                if cursor.record_data(change.address.clone(), result.clone()) {
+                // Make the read durable before spending another token. A read
+                // costs a rate-limiter second, so losing one is a second of
+                // prologue the next cycle re-pays — the very cost the cursor's
+                // read cache exists to remove.
+                let recorded = record_data_read(
+                    &mut cursor,
+                    &change.address,
+                    &result,
+                    state,
+                    checkpoint,
+                    &mut stats,
+                )
+                .await;
+                if recorded.advanced() {
                     progressed.push(change.address.clone());
                 }
                 applied.push(AppliedChange {
@@ -623,6 +663,10 @@ pub async fn run_plan_with_providers_resumable(
                     before: None,
                     after: Some(result),
                 });
+                if recorded == Recorded::Undurable {
+                    checkpoint_failed = true;
+                    break;
+                }
             }
             Err(e) => failed.push(mkfail(change, e)),
         }
@@ -645,10 +689,16 @@ pub async fn run_plan_with_providers_resumable(
     // lookup, so no code path below can execute it. Its computed attributes
     // still resolve for dependents, because they were written into `state` when
     // it was applied and the resolution map is seeded from `state` on entry.
+    //
+    // The exclusion tests `covers`, not `contains`: the cursor must have
+    // recorded *this* change (address AND content fingerprint), not merely
+    // something at this address. Dropping a real change because an older,
+    // different change to the same resource was recorded would be a silent
+    // no-op reported as success.
     let pending: Vec<&ResourceChange> = reals
         .iter()
         .copied()
-        .filter(|c| !cursor.contains(&c.address))
+        .filter(|c| !cursor.covers(c))
         .collect();
 
     let real_keys: HashSet<(String, String)> = pending
@@ -688,10 +738,12 @@ pub async fn run_plan_with_providers_resumable(
     //
     // On a cycle / graph error, fall back to plan order as one big wave —
     // attempt the apply rather than refuse the whole cycle.
-    let waves: Vec<Vec<ResourceAddress>> = if prologue_exhausted {
-        // The resolution map is incomplete; applying now would substitute
-        // wrong values. Do nothing this cycle and let the yield carry the
-        // reads we did cache.
+    let waves: Vec<Vec<ResourceAddress>> = if prologue_exhausted || checkpoint_failed {
+        // The prologue was cut short — by the quantum, or by a checkpoint we
+        // could not make durable — so the resolution map is incomplete.
+        // Applying now would substitute *wrong* values, not merely fewer of
+        // them. Do nothing this cycle and let the yield carry the reads we did
+        // cache.
         Vec::new()
     } else {
         match graph.waves() {
@@ -703,7 +755,7 @@ pub async fn run_plan_with_providers_resumable(
         }
     };
 
-    let mut out_of_quantum = prologue_exhausted;
+    let mut out_of_quantum = prologue_exhausted || checkpoint_failed;
     'waves: for wave in &waves {
         stats.waves_entered += 1;
         for addr in wave {
@@ -734,10 +786,27 @@ pub async fn run_plan_with_providers_resumable(
                         sm_insert(&mut state_map, &change.address, attrs);
                     }
                     stats.nodes_completed += 1;
-                    if cursor.complete(change.address.clone()) {
+                    // Durability point. `state` was just mutated by
+                    // `apply_one`, so the sink sees a consistent pair:
+                    // everything the cursor claims, state proves.
+                    // Checkpointing HERE rather than at the end of the cycle is
+                    // what bounds a crash's loss at one node.
+                    //
+                    // The recorded change is the PLANNED one, not the
+                    // ref-substituted clone: `covers` is tested against the
+                    // plan's changes on a later cycle, and those are
+                    // unsubstituted.
+                    let recorded =
+                        record_change(&mut cursor, change, state, checkpoint, &mut stats).await;
+                    if recorded.advanced() {
                         progressed.push(change.address.clone());
                     }
                     applied.push(a);
+                    if recorded == Recorded::Undurable {
+                        checkpoint_failed = true;
+                        out_of_quantum = true;
+                        break 'waves;
+                    }
                 }
                 // A failed change is deliberately NOT recorded as completed —
                 // the next cycle retries it. Recording it would make the cursor
@@ -797,6 +866,19 @@ pub async fn run_plan_with_providers_resumable(
         };
     }
 
+    // Durability, not the quantum, ended this cycle. Say so plainly: the
+    // remedy is a working checkpoint sink, and an operator reading only
+    // "yielded" would otherwise go tuning the quantum, which cannot help.
+    if checkpoint_failed {
+        tracing::error!(
+            checkpoint_failures = stats.checkpoint_failures,
+            nodes_completed = stats.nodes_completed,
+            nodes_remaining = remaining,
+            "magma apply: cycle ended on a durability failure, not the quantum — \
+             progress beyond this point would not have been recoverable"
+        );
+    }
+
     // The only place a yield-vs-stall verdict is made. `Progress::new` returns
     // `None` for an empty witness, so a cycle that advanced nothing CANNOT be
     // dressed up as a yield — it lands in `Stalled`, which says the quantum
@@ -829,6 +911,125 @@ pub async fn run_plan_with_providers_resumable(
 /// what the run-to-completion wrapper passes.
 fn past_deadline(deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|d| Instant::now() >= d)
+}
+
+/// What happened when a durable advance was recorded.
+///
+/// Three arms, not a `(bool, bool)` pair, because "did not advance but is not
+/// durable" is not a thing that can happen — nothing is written when nothing
+/// advanced — and a pair would let that state be constructed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recorded {
+    /// The cursor already had this. Nothing written, nothing to do.
+    AlreadyPresent,
+    /// Advanced and made durable. Carry on.
+    Durable,
+    /// Advanced, but the position could not be made durable. The caller must
+    /// stop applying — the cursor is ahead of the store, and widening that gap
+    /// is the one thing checkpointing exists to prevent.
+    Undurable,
+}
+
+impl Recorded {
+    /// Did the cursor move? True for both advance arms — an advance that could
+    /// not be persisted is still an advance in memory, and the caller must
+    /// count it as progress or it would mis-report a real change as a stall.
+    fn advanced(self) -> bool {
+        matches!(self, Recorded::Durable | Recorded::Undurable)
+    }
+}
+
+/// Record an applied change and make the new position durable.
+///
+/// **The order is the invariant.** The cursor is advanced *before* the
+/// checkpoint, so the sink always observes a position that already covers the
+/// change whose effect is in `state`. Checkpointing first would hand the store
+/// a cursor that omits work `state` reflects; on resume that node would be
+/// re-attempted — the tolerable direction, but still the wrong one to bake in.
+///
+/// This is a named function rather than four inline lines specifically so the
+/// ordering can be proved without a live provider: `Registry` spawns real
+/// plugin subprocesses, so no unit test can produce a *successful* managed
+/// apply through the engine's main loop.
+async fn record_change(
+    cursor: &mut ApplyCursor,
+    change: &ResourceChange,
+    state: &State,
+    sink: Option<&dyn CheckpointSink>,
+    stats: &mut CycleStats,
+) -> Recorded {
+    if !cursor.complete(change) {
+        return Recorded::AlreadyPresent;
+    }
+    if checkpoint_now(sink, state, cursor, stats, "node").await {
+        Recorded::Durable
+    } else {
+        Recorded::Undurable
+    }
+}
+
+/// Record a deferred data-source read and make the new position durable.
+///
+/// Same ordering rule as [`record_change`]. A read is worth persisting even
+/// though it changes no `state`: it costs a rate-limiter token, so losing one
+/// is a second of prologue the next cycle has to re-pay.
+async fn record_data_read(
+    cursor: &mut ApplyCursor,
+    address: &ResourceAddress,
+    value: &serde_json::Value,
+    state: &State,
+    sink: Option<&dyn CheckpointSink>,
+    stats: &mut CycleStats,
+) -> Recorded {
+    if !cursor.record_data(address.clone(), value.clone()) {
+        return Recorded::AlreadyPresent;
+    }
+    if checkpoint_now(sink, state, cursor, stats, "data-read").await {
+        Recorded::Durable
+    } else {
+        Recorded::Undurable
+    }
+}
+
+/// Make the current `(state, cursor)` pair durable. Returns `false` if the
+/// caller should stop applying.
+///
+/// `None` — no sink — is a *success*, not a skip-and-warn: an apply with no
+/// sink is the pre-existing unbounded path, which never wrote anything
+/// mid-cycle and must keep behaving exactly as it did.
+///
+/// A real failure is not propagated as an error, because the work already
+/// applied must not be thrown away over a storage hiccup. It is reported, the
+/// stat is bumped, and the cycle winds down with a cursor the caller can still
+/// persist itself. What the caller must NOT do is keep applying, which is why
+/// this returns a decision rather than a `Result` the call site could ignore.
+async fn checkpoint_now(
+    sink: Option<&dyn CheckpointSink>,
+    state: &State,
+    cursor: &ApplyCursor,
+    stats: &mut CycleStats,
+    site: &'static str,
+) -> bool {
+    let Some(sink) = sink else {
+        return true;
+    };
+    match sink.checkpoint(state, cursor).await {
+        Ok(()) => {
+            stats.checkpoints_written += 1;
+            true
+        }
+        Err(e) => {
+            stats.checkpoint_failures += 1;
+            tracing::error!(
+                error = %e,
+                site,
+                completed = cursor.len(),
+                "magma apply: checkpoint failed — stopping this cycle so the \
+                 unrecorded set stays bounded"
+            );
+            false
+        }
+    }
 }
 
 fn elapsed_ms(start: Instant) -> u64 {
@@ -3232,6 +3433,15 @@ mod tests {
         }
     }
 
+    /// The plan's change for `name`. A cursor records changes, not addresses,
+    /// so tests must hand it the same value the engine would.
+    fn change_in<'a>(plan: &'a Plan, name: &str) -> &'a ResourceChange {
+        plan.resource_changes
+            .iter()
+            .find(|c| c.address.name == name)
+            .expect("change present in plan")
+    }
+
     /// A plan of independent `Create`s — no references, so the graph is one
     /// wave and ordering plays no part in what these tests measure.
     fn plan_of_creates(names: &[&str]) -> Plan {
@@ -3293,7 +3503,7 @@ mod tests {
         // Baseline: nothing completed, so all three are attempted.
         let mut state = empty_state();
         let fresh =
-            run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None).await;
+            run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None, None).await;
         assert_eq!(
             fresh.stats().nodes_attempted,
             3,
@@ -3302,13 +3512,14 @@ mod tests {
 
         // Now resume with `b` already applied.
         let mut cursor = ApplyCursor::empty(plan.id);
-        cursor.complete(repo_addr("b"));
+        cursor.complete(change_in(&plan, "b"));
         let mut state = empty_state();
         let resumed = run_plan_with_providers_resumable(
             &plan,
             &mut state,
             &ctx,
             Some(cursor.resume(&plan).expect("cursor is for this plan")),
+            None,
             None,
         )
         .await;
@@ -3342,7 +3553,7 @@ mod tests {
 
         let mut cursor = ApplyCursor::empty(plan.id);
         for n in ["a", "b", "c"] {
-            cursor.complete(repo_addr(n));
+            cursor.complete(change_in(&plan, n));
         }
         let mut state = empty_state();
         let out = run_plan_with_providers_resumable(
@@ -3350,6 +3561,7 @@ mod tests {
             &mut state,
             &ctx,
             Some(cursor.resume(&plan).expect("cursor is for this plan")),
+            None,
             None,
         )
         .await;
@@ -3377,9 +3589,10 @@ mod tests {
         let via_wrapper = run_plan_with_providers(&plan, &mut s1, &ctx).await;
 
         let mut s2 = empty_state();
-        let via_resumable = run_plan_with_providers_resumable(&plan, &mut s2, &ctx, None, None)
-            .await
-            .into_outcome();
+        let via_resumable =
+            run_plan_with_providers_resumable(&plan, &mut s2, &ctx, None, None, None)
+                .await
+                .into_outcome();
 
         assert_eq!(via_wrapper.applied.len(), via_resumable.applied.len());
         assert_eq!(via_wrapper.failed.len(), via_resumable.failed.len());
@@ -3407,6 +3620,7 @@ mod tests {
             &ctx,
             None,
             Quantum::new(std::time::Duration::from_nanos(1)),
+            None,
         )
         .await;
 
@@ -3461,7 +3675,8 @@ mod tests {
 
         // Without the cache this read would be attempted and fail (no provider).
         let mut state = empty_state();
-        let cold = run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None).await;
+        let cold =
+            run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None, None).await;
         assert_eq!(
             cold.outcome().failed.len(),
             1,
@@ -3479,6 +3694,7 @@ mod tests {
             &ctx,
             Some(cursor.resume(&plan).expect("cursor is for this plan")),
             None,
+            None,
         )
         .await;
 
@@ -3493,6 +3709,236 @@ mod tests {
             warm.outcome().applied[0].after.as_ref(),
             Some(&cached),
             "the cached value is what feeds dependents' references"
+        );
+    }
+
+    // ── Durable per-node progress ──────────────────────────────────
+    //
+    // Scope note, stated up front so these are not read as more than they are:
+    // `Registry` spawns real provider subprocesses and has no injection seam,
+    // so no unit test can drive a *successful* managed apply through the
+    // engine's main loop. The per-node call sites are therefore proved at the
+    // `record_change` / `record_data_read` level — which is exactly why the
+    // ordering lives in named functions rather than inline at the call site —
+    // and the engine-level tests below prove what the provider-free harness
+    // genuinely can: which changes get attempted, and that nothing is
+    // checkpointed speculatively.
+
+    /// A sink that fails every write, for proving the stop-on-failure rule.
+    #[derive(Default)]
+    struct BrokenCheckpointSink {
+        attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl CheckpointSink for BrokenCheckpointSink {
+        async fn checkpoint(
+            &self,
+            _state: &State,
+            _cursor: &ApplyCursor,
+        ) -> Result<(), crate::checkpoint::CheckpointError> {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::checkpoint::CheckpointError::new("store unavailable"))
+        }
+    }
+
+    /// I2 — the ordering invariant. The sink must never observe a position
+    /// that omits work already reflected in `state`; the cursor is advanced
+    /// first, so by the time the sink is called it already covers the change.
+    #[tokio::test]
+    async fn a_checkpoint_sees_a_cursor_that_already_covers_the_applied_change() {
+        let plan = plan_of_creates(&["a"]);
+        let change = change_in(&plan, "a");
+        let sink = crate::checkpoint::MemoryCheckpointSink::new();
+        let mut cursor = ApplyCursor::empty(plan.id);
+        let mut stats = CycleStats::default();
+        let state = empty_state();
+
+        let r = record_change(&mut cursor, change, &state, Some(&sink), &mut stats).await;
+
+        assert_eq!(r, Recorded::Durable);
+        assert_eq!(sink.writes(), 1, "one applied node, one checkpoint");
+        let (_, persisted) = sink.last().await.expect("a pair was recorded");
+        assert!(
+            persisted.covers(change),
+            "the persisted cursor must already cover the change whose effect \
+             state carries — otherwise a resume would re-attempt it"
+        );
+        assert_eq!(stats.checkpoints_written, 1);
+        assert_eq!(stats.checkpoint_failures, 0);
+    }
+
+    /// Idempotence: re-recording a change neither advances nor writes. Without
+    /// this, a retried cycle would spend a store round-trip per already-known
+    /// node and inflate the progress witness with work it did not do.
+    #[tokio::test]
+    async fn re_recording_a_known_change_writes_nothing() {
+        let plan = plan_of_creates(&["a"]);
+        let change = change_in(&plan, "a");
+        let sink = crate::checkpoint::MemoryCheckpointSink::new();
+        let mut cursor = ApplyCursor::empty(plan.id);
+        let mut stats = CycleStats::default();
+        let state = empty_state();
+
+        record_change(&mut cursor, change, &state, Some(&sink), &mut stats).await;
+        let again = record_change(&mut cursor, change, &state, Some(&sink), &mut stats).await;
+
+        assert_eq!(again, Recorded::AlreadyPresent);
+        assert!(!again.advanced(), "a no-op must not count as progress");
+        assert_eq!(sink.writes(), 1, "still just the one write");
+    }
+
+    /// A failed checkpoint is reported as `Undurable` — advanced in memory,
+    /// not on the store — so the caller stops instead of widening the gap
+    /// between what the cursor claims and what survives a crash.
+    #[tokio::test]
+    async fn a_failed_checkpoint_is_undurable_but_still_counts_as_progress() {
+        let plan = plan_of_creates(&["a"]);
+        let change = change_in(&plan, "a");
+        let sink = BrokenCheckpointSink::default();
+        let mut cursor = ApplyCursor::empty(plan.id);
+        let mut stats = CycleStats::default();
+        let state = empty_state();
+
+        let r = record_change(&mut cursor, change, &state, Some(&sink), &mut stats).await;
+
+        assert_eq!(r, Recorded::Undurable, "the caller must be told to stop");
+        assert!(
+            r.advanced(),
+            "the node WAS applied — reporting it as no-progress would turn a \
+             real advance into a spurious stall"
+        );
+        assert!(cursor.covers(change), "the in-memory position still moved");
+        assert_eq!(stats.checkpoint_failures, 1);
+        assert_eq!(stats.checkpoints_written, 0);
+    }
+
+    /// A deferred read follows the same rule — it costs a paced token, so it
+    /// is worth persisting even though it changes no state.
+    #[tokio::test]
+    async fn a_data_read_is_checkpointed_with_the_position_that_includes_it() {
+        use magma_types::{ModulePath, ResourceTypeId};
+        let addr = ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Data,
+            type_id: ResourceTypeId("cloudflare_zones".into()),
+            name: "z".into(),
+            key: None,
+        };
+        let value = serde_json::json!({ "result": [{ "id": "zone-abc" }] });
+        let sink = crate::checkpoint::MemoryCheckpointSink::new();
+        let mut cursor = ApplyCursor::empty(magma_types::PlanId([5u8; 32]));
+        let mut stats = CycleStats::default();
+        let state = empty_state();
+
+        let r =
+            record_data_read(&mut cursor, &addr, &value, &state, Some(&sink), &mut stats).await;
+
+        assert_eq!(r, Recorded::Durable);
+        let (_, persisted) = sink.last().await.expect("a pair was recorded");
+        assert_eq!(
+            persisted.data_result(&addr),
+            Some(&value),
+            "the persisted position must carry the read, or the next cycle \
+             re-pays the paced token"
+        );
+    }
+
+    /// With no sink, nothing is written and every advance still succeeds —
+    /// the property that keeps the pre-existing unbounded path unchanged.
+    #[tokio::test]
+    async fn no_sink_means_no_writes_and_no_failures() {
+        let plan = plan_of_creates(&["a"]);
+        let mut cursor = ApplyCursor::empty(plan.id);
+        let mut stats = CycleStats::default();
+        let state = empty_state();
+
+        let r = record_change(&mut cursor, change_in(&plan, "a"), &state, None, &mut stats).await;
+
+        assert_eq!(r, Recorded::Durable, "absence of a sink is not a failure");
+        assert_eq!(stats.checkpoints_written, 0);
+        assert_eq!(stats.checkpoint_failures, 0);
+    }
+
+    /// Nothing is checkpointed speculatively. Every change here fails (no
+    /// provider), so the cursor never advances and the store is never touched
+    /// — a failed node must not be recorded as applied.
+    #[tokio::test]
+    async fn a_cycle_that_applies_nothing_writes_no_checkpoint() {
+        let plan = plan_of_creates(&["a", "b", "c"]);
+        let td = tempfile::tempdir().unwrap();
+        let ctx = unpaced_ctx(td.path());
+        let sink = crate::checkpoint::MemoryCheckpointSink::new();
+        let mut state = empty_state();
+
+        let out =
+            run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None, Some(&sink))
+                .await;
+
+        assert_eq!(out.outcome().failed.len(), 3, "control: all three failed");
+        assert_eq!(
+            sink.writes(),
+            0,
+            "a failed change must not be recorded as applied"
+        );
+        assert_eq!(out.stats().checkpoints_written, 0);
+        assert_eq!(
+            out.cursor().map(ApplyCursor::len),
+            Some(0),
+            "the position must not claim work the cloud never did"
+        );
+    }
+
+    /// I2, at the engine level — the silent-drop seal.
+    ///
+    /// A cursor entry for `b` that records a DIFFERENT change than the plan's
+    /// must not cause the plan's `b` to be skipped. Under the address-keyed
+    /// predicate this filtered `b` out and the apply reported success having
+    /// quietly not applied it; `covers` requires the content fingerprint to
+    /// match, so `b` is attempted.
+    #[tokio::test]
+    async fn a_stale_cursor_entry_does_not_silently_drop_a_real_change() {
+        let plan = plan_of_creates(&["a", "b", "c"]);
+        let td = tempfile::tempdir().unwrap();
+        let ctx = unpaced_ctx(td.path());
+
+        // Record `b` as applied — but a different `b` than the plan wants.
+        let mut stale = change_in(&plan, "b").clone();
+        stale.after = Some(serde_json::json!({ "name": "b", "visibility": "private" }));
+        let mut cursor = ApplyCursor::empty(plan.id);
+        cursor.complete(&stale);
+        assert!(
+            cursor.contains(&repo_addr("b")),
+            "the address-level predicate matches — this is the trap"
+        );
+
+        let mut state = empty_state();
+        let out = run_plan_with_providers_resumable(
+            &plan,
+            &mut state,
+            &ctx,
+            Some(cursor.resume(&plan).expect("cursor is for this plan")),
+            None,
+            None,
+        )
+        .await;
+
+        let touched: Vec<&str> = out
+            .outcome()
+            .failed
+            .iter()
+            .map(|f| f.address.name.as_str())
+            .collect();
+        assert!(
+            touched.contains(&"b"),
+            "a change the cursor did not actually record must be applied, \
+             not silently skipped; attempted: {touched:?}"
+        );
+        assert_eq!(
+            out.stats().nodes_attempted,
+            3,
+            "all three are outstanding — the stale entry covers none of them"
         );
     }
 }
