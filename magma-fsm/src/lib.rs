@@ -114,6 +114,13 @@ fn is_transition_allowed(from: Phase, to: Phase) -> bool {
         // Applying paths.
         (Applying, Verifying) => true,
         (Applying, Failed) => true,
+        // A plan too large to finish in one cycle YIELDS and re-enters
+        // Applying with its progress durably recorded (see
+        // `LifecycleState::yield_applying`). Without this edge the only way
+        // out of a cut-off apply was `Failed`, which is what made
+        // "reconciliation timed out" a terminal error instead of a scheduling
+        // event — and made convergence depend on plan size.
+        (Applying, Applying) => true,
         // Verifying paths.
         (Verifying, Stable) => true,
         (Verifying, Failed) => true,
@@ -143,6 +150,24 @@ pub struct Transition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_id: Option<PlanId>,
     pub reason: String,
+}
+
+/// Typed render surface for a yield transition's `reason`, so the string is
+/// produced by a `Display` impl rather than composed ad hoc at the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YieldReason {
+    pub completed: usize,
+    pub remaining: usize,
+}
+
+impl std::fmt::Display for YieldReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "yielded: {} applied, {} remaining",
+            self.completed, self.remaining
+        )
+    }
 }
 
 // ── LifecycleState ────────────────────────────────────────────────
@@ -212,6 +237,52 @@ impl LifecycleState {
         Ok(())
     }
 
+    /// Record that an apply cycle **yielded**: it did bounded work, recorded
+    /// that work durably, and needs another cycle to finish.
+    ///
+    /// This is the FSM half of making plan size irrelevant. Before this
+    /// existed, an apply that could not finish inside the caller's deadline
+    /// had only one exit — `Failed` — so "reconciliation timed out" was a
+    /// terminal error and a large enough plan could never converge. A yield is
+    /// a *scheduling* event: same phase, fresh clock, progress banked.
+    ///
+    /// Refuses from any phase other than `Applying`, so a yield cannot be
+    /// recorded for work that was never applying.
+    ///
+    /// Note the deliberate interaction with [`LifecycleState::is_stuck`]:
+    /// because a transition resets `entered_at`, a cycle that yields *with
+    /// progress* resets the Applying soft deadline, while a cycle that makes
+    /// no progress does not yield and therefore lets the deadline expire. That
+    /// converts `is_stuck` from "this apply is taking a long time" — which is
+    /// normal and fine for a big plan — into "this apply is not advancing",
+    /// which is the condition actually worth escalating.
+    ///
+    /// The authoritative resumable position is the apply cursor persisted
+    /// alongside state, not this record; the counts here are for observability
+    /// and escalation, and are deliberately not a second source of truth.
+    pub fn yield_applying(
+        &mut self,
+        plan_id: Option<PlanId>,
+        completed: usize,
+        remaining: usize,
+    ) -> Result<(), TransitionError> {
+        if self.current != Phase::Applying {
+            return Err(TransitionError::Disallowed {
+                from: self.current,
+                to: Phase::Applying,
+            });
+        }
+        self.transition(
+            Phase::Applying,
+            plan_id,
+            YieldReason {
+                completed,
+                remaining,
+            }
+            .to_string(),
+        )
+    }
+
     /// True iff the current phase has exceeded its soft deadline.
     pub fn is_stuck(&self) -> bool {
         let deadline = self.current.soft_deadline();
@@ -244,6 +315,67 @@ impl LifecycleState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plan too large for one cycle must be able to yield and re-enter
+    /// Applying. Before this edge the only exit from a cut-off apply was
+    /// `Failed` — which is precisely what made "reconciliation timed out" a
+    /// terminal error and tied convergence to plan size.
+    #[test]
+    fn applying_can_yield_back_into_applying() {
+        let mut s = LifecycleState::new();
+        s.transition(Phase::Planning, None, "trigger").unwrap();
+        s.transition(Phase::Applying, None, "auto_approve").unwrap();
+
+        s.yield_applying(None, 120, 2545).unwrap();
+        s.yield_applying(None, 240, 2425).unwrap();
+
+        assert_eq!(s.current, Phase::Applying, "still applying, not failed");
+        assert_eq!(s.len(), 4, "each yield is a recorded transition");
+        assert!(
+            s.history.last().unwrap().reason.contains("2425 remaining"),
+            "the yield records how far it got: {:?}",
+            s.history.last().unwrap().reason
+        );
+        // The apply can still finish normally afterwards.
+        s.transition(Phase::Verifying, None, "applied").unwrap();
+        s.transition(Phase::Stable, None, "verified").unwrap();
+        assert_eq!(s.current, Phase::Stable);
+    }
+
+    /// A yield is only meaningful for work that was actually applying.
+    #[test]
+    fn yield_is_refused_outside_applying() {
+        let mut s = LifecycleState::new();
+        s.transition(Phase::Planning, None, "trigger").unwrap();
+        let err = s.yield_applying(None, 1, 1).unwrap_err();
+        assert_eq!(
+            err,
+            TransitionError::Disallowed {
+                from: Phase::Planning,
+                to: Phase::Applying
+            }
+        );
+        assert_eq!(s.current, Phase::Planning, "refused yield changes nothing");
+    }
+
+    /// A yield resets the phase clock, which converts `is_stuck` from "this
+    /// apply is slow" — normal for a big plan — into "this apply is not
+    /// advancing", the condition actually worth escalating.
+    #[test]
+    fn yielding_resets_the_applying_soft_deadline() {
+        let mut s = LifecycleState::new();
+        s.transition(Phase::Planning, None, "trigger").unwrap();
+        s.transition(Phase::Applying, None, "auto_approve").unwrap();
+        // Backdate entry well past the Applying soft deadline.
+        s.entered_at = Utc::now() - Phase::Applying.soft_deadline() - Duration::seconds(60);
+        assert!(s.is_stuck(), "precondition: looks stuck before the yield");
+
+        s.yield_applying(None, 10, 10).unwrap();
+        assert!(
+            !s.is_stuck(),
+            "a yield that banked progress restarts the deadline"
+        );
+    }
 
     #[test]
     fn fresh_state_is_idle() {

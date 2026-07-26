@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::Utc;
 use magma_config::resolve_reference;
@@ -29,6 +30,7 @@ use magma_types::{
     StateResource,
 };
 
+use crate::cursor::{ApplyCursor, CycleOutcome, CycleStats, Progress, Quantum, Resume};
 use crate::{AppliedChange, ApplyOutcome, FailedChange, insert_resource, remove_resource};
 
 /// Retry an async provider RPC with exponential backoff on transient errors
@@ -379,12 +381,92 @@ impl<'a> Registry<'a> {
 /// Apply a plan against `state` by driving the real providers. Mirrors
 /// [`crate::run_plan`]'s outcome shape so the operator's `MagmaExecutor`
 /// can swap one for the other.
+///
+/// This is the unbounded, run-to-completion entry point: exactly
+/// [`run_plan_with_providers_resumable`] with no cursor and no quantum, so its
+/// behaviour is identical to before resumption existed. Callers that need
+/// bounded cycles — i.e. a plan too large to finish inside one window — call
+/// the resumable form directly.
 pub async fn run_plan_with_providers(
     plan: &Plan,
     state: &mut State,
     ctx: &ApplyContext,
 ) -> ApplyOutcome {
+    // No quantum ⇒ no yield point ⇒ `Completed` is the only reachable arm.
+    // `into_outcome` keeps this wrapper total instead of asserting that.
+    run_plan_with_providers_resumable(plan, state, ctx, None, None)
+        .await
+        .into_outcome()
+}
+
+/// Apply a plan in **bounded cycles**, so plan size stops governing whether
+/// the apply can converge.
+///
+/// # Why this exists
+///
+/// The all-or-nothing apply made convergence conditional on the whole plan
+/// fitting inside the caller's deadline. Past that size it could never
+/// succeed, and each timeout discarded everything it had done. Here a cycle
+/// does bounded work, records it in an [`ApplyCursor`], and *yields*; the next
+/// cycle resumes at the frontier. N cycles converge for any N.
+///
+/// # How resumption stays correct
+///
+/// A resumed cycle must still resolve `${type.name.attr}` references that
+/// point at resources an *earlier* cycle applied. It can, without any new
+/// machinery, because those resources are in `state` and the resolution map is
+/// seeded from `state` on entry — `State` is already the durable carrier of
+/// applied attributes. Deferred data-source reads are the one exception: they
+/// live only in the resolution map, never in `state`, and each costs a
+/// rate-limiter token. Those ride the cursor instead, which is what stops a
+/// resumed cycle re-paying the whole read prologue before it can reach new
+/// work.
+///
+/// Already-completed addresses are never added to the dependency graph, so
+/// they are not in any wave and have no path to execution — re-application is
+/// structurally impossible rather than guarded by a runtime check.
+///
+/// # What this does not promise
+///
+/// The quantum is only ever checked *between* nodes; an in-flight provider RPC
+/// is never cancelled. That is deliberate — cancelling mid-RPC would widen the
+/// window in which a create commits provider-side without being recorded. That
+/// window still exists (cloud I/O is not transactional), so the guarantee here
+/// is at-least-once with typed adopt-on-conflict, not exactly-once. What
+/// bounded cycles buy is that the window shrinks from a whole cycle to one
+/// node.
+pub async fn run_plan_with_providers_resumable(
+    plan: &Plan,
+    state: &mut State,
+    ctx: &ApplyContext,
+    resume: Option<Resume<'_>>,
+    quantum: Option<Quantum>,
+) -> CycleOutcome {
     let started_at = Utc::now();
+    let cycle_start = Instant::now();
+    let deadline = quantum.map(|q| cycle_start + q.as_duration());
+
+    // `Resume` can only be minted by `ApplyCursor::resume(plan)`, so a cursor
+    // for a different plan cannot reach this point.
+    let mut cursor = match resume {
+        Some(r) => r.cursor().clone(),
+        None => ApplyCursor::empty(plan.id),
+    };
+    // Addresses this cycle newly recorded — the non-empty witness a yield
+    // needs. Includes newly-cached data reads, because those are real durable
+    // advances too.
+    let mut progressed: Vec<ResourceAddress> = Vec::new();
+    let mut stats = CycleStats {
+        quantum_ms: quantum.map(Quantum::as_millis),
+        ..CycleStats::default()
+    };
+
+    // Set when the quantum runs out during the deferred-read prologue. The
+    // managed phase is then skipped wholesale — see the break site for why a
+    // partially-populated resolution map is a correctness hazard, not just an
+    // incomplete one.
+    let mut prologue_exhausted = false;
+
     let mut registry = Registry::new(ctx);
     let mut applied = Vec::new();
     let mut failed = Vec::new();
@@ -490,6 +572,30 @@ pub async fn run_plan_with_providers(
                 continue;
             }
         }
+        // A deferred read an earlier cycle already performed is served from the
+        // cursor. Each of these costs a rate-limiter token and is NOT persisted
+        // in `state` (only in the resolution map), so without this cache every
+        // resumed cycle would re-pay the whole read prologue before reaching
+        // any new work — which is precisely how naive chunking livelocks.
+        if let Some(cached) = cursor.data_result(&change.address) {
+            sm_insert_data(&mut state_map, &change.address, cached);
+            stats.data_reads_cached += 1;
+            applied.push(AppliedChange {
+                address: change.address.clone(),
+                action: change.action,
+                before: None,
+                after: Some(cached.clone()),
+            });
+            continue;
+        }
+        // Out of quantum mid-prologue. Stop here and let the managed phase be
+        // skipped entirely: the resolution map is incomplete, and substituting
+        // references against a half-populated map would apply *wrong values*,
+        // not merely fewer of them.
+        if past_deadline(deadline) {
+            prologue_exhausted = true;
+            break;
+        }
         // A genuinely-unread data source (deferred read: config depended on a
         // resource only now created) IS read via RPC — resolve refs in its
         // config first (usually literal).
@@ -497,9 +603,20 @@ pub async fn run_plan_with_providers(
         if let Some(after) = resolved.after.as_mut() {
             substitute_refs(after, &state_map);
         }
+        // Counted before the call, not in the success arm: an attempted read
+        // spends a rate-limiter token whether or not it succeeds, and this
+        // number exists to measure the prologue's real cost.
+        stats.data_reads_performed += 1;
         match read_data_source_one(&resolved, &mut registry).await {
             Ok(result) => {
                 sm_insert_data(&mut state_map, &change.address, &result);
+                // Caching a read is durable progress in its own right — a
+                // workspace whose prologue is dominated by paced reads advances
+                // by exactly this each cycle, and calling that a stall would
+                // hide a working system.
+                if cursor.record_data(change.address.clone(), result.clone()) {
+                    progressed.push(change.address.clone());
+                }
                 applied.push(AppliedChange {
                     address: change.address.clone(),
                     action: change.action,
@@ -511,23 +628,43 @@ pub async fn run_plan_with_providers(
         }
     }
 
+    // Everything above is the cycle's fixed cost: seeding the resolution map,
+    // resolving deferred reads, and (just below) building the graph. Chunked
+    // resumption converges only while this fits inside the quantum with room
+    // for at least one node, so it is the quantity a derived quantum must be
+    // sized against — hence recording it rather than inferring it later.
+    stats.prologue_ms = elapsed_ms(cycle_start);
+
     // Build the dependency graph from ${type.name.attr} references that point
     // at OTHER real changes, so each resource is applied before anything that
     // consumes its computed attributes (node_id, id, …).
-    let real_keys: HashSet<(String, String)> = reals
+    //
+    // Anything the cursor already records as applied is EXCLUDED here. That is
+    // what makes re-application structurally impossible rather than
+    // runtime-guarded: an excluded address is in no wave and in no `by_key`
+    // lookup, so no code path below can execute it. Its computed attributes
+    // still resolve for dependents, because they were written into `state` when
+    // it was applied and the resolution map is seeded from `state` on entry.
+    let pending: Vec<&ResourceChange> = reals
+        .iter()
+        .copied()
+        .filter(|c| !cursor.contains(&c.address))
+        .collect();
+
+    let real_keys: HashSet<(String, String)> = pending
         .iter()
         .map(|c| (c.address.type_id.0.clone(), c.address.name.clone()))
         .collect();
-    let by_key: HashMap<(String, String), &ResourceChange> = reals
+    let by_key: HashMap<(String, String), &ResourceChange> = pending
         .iter()
         .map(|c| ((c.address.type_id.0.clone(), c.address.name.clone()), *c))
         .collect();
 
     let mut graph = ResourceGraph::new();
-    for c in &reals {
+    for c in &pending {
         graph.add(c.address.clone());
     }
-    for c in &reals {
+    for c in &pending {
         let self_key = (c.address.type_id.0.clone(), c.address.name.clone());
         if let Some(after) = &c.after {
             for refstr in collect_refs(after) {
@@ -542,35 +679,71 @@ pub async fn run_plan_with_providers(
         }
     }
 
-    // Flattened topological waves. On a cycle / graph error, fall back to plan
-    // order — attempt the apply rather than refuse the whole cycle.
-    let ordered: Vec<ResourceAddress> = match graph.waves() {
-        Ok(waves) => waves.into_iter().flatten().collect(),
-        Err(e) => {
-            tracing::warn!(error = %e, "magma: dependency-graph error — applying in plan order");
-            reals.iter().map(|c| c.address.clone()).collect()
+    // Topological waves, kept AS WAVES rather than flattened. Iterating
+    // wave-major then within-wave visits addresses in exactly the order the
+    // old `waves().flatten()` did, so execution is unchanged — but the width
+    // of each wave (the available parallelism, which the flatten computed and
+    // then threw away) survives to be used by the concurrent executor, and the
+    // wave boundary gives the quantum a natural checkpoint.
+    //
+    // On a cycle / graph error, fall back to plan order as one big wave —
+    // attempt the apply rather than refuse the whole cycle.
+    let waves: Vec<Vec<ResourceAddress>> = if prologue_exhausted {
+        // The resolution map is incomplete; applying now would substitute
+        // wrong values. Do nothing this cycle and let the yield carry the
+        // reads we did cache.
+        Vec::new()
+    } else {
+        match graph.waves() {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!(error = %e, "magma: dependency-graph error — applying in plan order");
+                vec![pending.iter().map(|c| c.address.clone()).collect()]
+            }
         }
     };
 
-    for addr in ordered {
-        let key = (addr.type_id.0.clone(), addr.name.clone());
-        let Some(change) = by_key.get(&key).copied() else {
-            continue;
-        };
-        // Substitute ${ref}s against everything applied so far.
-        let mut resolved = change.clone();
-        if let Some(after) = resolved.after.as_mut() {
-            substitute_refs(after, &state_map);
-        }
-        match apply_one(&resolved, state, &mut registry).await {
-            Ok(a) => {
-                if let Some(attrs) = &a.after {
-                    // Provider-returned new_state feeds dependents' references.
-                    sm_insert(&mut state_map, &change.address, attrs);
-                }
-                applied.push(a);
+    let mut out_of_quantum = prologue_exhausted;
+    'waves: for wave in &waves {
+        stats.waves_entered += 1;
+        for addr in wave {
+            // The quantum is checked only BETWEEN nodes — an in-flight
+            // provider RPC is never cancelled. Cancelling mid-RPC would widen
+            // the window in which a create commits provider-side without being
+            // recorded, which is the one hazard chunking is supposed to
+            // shrink.
+            if past_deadline(deadline) {
+                out_of_quantum = true;
+                break 'waves;
             }
-            Err(e) => failed.push(mkfail(change, e)),
+            let key = (addr.type_id.0.clone(), addr.name.clone());
+            let Some(change) = by_key.get(&key).copied() else {
+                continue;
+            };
+            stats.nodes_attempted += 1;
+            // Substitute ${ref}s against everything applied so far — including,
+            // on a resumed cycle, everything earlier cycles wrote into `state`.
+            let mut resolved = change.clone();
+            if let Some(after) = resolved.after.as_mut() {
+                substitute_refs(after, &state_map);
+            }
+            match apply_one(&resolved, state, &mut registry).await {
+                Ok(a) => {
+                    if let Some(attrs) = &a.after {
+                        // Provider-returned new_state feeds dependents' references.
+                        sm_insert(&mut state_map, &change.address, attrs);
+                    }
+                    stats.nodes_completed += 1;
+                    if cursor.complete(change.address.clone()) {
+                        progressed.push(change.address.clone());
+                    }
+                    applied.push(a);
+                }
+                // A failed change is deliberately NOT recorded as completed —
+                // the next cycle retries it. Recording it would make the cursor
+                // claim progress the cloud never made.
+                Err(e) => failed.push(mkfail(change, e)),
+            }
         }
     }
 
@@ -600,14 +773,66 @@ pub async fn run_plan_with_providers(
         state.serial = state.serial.saturating_add(1);
     }
 
-    ApplyOutcome {
+    let remaining = pending.len().saturating_sub(stats.nodes_completed);
+    stats.nodes_remaining = remaining;
+    stats.elapsed_ms = elapsed_ms(cycle_start);
+
+    let partial = ApplyOutcome {
         plan_id: plan.id,
         state: state.clone(),
         applied,
         failed,
         started_at,
         finished_at: Utc::now(),
+    };
+
+    // Finished only if the cycle ran to the end of the graph AND nothing is
+    // outstanding. `remaining > 0` covers both "ran out of quantum" and "some
+    // changes failed and are due a retry"; either way the honest answer is
+    // "run another cycle", which is what the non-`Completed` arms mean.
+    if !out_of_quantum && remaining == 0 {
+        return CycleOutcome::Completed {
+            outcome: partial,
+            stats,
+        };
     }
+
+    // The only place a yield-vs-stall verdict is made. `Progress::new` returns
+    // `None` for an empty witness, so a cycle that advanced nothing CANNOT be
+    // dressed up as a yield — it lands in `Stalled`, which says the quantum
+    // cannot cover this cycle's fixed prologue and that retrying unchanged
+    // will not converge.
+    match Progress::new(progressed) {
+        Some(progress) => CycleOutcome::Yielded {
+            partial,
+            cursor,
+            progress,
+            stats,
+        },
+        None => {
+            tracing::warn!(
+                prologue_ms = stats.prologue_ms,
+                quantum_ms = ?stats.quantum_ms,
+                nodes_remaining = remaining,
+                "magma apply: cycle stalled — no durable progress; quantum cannot cover the prologue"
+            );
+            CycleOutcome::Stalled {
+                partial,
+                cursor,
+                stats,
+            }
+        }
+    }
+}
+
+/// True once the cycle's quantum has elapsed. `None` = unbounded, which is
+/// what the run-to-completion wrapper passes.
+fn past_deadline(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|d| Instant::now() >= d)
+}
+
+fn elapsed_ms(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Parse the parent `github_repository` identifiers that a set of failed
@@ -2983,5 +3208,291 @@ mod tests {
         assert_eq!(dropped, 2, "kanchi + akeyless_stack dropped");
         assert_eq!(state.resources.len(), 1);
         assert_eq!(state.resources[0].address.name, "galho", "non-phantom survives");
+    }
+
+    // ── Bounded, resumable cycles ──────────────────────────────────
+    //
+    // These reuse this file's established provider-free harness: with no
+    // reachable provider, ANY change the engine actually attempts lands in
+    // `failed`. That turns "was this executed?" into a directly observable
+    // fact, which is exactly what the resumption invariants need to be proved
+    // rather than asserted. It also means no test here can produce a
+    // *successful* real change — so what is proved below is the cycle
+    // machinery (what gets attempted, what gets skipped, which arm is
+    // returned), not provider behaviour.
+
+    fn repo_addr(name: &str) -> ResourceAddress {
+        use magma_types::{ModulePath, ResourceTypeId};
+        ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Managed,
+            type_id: ResourceTypeId("github_repository".into()),
+            name: name.into(),
+            key: None,
+        }
+    }
+
+    /// A plan of independent `Create`s — no references, so the graph is one
+    /// wave and ordering plays no part in what these tests measure.
+    fn plan_of_creates(names: &[&str]) -> Plan {
+        Plan {
+            id: magma_types::PlanId([9u8; 32]),
+            created_at: Utc::now(),
+            config_root: PathBuf::from("/ws"),
+            variables: Default::default(),
+            resource_changes: names
+                .iter()
+                .map(|n| ResourceChange {
+                    address: repo_addr(n),
+                    action: Action::Create,
+                    before: None,
+                    after: Some(serde_json::json!({ "name": n })),
+                    reasons: vec![],
+                })
+                .collect(),
+            output_changes: vec![],
+        }
+    }
+
+    fn empty_state() -> State {
+        State {
+            version: 4,
+            terraform_version: "1.9.0".into(),
+            serial: 1,
+            lineage: uuid::Uuid::nil(),
+            outputs: Default::default(),
+            resources: vec![],
+        }
+    }
+
+    /// Unreachable-provider context with pacing OFF — the 1 req/s pacer would
+    /// add seconds of latency and confound the quantum assertions below.
+    fn unpaced_ctx(dir: &std::path::Path) -> ApplyContext {
+        // SAFETY: single-threaded test; no other thread reads this var.
+        unsafe { std::env::remove_var("MAGMA_PROVIDER_DIR") };
+        let mut ctx = ApplyContext::new(dir.to_path_buf());
+        ctx.pacer = None;
+        ctx
+    }
+
+    /// I2 — a resumed cycle re-executes NO completed node.
+    ///
+    /// This is the invariant that makes chunking safe rather than an infinite
+    /// retry: without it, resumption would re-attempt (and for a real provider,
+    /// re-CREATE) work an earlier cycle already did. The proof is structural,
+    /// not statistical — a completed address is never added to the graph, so it
+    /// is in no wave and no `by_key` lookup. With no provider reachable, an
+    /// executed change necessarily lands in `failed`; the completed one must
+    /// appear in neither `failed` nor the attempt count.
+    #[tokio::test]
+    async fn a_resumed_cycle_never_re_executes_a_completed_node() {
+        let plan = plan_of_creates(&["a", "b", "c"]);
+        let td = tempfile::tempdir().unwrap();
+        let ctx = unpaced_ctx(td.path());
+
+        // Baseline: nothing completed, so all three are attempted.
+        let mut state = empty_state();
+        let fresh =
+            run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None).await;
+        assert_eq!(
+            fresh.stats().nodes_attempted,
+            3,
+            "a fresh cycle attempts every real change"
+        );
+
+        // Now resume with `b` already applied.
+        let mut cursor = ApplyCursor::empty(plan.id);
+        cursor.complete(repo_addr("b"));
+        let mut state = empty_state();
+        let resumed = run_plan_with_providers_resumable(
+            &plan,
+            &mut state,
+            &ctx,
+            Some(cursor.resume(&plan).expect("cursor is for this plan")),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            resumed.stats().nodes_attempted,
+            2,
+            "the completed node must not be attempted again"
+        );
+        let touched: Vec<&str> = resumed
+            .outcome()
+            .failed
+            .iter()
+            .map(|f| f.address.name.as_str())
+            .collect();
+        assert!(
+            !touched.contains(&"b"),
+            "a completed node must have no code path to execution, got {touched:?}"
+        );
+        assert_eq!(touched.len(), 2, "the other two are still attempted");
+    }
+
+    /// I1 — the convergence endpoint. Once the cursor covers every real change
+    /// the cycle reports `Completed` having attempted nothing, which is what
+    /// "N cycles converge for any N" bottoms out in.
+    #[tokio::test]
+    async fn a_cursor_covering_every_change_completes_without_attempting_anything() {
+        let plan = plan_of_creates(&["a", "b", "c"]);
+        let td = tempfile::tempdir().unwrap();
+        let ctx = unpaced_ctx(td.path());
+
+        let mut cursor = ApplyCursor::empty(plan.id);
+        for n in ["a", "b", "c"] {
+            cursor.complete(repo_addr(n));
+        }
+        let mut state = empty_state();
+        let out = run_plan_with_providers_resumable(
+            &plan,
+            &mut state,
+            &ctx,
+            Some(cursor.resume(&plan).expect("cursor is for this plan")),
+            None,
+        )
+        .await;
+
+        assert!(out.is_complete(), "a fully-covered plan is finished: {out:?}");
+        assert!(!out.needs_another_cycle());
+        assert_eq!(out.stats().nodes_attempted, 0);
+        assert_eq!(out.stats().nodes_remaining, 0);
+        assert!(
+            out.outcome().failed.is_empty(),
+            "nothing was executed, so nothing can have failed"
+        );
+        assert!(out.cursor().is_none(), "a finished plan carries no position");
+    }
+
+    /// Zero-regression: the run-to-completion wrapper is exactly the resumable
+    /// engine with no cursor and no quantum. Existing callers see no change.
+    #[tokio::test]
+    async fn the_wrapper_matches_the_resumable_engine_with_no_cursor_or_quantum() {
+        let plan = plan_of_creates(&["a", "b"]);
+        let td = tempfile::tempdir().unwrap();
+        let ctx = unpaced_ctx(td.path());
+
+        let mut s1 = empty_state();
+        let via_wrapper = run_plan_with_providers(&plan, &mut s1, &ctx).await;
+
+        let mut s2 = empty_state();
+        let via_resumable = run_plan_with_providers_resumable(&plan, &mut s2, &ctx, None, None)
+            .await
+            .into_outcome();
+
+        assert_eq!(via_wrapper.applied.len(), via_resumable.applied.len());
+        assert_eq!(via_wrapper.failed.len(), via_resumable.failed.len());
+        let names = |o: &ApplyOutcome| -> Vec<String> {
+            o.failed.iter().map(|f| f.address.name.clone()).collect()
+        };
+        assert_eq!(names(&via_wrapper), names(&via_resumable));
+        assert_eq!(s1.serial, s2.serial, "identical state effect");
+    }
+
+    /// The quantum is honoured, and — the load-bearing half — a cycle that
+    /// advanced NOTHING is reported as `Stalled`, never dressed up as a yield.
+    /// That is the seal on naive chunking's real failure mode: a fixed prologue
+    /// bigger than the quantum, retrying forever with epsilon progress.
+    #[tokio::test]
+    async fn an_exhausted_quantum_with_no_progress_stalls_rather_than_yielding() {
+        let plan = plan_of_creates(&["a", "b", "c"]);
+        let td = tempfile::tempdir().unwrap();
+        let ctx = unpaced_ctx(td.path());
+        let mut state = empty_state();
+
+        let out = run_plan_with_providers_resumable(
+            &plan,
+            &mut state,
+            &ctx,
+            None,
+            Quantum::new(std::time::Duration::from_nanos(1)),
+        )
+        .await;
+
+        assert_eq!(
+            out.stats().nodes_attempted,
+            0,
+            "an already-expired quantum must stop before the first node"
+        );
+        assert!(
+            matches!(out, CycleOutcome::Stalled { .. }),
+            "no durable progress must surface as Stalled, got {out:?}"
+        );
+        assert!(
+            out.cursor().is_some(),
+            "even a stall carries the position — there is no arm without one"
+        );
+        assert_eq!(out.stats().nodes_remaining, 3);
+    }
+
+    /// The prologue-collapse mechanism. Deferred data-source reads are paced
+    /// and are NOT persisted in `State`, so without the cursor cache every
+    /// resumed cycle would re-pay the whole read prologue before reaching any
+    /// new work. A cached read must be served without touching the provider —
+    /// proved here by the fact that no provider exists to touch.
+    #[tokio::test]
+    async fn a_cached_data_read_is_served_from_the_cursor_without_a_provider() {
+        use magma_types::{ModulePath, ResourceTypeId};
+        let cached = serde_json::json!({ "result": [{ "id": "zone-abc" }] });
+        let data_addr = ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Data,
+            type_id: ResourceTypeId("cloudflare_zones".into()),
+            name: "rio_zone".into(),
+            key: None,
+        };
+        let plan = Plan {
+            id: magma_types::PlanId([11u8; 32]),
+            created_at: Utc::now(),
+            config_root: PathBuf::from("/ws"),
+            variables: Default::default(),
+            resource_changes: vec![ResourceChange {
+                address: data_addr.clone(),
+                action: Action::Create,
+                before: None,
+                after: Some(serde_json::json!({ "name": "quero.cloud" })),
+                reasons: vec![],
+            }],
+            output_changes: vec![],
+        };
+        let td = tempfile::tempdir().unwrap();
+        let ctx = unpaced_ctx(td.path());
+
+        // Without the cache this read would be attempted and fail (no provider).
+        let mut state = empty_state();
+        let cold = run_plan_with_providers_resumable(&plan, &mut state, &ctx, None, None).await;
+        assert_eq!(
+            cold.outcome().failed.len(),
+            1,
+            "control: an uncached deferred read really does hit the provider"
+        );
+        assert_eq!(cold.stats().data_reads_performed, 1);
+
+        // With it cached, the same cycle needs no provider at all.
+        let mut cursor = ApplyCursor::empty(plan.id);
+        cursor.record_data(data_addr.clone(), cached.clone());
+        let mut state = empty_state();
+        let warm = run_plan_with_providers_resumable(
+            &plan,
+            &mut state,
+            &ctx,
+            Some(cursor.resume(&plan).expect("cursor is for this plan")),
+            None,
+        )
+        .await;
+
+        assert!(
+            warm.outcome().failed.is_empty(),
+            "a cached read must not reach the provider: {:?}",
+            warm.outcome().failed
+        );
+        assert_eq!(warm.stats().data_reads_cached, 1);
+        assert_eq!(warm.stats().data_reads_performed, 0);
+        assert_eq!(
+            warm.outcome().applied[0].after.as_ref(),
+            Some(&cached),
+            "the cached value is what feeds dependents' references"
+        );
     }
 }

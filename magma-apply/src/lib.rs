@@ -4,16 +4,32 @@
 //! state per the provider's response. Parallelism + retries + budgets
 //! come from `shigoto::Scheduler` (per `theory/MAGMA.md` §II.9).
 //!
-//! M0 ships the synchronous-per-wave engine; full
-//! `shigoto::Scheduler`-driven parallelism + budget enforcement +
-//! crash-resumption land alongside M1's broader shigoto integration.
+//! Execution is **sequential** within and across dependency waves, but it is
+//! **resumable**: [`engine::run_plan_with_providers_resumable`] does bounded
+//! work per cycle and records it in an [`ApplyCursor`], so a plan too large to
+//! finish in one window converges over N cycles instead of failing. That is
+//! what removes plan size as a precondition for convergence.
+//!
+//! Still outstanding, and deliberately separate: `shigoto::Scheduler`-driven
+//! **concurrency** within a wave, plus budget enforcement. The waves already
+//! carry the available parallelism (see the wave loop in [`engine`]); nothing
+//! consumes it yet. Note the ceiling before assuming that is the big win — the
+//! default mutation pacer is a strict 1 req/s shared bucket, so useful
+//! concurrency is a small constant, and concurrency changes how *fast* an
+//! apply converges, never *whether* it does.
+//!
 //! The typed shape matches §II.9 — every apply operation surfaces as
 //! a typed `ApplyChange` Job.
 
 pub mod adopt;
+pub mod cursor;
 pub mod engine;
 pub mod import_prepass;
 pub mod shigoto_jobs;
+
+pub use cursor::{
+    ApplyCursor, CursorError, CycleOutcome, CycleStats, DataResult, Progress, Quantum, Resume,
+};
 
 pub use import_prepass::{
     ConfiguredImportEnvironment, FailedImport, ImportEnvironment, ImportPrepassOutcome,
