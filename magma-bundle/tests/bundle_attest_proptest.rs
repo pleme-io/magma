@@ -97,6 +97,7 @@ proptest! {
             &bundle.kind, &bundle.workspace, &bundle.plan,
             &bundle.outcome, &bundle.drift, &bundle.lifecycle, &bundle.audit,
             bundle.gem_tree_attestation.as_deref(),
+            bundle.observation.as_ref(),
         ).unwrap();
         // Sleep for a tick so built_at would differ if it were
         // in-scope. (No actual sleep needed — we call derive_id
@@ -106,6 +107,7 @@ proptest! {
             &bundle.kind, &bundle.workspace, &bundle.plan,
             &bundle.outcome, &bundle.drift, &bundle.lifecycle, &bundle.audit,
             bundle.gem_tree_attestation.as_deref(),
+            bundle.observation.as_ref(),
         ).unwrap();
         prop_assert_eq!(id1, id2);
     }
@@ -213,6 +215,7 @@ proptest! {
             &bundle.kind, &bundle.workspace, &bundle.plan,
             &bundle.outcome, &bundle.drift, &bundle.lifecycle, &bundle.audit,
             bundle.gem_tree_attestation.as_deref(),
+            bundle.observation.as_ref(),
         ).unwrap();
         // Build a second bundle with the same logical inputs.
         let b2 = Bundle::new(

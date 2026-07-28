@@ -514,6 +514,7 @@ mod tests {
             variables: HashMap::new(),
             resource_changes: changes,
             output_changes: Vec::new(),
+            observation: magma_types::Observation::unrefreshed(),
         }
     }
 

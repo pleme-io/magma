@@ -223,6 +223,13 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         variables: Default::default(),
         resource_changes: changes,
         output_changes: Vec::new(),
+        // `plan` diffs config against whatever `state` it was handed and
+        // never talks to a provider itself, so the honest trust record is
+        // "nothing was observed". A caller that DID refresh first stamps
+        // the real one — `magma_apply::engine::refresh_then_plan` is the
+        // one place that does, and `Plan::with_observation` is the seam
+        // for any other caller that runs its own refresh.
+        observation: magma_types::Observation::unrefreshed(),
     })
 }
 

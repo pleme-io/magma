@@ -930,6 +930,7 @@ mod tests {
             variables: Default::default(),
             resource_changes: vec![],
             output_changes: vec![],
+            observation: magma_types::Observation::unrefreshed(),
         };
         assert!(c.resume(&plan).is_some(), "matching plan must resume");
         plan.id = plan_id(2);

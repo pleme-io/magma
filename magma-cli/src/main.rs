@@ -932,9 +932,30 @@ async fn load_workspace_and_state(
 
 /// Surface a plan-time [`magma::apply::engine::RefreshReport`] to the
 /// operator — shared by `cmd_plan` + `cmd_apply` so the two entry points
-/// report drift identically. Silent when refresh found nothing to report
-/// (the common case: state already matches the real world).
+/// report drift identically. Silent only when the refresh was genuinely
+/// clean AND found nothing to report.
+///
+/// The loud arm is not decoration. This function used to return early
+/// whenever `refreshed`/`dropped_*`/`suppressed_mass_drop` were all zero —
+/// which is EXACTLY the shape of a refresh in which every `ReadResource`
+/// failed (`kept_on_error = N`, everything else 0). The one case where
+/// magma knows nothing was the one case it said nothing about, and the
+/// operator read the silence as "clean".
 fn report_refresh(report: &magma::apply::engine::RefreshReport) {
+    let observation = report.observation();
+    let coverage = observation.coverage();
+    if !coverage.supports_in_sync_claim() {
+        // Blind / Partial / Unrefreshed — say so before anything else,
+        // because everything downstream of here is about to look like a
+        // clean plan.
+        eprintln!(
+            "magma: plan-time refresh is {coverage} — {} of {} state instance(s) could not be \
+             read from the provider. This plan's `before` side is REMEMBERED state, not \
+             observed reality; an empty change set here is NOT evidence that anything matches.",
+            report.kept_on_error,
+            observation.counts().probed(),
+        );
+    }
     let changed = report.refreshed > 0
         || report.dropped_instances > 0
         || report.dropped_resources > 0
@@ -988,6 +1009,11 @@ async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
         "created_at":       plan.created_at,
         "resource_changes": plan.resource_changes.len(),
         "changes":          plan.resource_changes,
+        // How much of the above is real. A `--json` consumer must be able
+        // to answer "was this observed?" from the machine-readable output,
+        // never from stderr.
+        "observation":      plan.observation,
+        "verdict":          plan.drift_verdict(),
     });
     if let Some(out) = args.out {
         tokio::fs::write(&out, serde_json::to_vec_pretty(&plan)?).await?;
@@ -1084,6 +1110,10 @@ async fn cmd_destroy(args: DestroyArgs) -> Result<u8> {
         variables: Default::default(),
         resource_changes,
         output_changes: vec![],
+        // `destroy` synthesizes a delete-everything plan straight from
+        // state without a refresh, so the honest record is "nothing was
+        // observed".
+        observation: magma::types::Observation::unrefreshed(),
     };
 
     if !args.auto_approve {

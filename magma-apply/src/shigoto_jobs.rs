@@ -102,6 +102,10 @@ impl Job for ApplyChangeJob {
             variables: Default::default(),
             resource_changes: vec![self.change.clone()],
             output_changes: vec![],
+            // A synthetic single-change plan carved out of an already-
+            // computed one. It observed nothing itself; the trust record
+            // belongs to the plan this change came from.
+            observation: magma_types::Observation::unrefreshed(),
         };
         let outcome = crate::run_plan(&single_plan, &mut state)?;
         Ok(outcome)

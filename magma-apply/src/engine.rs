@@ -1163,6 +1163,46 @@ pub struct RefreshReport {
     pub suppressed_mass_drop: usize,
 }
 
+impl RefreshReport {
+    /// The typed trust record this pass earned.
+    ///
+    /// The whole point of the conversion: these counters used to be
+    /// printed to stderr and dropped on the floor, so an observation in
+    /// which EVERY read failed (`kept_on_error = N`, state untouched, plan
+    /// all-`NoOp`) was indistinguishable downstream from one in which
+    /// reality genuinely matched. [`magma_types::Observation`] classifies
+    /// the pass once, at the border, into a value a consumer must match on
+    /// — see [`magma_types::Coverage`] and
+    /// [`magma_types::Plan::drift_verdict`].
+    ///
+    /// **Scope follows the pass.** A report from [`refresh_state`] covers
+    /// every instance in the state, so its observation describes the whole
+    /// world. A report from [`refresh_named`] covers only the resources it
+    /// targeted, so its observation is a statement about THAT SUBSET —
+    /// `Complete` there means "every targeted read answered", never "the
+    /// state is fully observed". Do not stamp a targeted pass onto a
+    /// whole-state plan.
+    #[must_use]
+    pub fn observation(&self) -> magma_types::Observation {
+        magma_types::Observation::of((*self).into())
+    }
+}
+
+impl From<RefreshReport> for magma_types::RefreshCounts {
+    /// Field-for-field. `RefreshReport` stays where the refresh lives;
+    /// `RefreshCounts` is the border shape that travels on persisted
+    /// artifacts, so `magma-types` never has to depend on the apply engine.
+    fn from(r: RefreshReport) -> Self {
+        Self {
+            refreshed: r.refreshed,
+            dropped_instances: r.dropped_instances,
+            dropped_resources: r.dropped_resources,
+            kept_on_error: r.kept_on_error,
+            suppressed_mass_drop: r.suppressed_mass_drop,
+        }
+    }
+}
+
 /// Resolve `inst`'s prior [`DynamicValue`] for a `ReadResource`/refresh RPC.
 ///
 /// When `inst.schema_version` already matches (or, in the never-observed
@@ -1559,7 +1599,19 @@ pub async fn refresh_then_plan(
         Some(ctx) => Some(refresh_state(state, ctx).await),
         None => None,
     };
-    let plan = magma_plan::plan(cfg, state)?;
+    // Stamp the refresh's OWN trustworthiness onto the artifact that
+    // survives. Without this the report died here — printed to stderr,
+    // reduced to `.is_some()` — and a pass in which every `ReadResource`
+    // failed produced a plan bit-indistinguishable from one in which
+    // reality genuinely matched: same untouched state, same all-`NoOp`
+    // change set, same bytes. Publishing that as reality is publishing a
+    // lie. `Observation` is derived from the counts, never asserted, so
+    // this can only ever narrow a claim.
+    let observation = report.as_ref().map_or_else(
+        magma_types::Observation::unrefreshed,
+        RefreshReport::observation,
+    );
+    let plan = magma_plan::plan(cfg, state)?.with_observation(observation);
     Ok((plan, report))
 }
 
@@ -3164,6 +3216,7 @@ mod tests {
                 reasons: vec![],
             }],
             output_changes: vec![],
+            observation: magma_types::Observation::unrefreshed(),
         };
         let mut state = State {
             version: 4,
@@ -3241,6 +3294,7 @@ mod tests {
                 reasons: vec![magma_types::ChangeReason::DeletedResource],
             }],
             output_changes: vec![],
+            observation: magma_types::Observation::unrefreshed(),
         };
         // State starts holding the orphaned data-source row (a prior apply put
         // it there); the reaction must purge it.
@@ -3640,6 +3694,7 @@ mod tests {
                 })
                 .collect(),
             output_changes: vec![],
+            observation: magma_types::Observation::unrefreshed(),
         }
     }
 
@@ -4005,6 +4060,7 @@ mod tests {
                 reasons: vec![],
             }],
             output_changes: vec![],
+            observation: magma_types::Observation::unrefreshed(),
         };
         let td = tempfile::tempdir().unwrap();
         let ctx = unpaced_ctx(td.path());

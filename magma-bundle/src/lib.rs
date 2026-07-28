@@ -76,6 +76,30 @@ pub struct Bundle {
     /// closure end-to-end alongside plan + drift + lifecycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gem_tree_attestation: Option<String>,
+    /// How much of this reconcile's `before` side was real, observed
+    /// fact — the plan-time refresh's own trustworthiness.
+    ///
+    /// **Why a receipt needs this.** A refresh in which every
+    /// `ReadResource` failed leaves state untouched, so the plan is
+    /// all-`NoOp` and the bundle looks exactly like a reconcile in which
+    /// reality genuinely matched. A compliance artifact that cannot tell
+    /// "we checked and it was fine" from "we could not check" is not
+    /// evidence of anything.
+    ///
+    /// **Covered by `bundle_id`** — unlike the plan's own copy, which is
+    /// deliberately outside `PlanId` (see `magma_types::Plan::observation`).
+    /// A `PlanId` addresses a change set and must stay stable under
+    /// transient RPC weather; a bundle id attests to what actually
+    /// happened, so the record that a pass was blind must not be
+    /// strippable without breaking verification.
+    ///
+    /// `None` means "not recorded", never "clean" — an honest absence
+    /// rather than a default that flatters. Populated by whoever assembled
+    /// the reconcile (the `pangea-operator` reconcile loop is the intended
+    /// writer; nothing inside magma builds a bundle from a refreshed plan
+    /// today).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<magma_types::Observation>,
 }
 
 impl Bundle {
@@ -122,6 +146,7 @@ impl Bundle {
             &lifecycle,
             &audit,
             gem_tree_attestation.as_deref(),
+            None,
         )?;
         Ok(Self {
             bundle_id,
@@ -134,13 +159,60 @@ impl Bundle {
             lifecycle,
             audit,
             gem_tree_attestation,
+            observation: None,
         })
+    }
+
+    /// Record how much of this reconcile's `before` side was real,
+    /// observed fact, re-deriving `bundle_id` to cover it.
+    ///
+    /// Re-deriving is the point, not a side effect: a receipt from which
+    /// the "this pass was blind" record can be stripped without breaking
+    /// verification is not a receipt. Attaching an observation therefore
+    /// mints a new id, and a tampered-with one fails
+    /// [`Bundle::verify`] exactly like any other field.
+    pub fn with_observation(
+        mut self,
+        observation: magma_types::Observation,
+    ) -> Result<Self, BundleError> {
+        self.observation = Some(observation);
+        self.bundle_id = Self::derive_id(
+            &self.kind,
+            &self.workspace,
+            &self.plan,
+            &self.outcome,
+            &self.drift,
+            &self.lifecycle,
+            &self.audit,
+            self.gem_tree_attestation.as_deref(),
+            self.observation.as_ref(),
+        )?;
+        Ok(self)
+    }
+
+    /// The honest answer to "how much of this bundle is real?".
+    ///
+    /// `None` means the assembler never recorded one — an absence, never
+    /// a clean bill of health. Callers deciding whether a bundle is
+    /// evidence of convergence must treat `None` and
+    /// `Some(_)`-with-blind-coverage the same way.
+    #[must_use]
+    pub fn observation(&self) -> Option<&magma_types::Observation> {
+        self.observation.as_ref()
     }
 
     /// Re-derive `bundle_id` from the canonical projection. The
     /// optional `gem_tree_attestation` is included in the projection
     /// so identical reconciles against different gem closures hash
     /// to different bundle_ids (catches gem-closure drift).
+    ///
+    /// `observation` is included the same way, and for the sharper
+    /// reason: two reconciles with an identical plan, outcome, drift and
+    /// lifecycle are NOT the same event when one of them read reality and
+    /// the other could not. It is added to the projection only when
+    /// present, so every bundle stored before this field existed still
+    /// verifies byte-for-byte — an upgrade must not manufacture tamper
+    /// alarms.
     pub fn derive_id(
         kind: &str,
         workspace: &str,
@@ -150,12 +222,13 @@ impl Bundle {
         lifecycle: &LifecycleState,
         audit: &[Event],
         gem_tree_attestation: Option<&str>,
+        observation: Option<&magma_types::Observation>,
     ) -> Result<String, BundleError> {
         // Plan and Outcome carry timestamps that vary across runs.
         // We project the plan via its (stable) id + canonical
         // change shape, NOT the chrono `created_at`. Same for
         // Outcome (use plan_id + applied/failed counts).
-        let canonical = serde_json::json!({
+        let mut canonical = serde_json::json!({
             "kind":      kind,
             "workspace": workspace,
             "plan_id":   plan.id,
@@ -194,6 +267,19 @@ impl Bundle {
             })).collect::<Vec<_>>(),
             "gem_tree_attestation": gem_tree_attestation,
         });
+        // Inserted only when present: a bundle that never carried an
+        // observation must project EXACTLY the bytes it did before this
+        // field existed, or every stored receipt fails verification on
+        // upgrade. `json!({"observation": None::<T>})` would emit a
+        // `null` key and break precisely that.
+        if let Some(observation) = observation {
+            if let Some(map) = canonical.as_object_mut() {
+                map.insert(
+                    "observation".to_string(),
+                    serde_json::to_value(observation)?,
+                );
+            }
+        }
         let bytes = serde_json::to_vec(&canonical)?;
         Ok(hex::encode(blake3::hash(&bytes).as_bytes()))
     }
@@ -210,6 +296,7 @@ impl Bundle {
             &self.lifecycle,
             &self.audit,
             self.gem_tree_attestation.as_deref(),
+            self.observation.as_ref(),
         )?;
         if recomputed != self.bundle_id {
             return Err(BundleError::IdMismatch {
@@ -366,6 +453,7 @@ mod tests {
             &lifecycle,
             &audit,
             None,
+            None,
         )
         .unwrap();
         let id2 = Bundle::derive_id(
@@ -376,6 +464,7 @@ mod tests {
             &drift,
             &lifecycle,
             &audit,
+            None,
             None,
         )
         .unwrap();
@@ -401,6 +490,7 @@ mod tests {
             &lifecycle,
             &audit,
             Some("a".repeat(64).as_str()),
+            None,
         )
         .unwrap();
         let id_b = Bundle::derive_id(
@@ -412,9 +502,158 @@ mod tests {
             &lifecycle,
             &audit,
             Some("b".repeat(64).as_str()),
+            None,
         )
         .unwrap();
         assert_ne!(id_a, id_b);
+    }
+
+    #[test]
+    fn bundle_id_distinguishes_a_blind_reconcile_from_a_clean_one() {
+        // The receipt-layer half of the bug. Same plan, same outcome, same
+        // drift, same lifecycle — one read reality, one could not. If
+        // these hashed equally the receipt would be attesting to a fact it
+        // does not have.
+        use magma_types::{Observation, RefreshCounts};
+        let plan = sample_plan();
+        let outcome = sample_outcome(&plan);
+        let drift = classify(&plan, &DriftPolicy::conservative_default());
+        let lifecycle = sample_lifecycle(&plan.id);
+        let audit = sample_audit();
+
+        let clean = Observation::of(RefreshCounts {
+            refreshed: 9,
+            ..RefreshCounts::default()
+        });
+        let blind = Observation::of(RefreshCounts {
+            kept_on_error: 9,
+            ..RefreshCounts::default()
+        });
+        assert_eq!(clean.coverage(), magma_types::Coverage::Complete);
+        assert_eq!(blind.coverage(), magma_types::Coverage::Blind);
+
+        let mk = |obs| {
+            Bundle::new(
+                "terraform",
+                "ws-1",
+                plan.clone(),
+                Some(outcome.clone()),
+                drift.clone(),
+                lifecycle.clone(),
+                audit.clone(),
+            )
+            .unwrap()
+            .with_observation(obs)
+            .unwrap()
+        };
+        let a = mk(clean);
+        let b = mk(blind);
+        assert_ne!(a.bundle_id, b.bundle_id);
+        a.verify().unwrap();
+        b.verify().unwrap();
+    }
+
+    #[test]
+    fn stripping_the_observation_breaks_verification() {
+        // A receipt from which "this pass was blind" can be removed
+        // without consequence is not a receipt.
+        use magma_types::{Observation, RefreshCounts};
+        let plan = sample_plan();
+        let drift = classify(&plan, &DriftPolicy::conservative_default());
+        let lifecycle = sample_lifecycle(&plan.id);
+        let mut bundle = Bundle::new(
+            "terraform",
+            "ws-1",
+            plan,
+            None,
+            drift,
+            lifecycle,
+            sample_audit(),
+        )
+        .unwrap()
+        .with_observation(Observation::of(RefreshCounts {
+            kept_on_error: 4,
+            ..RefreshCounts::default()
+        }))
+        .unwrap();
+        bundle.verify().unwrap();
+        bundle.observation = None;
+        match bundle.verify() {
+            Err(BundleError::IdMismatch { .. }) => {}
+            other => panic!("expected IdMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bundle_without_an_observation_hashes_exactly_as_it_did_before() {
+        // Back-compat forcing function. This reproduces the canonical
+        // projection AS IT WAS before `observation` existed; if a future
+        // edit changes the projection for observation-less bundles, every
+        // already-stored receipt would start failing verification and this
+        // test is the thing that screams first.
+        let plan = sample_plan();
+        let outcome = sample_outcome(&plan);
+        let drift = classify(&plan, &DriftPolicy::conservative_default());
+        let lifecycle = sample_lifecycle(&plan.id);
+        let audit = sample_audit();
+
+        let historical = serde_json::json!({
+            "kind":      "terraform",
+            "workspace": "ws-1",
+            "plan_id":   plan.id,
+            "plan_changes": plan.changes,
+            "outcome":   serde_json::json!({
+                "plan_id": outcome.plan_id,
+                "applied": outcome.applied,
+                "failed":  outcome.failed,
+            }),
+            "drift": serde_json::json!({
+                "plan_id":  drift.plan_id,
+                "summary":  drift.summary,
+                "events":   drift.events.iter().map(|e| serde_json::json!({
+                    "kind":        e.kind,
+                    "address":     e.address,
+                    "action":      e.action,
+                    "severity":    e.severity,
+                    "decision":    e.decision,
+                    "fingerprint": e.fingerprint,
+                })).collect::<Vec<_>>(),
+            }),
+            "lifecycle": serde_json::json!({
+                "current": lifecycle.current,
+                "history": lifecycle.history.iter().map(|t| serde_json::json!({
+                    "from":    t.from,
+                    "to":      t.to,
+                    "plan_id": t.plan_id,
+                    "reason":  t.reason,
+                })).collect::<Vec<_>>(),
+            }),
+            "audit": audit.iter().map(|e| serde_json::json!({
+                "seq":       e.seq,
+                "payload":   e.payload,
+                "prev_hash": e.prev_hash,
+                "hash":      e.hash,
+            })).collect::<Vec<_>>(),
+            "gem_tree_attestation": None::<&str>,
+        });
+        let expected =
+            hex::encode(blake3::hash(&serde_json::to_vec(&historical).unwrap()).as_bytes());
+        let actual = Bundle::derive_id(
+            "terraform",
+            "ws-1",
+            &plan,
+            &Some(outcome),
+            &drift,
+            &lifecycle,
+            &audit,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            actual, expected,
+            "an observation-less bundle must project the pre-observation bytes",
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 magma-converge = { workspace = true }
 magma-drift    = { workspace = true }
+magma-types    = { workspace = true }
 magma-fsm      = { workspace = true }
 magma-stream   = { workspace = true }
 serde          = { workspace = true }

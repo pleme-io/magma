@@ -18,6 +18,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod observation;
+
+pub use observation::{Coverage, DriftVerdict, Observation, ObservationError, RefreshCounts};
+
 // ── Identity ───────────────────────────────────────────────────────
 
 /// Identifier for a workspace member crate that produces a typed resource.
@@ -192,6 +196,87 @@ pub struct Plan {
     pub variables: HashMap<String, serde_json::Value>,
     pub resource_changes: Vec<ResourceChange>,
     pub output_changes: Vec<OutputChange>,
+    /// How much of `resource_changes[].before` is real, observed fact —
+    /// the plan-time refresh's own trustworthiness, travelling with the
+    /// data it qualifies.
+    ///
+    /// **Why the plan, and not only the bundle.** The refresh happens in
+    /// the same call that produces this value
+    /// (`magma_apply::engine::refresh_then_plan`), the `before` fields
+    /// this qualifies live here, and this is the artifact that gets
+    /// persisted and re-read across reconcile cycles and pod restarts. A
+    /// trust record that lives only in a downstream receipt leaves the
+    /// standalone plan artifact still able to lie.
+    ///
+    /// **Deliberately OUTSIDE [`PlanId`]** — the same exclusion, for the
+    /// same reason, as [`Plan::created_at`]. `PlanId` addresses the
+    /// *change set computed against the state we hold*: two observations
+    /// of an unchanged world must hash equal, or nothing downstream can
+    /// dedupe, cache, or resume by plan id. `kept_on_error` moves with
+    /// transient RPC weather; folding it into the digest would mint a
+    /// "new plan" on every flaky read and destroy exactly the property
+    /// that makes `PlanId` worth having. The trust record is instead a
+    /// first-class field a consumer must read — see
+    /// [`Plan::drift_verdict`], which has no way to say "in sync" without
+    /// an observation that supports the claim.
+    ///
+    /// The *bundle* id, by contrast, DOES cover the observation: a
+    /// compliance receipt from which the "this was blind" record can be
+    /// stripped without breaking verification is not a receipt.
+    #[serde(default)]
+    pub observation: Observation,
+}
+
+impl Plan {
+    /// Stamp this plan with the trust record of the refresh that produced
+    /// the state it was diffed against.
+    ///
+    /// The seam for any caller that runs its own refresh instead of going
+    /// through `magma_apply::engine::refresh_then_plan`. Never widens a
+    /// claim by accident: an observation is classified from counts, so
+    /// stamping cannot manufacture coverage the refresh did not have.
+    #[must_use]
+    pub fn with_observation(mut self, observation: Observation) -> Self {
+        self.observation = observation;
+        self
+    }
+
+    /// Resources this plan intends to change (every non-`NoOp` change).
+    #[must_use]
+    pub fn change_count(&self) -> usize {
+        self.resource_changes
+            .iter()
+            .filter(|c| c.action != Action::NoOp)
+            .count()
+    }
+
+    /// Resources whose desired state matched the state we hold (every
+    /// `NoOp` change).
+    ///
+    /// This is the "observed and correct" half of reality-as-data, and it
+    /// is only ever *evidence* when [`Plan::observation`] says the state it
+    /// matched against was actually read back from the provider — which is
+    /// precisely what [`Plan::drift_verdict`] enforces.
+    #[must_use]
+    pub fn in_sync_count(&self) -> usize {
+        self.resource_changes
+            .iter()
+            .filter(|c| c.action == Action::NoOp)
+            .count()
+    }
+
+    /// The honest answer to "does reality match desired state?".
+    ///
+    /// Total over every observation: an all-`NoOp` plan built on a blind
+    /// refresh returns [`DriftVerdict::Unobserved`], never
+    /// [`DriftVerdict::InSync`]. Gate "nothing to do" decisions on
+    /// [`DriftVerdict::is_confirmed_in_sync`], never on an empty change
+    /// list.
+    #[must_use]
+    pub fn drift_verdict(&self) -> DriftVerdict {
+        self.observation
+            .verdict(self.change_count(), self.in_sync_count())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -66,6 +66,7 @@ async fn random_id_applies_via_real_provider() {
         variables: HashMap::new(),
         resource_changes: vec![change],
         output_changes: Vec::new(),
+        observation: magma_types::Observation::unrefreshed(),
     };
 
     let mut state = State {

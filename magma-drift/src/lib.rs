@@ -174,11 +174,42 @@ pub struct DriftReport {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DriftSummary {
+    /// Changes the policy engine actually decided on — every non-`NoOp`
+    /// change in the plan. Deliberately EXCLUDES `unchanged`: a resource
+    /// that needs nothing is not a change, and the four decision buckets
+    /// below partition exactly this number.
     pub total_changes: usize,
     pub auto_corrected: usize,
     pub auto_corrected_with_alert: usize,
     pub awaiting_approval: usize,
     pub refused: usize,
+    /// Resources the plan classified `NoOp` — desired state matched the
+    /// state we hold. The "observed and correct" half of reality, which
+    /// [`classify`] otherwise drops on the floor.
+    ///
+    /// This is a COUNT, not an event, and that is the whole design: see
+    /// [`classify`] for why routing `NoOp`s through the policy engine
+    /// would be a behavioral regression rather than a completeness fix.
+    ///
+    /// **It is not by itself evidence.** "54 resources matched" is only a
+    /// statement about reality if the state they matched against was read
+    /// back from the provider — which is `magma_types::Observation`'s
+    /// question, carried on the plan artifact and on
+    /// [`crate::DriftReport`]'s bundle, not answerable from this number.
+    ///
+    /// `skip_serializing_if` is load-bearing, not tidiness: `DriftSummary`
+    /// is projected verbatim into `magma_bundle::Bundle`'s BLAKE3
+    /// `bundle_id`, so emitting a new always-present field would change
+    /// the id of every already-stored bundle and turn a routine upgrade
+    /// into a fleet of false tamper alarms. Omitting it at zero keeps
+    /// every historical bundle verifying exactly as before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unchanged: usize,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if shape
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl DriftSummary {
@@ -195,12 +226,39 @@ impl DriftSummary {
 
 /// Classify every Change in `plan` under `policy`, returning a
 /// typed `DriftReport`.
+///
+/// # Why `NoOp` changes stay out of `events` — and why they no longer
+/// vanish
+///
+/// A `DriftReport` is a record of POLICY DECISIONS, and a resource that
+/// needs nothing has no decision to make. Retaining `NoOp`s as events
+/// would not be a completeness fix, it would be three regressions:
+///
+/// 1. **It would stall every clean reconcile.** `reconcile_with_policy`
+///    routes on `summary.awaiting_approval > 0`, and `DriftPolicy`'s
+///    `fallback` is `RequireApproval`. A policy whose rules don't match a
+///    `NoOp` would hold an entirely-unchanged world for human approval —
+///    forever, every cycle.
+/// 2. **It would inflate every decision bucket** with resources nobody
+///    decided anything about, so `auto_corrected` would stop meaning
+///    "corrected".
+/// 3. **It would emit one event per unchanged resource per cycle** — the
+///    exact alert storm [`DriftDeduplicator`] exists to suppress, except
+///    at steady state, where the report should be quiet.
+///
+/// So the filter stays. What was genuinely missing is that the "observed
+/// and correct" half left NO trace at all, which is what made
+/// reality-as-data impossible downstream even though the data had already
+/// been computed. It is now counted in
+/// [`DriftSummary::unchanged`] — recoverable, cheap, and structurally
+/// incapable of moving a policy decision.
 pub fn classify(plan: &Plan, policy: &DriftPolicy) -> DriftReport {
     let observed_at = Utc::now();
     let mut events = Vec::with_capacity(plan.changes.len());
     let mut summary = DriftSummary::default();
     for change in &plan.changes {
         if matches!(change.action, magma_converge::Action::NoOp) {
+            summary.unchanged += 1;
             continue;
         }
         let (decision, matched) = policy.evaluate(change);
@@ -369,8 +427,32 @@ pub async fn reconcile_with_policy<R: Reconciler>(
 }
 
 /// Dedupe consecutive observations of the same drift by fingerprint.
-/// Used by long-running drift-detection loops that don't want to
+/// Intended for long-running drift-detection loops that don't want to
 /// emit the same alert every minute.
+///
+/// # Dormant: zero call sites, fleet-wide (audited 2026-07-27)
+///
+/// Stated plainly rather than left to be rediscovered. Nothing in magma
+/// or downstream constructs one; the only exercise it has ever had is its
+/// own two unit tests, which drive `observe` with literal fingerprint
+/// strings and have never seen a real [`DriftEvent`] stream. Read those
+/// green tests as "the window arithmetic is right", never as "this is
+/// proven in situ".
+///
+/// **Kept, not retired behind a flag** (MODULARIZE-DON'T-DELETE, and its
+/// stated exception does not apply): this is not orphan code whose path
+/// became unreachable — it is a complete primitive whose consumer has not
+/// been built yet, and its input is already populated on every event
+/// ([`DriftEvent::fingerprint`] is computed unconditionally by
+/// [`classify`]). Adding an `enable` flag would be a knob with nothing on
+/// either side of it.
+///
+/// The named consumer that lights it up: a continuous drift loop that
+/// classifies on a timer instead of per-reconcile — at which point the
+/// same drift is re-observed every tick and the whole point of the
+/// fingerprint appears. Adding [`DriftSummary::unchanged`] does NOT make
+/// it live: unchanged resources produce no events, so nothing new flows
+/// through here.
 #[derive(Debug, Default)]
 pub struct DriftDeduplicator {
     seen: HashMap<String, DateTime<Utc>>,
@@ -428,10 +510,106 @@ mod tests {
     }
 
     #[test]
-    fn noop_changes_are_ignored() {
+    fn noop_changes_produce_no_events() {
         let plan = mk_plan(vec![change("kv.x", Action::NoOp, None, None)]);
         let report = classify(&plan, &DriftPolicy::conservative_default());
         assert!(report.events.is_empty());
+    }
+
+    #[test]
+    fn noop_changes_are_counted_instead_of_vanishing() {
+        // The "observed and correct" half used to leave no trace at all,
+        // which is what made reality-as-data impossible downstream even
+        // though the plan had already computed it.
+        let plan = mk_plan(vec![
+            change("kv.a", Action::NoOp, None, None),
+            change("kv.b", Action::NoOp, None, None),
+            change("kv.c", Action::Update, Some(json!(1)), Some(json!(2))),
+        ]);
+        let report = classify(&plan, &DriftPolicy::conservative_default());
+        assert_eq!(report.summary.unchanged, 2, "N observed and matched");
+        assert_eq!(
+            report.summary.total_changes, 1,
+            "unchanged must NOT inflate the decided-change count",
+        );
+        assert_eq!(report.events.len(), 1, "still one event per real change");
+    }
+
+    #[test]
+    fn an_all_noop_plan_is_never_held_for_approval() {
+        // The decisive reason the NoOp filter stays. `DriftPolicy`'s
+        // fallback is RequireApproval and `reconcile_with_policy` routes
+        // on `awaiting_approval > 0`; routing NoOps through the policy
+        // engine would hold an entirely-unchanged world for a human, every
+        // cycle, forever.
+        let policy = DriftPolicy {
+            rules: vec![],
+            fallback: DriftDecision::RequireApproval,
+        };
+        let plan = mk_plan(vec![
+            change("kv.a", Action::NoOp, None, None),
+            change("kv.b", Action::NoOp, None, None),
+        ]);
+        let report = classify(&plan, &policy);
+        assert_eq!(report.summary.awaiting_approval, 0);
+        assert_eq!(report.summary.refused, 0);
+        assert_eq!(report.summary.unchanged, 2);
+    }
+
+    #[test]
+    fn the_decision_buckets_still_partition_total_changes() {
+        // `unchanged` sits outside the partition by construction — pinned
+        // so a future edit can't quietly fold it in.
+        let plan = mk_plan(vec![
+            change("kv.noop", Action::NoOp, None, None),
+            change_with_severity(
+                "kv.cosmetic",
+                Action::Update,
+                ChangeSeverity::Cosmetic,
+                Some(json!(1)),
+                Some(json!(2)),
+            ),
+            change_with_severity(
+                "kv.critical",
+                Action::Delete,
+                ChangeSeverity::Critical,
+                Some(json!({})),
+                None,
+            ),
+        ]);
+        let s = classify(&plan, &DriftPolicy::conservative_default()).summary;
+        assert_eq!(
+            s.auto_corrected + s.auto_corrected_with_alert + s.awaiting_approval + s.refused,
+            s.total_changes,
+        );
+        assert_eq!(s.unchanged, 1);
+    }
+
+    #[test]
+    fn a_zero_unchanged_summary_serializes_exactly_as_it_did_before() {
+        // `unchanged` is projected verbatim into magma-bundle's BLAKE3
+        // bundle_id. Emitting it unconditionally would change the id of
+        // every already-stored bundle — a fleet of false tamper alarms on
+        // a routine upgrade. At zero it must not appear at all.
+        let plan = mk_plan(vec![change(
+            "kv.a",
+            Action::Update,
+            Some(json!(1)),
+            Some(json!(2)),
+        )]);
+        let s = classify(&plan, &DriftPolicy::conservative_default()).summary;
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(
+            v.get("unchanged").is_none(),
+            "a zero unchanged count must not enter the canonical projection: {v}",
+        );
+        // And a real count does travel.
+        let plan = mk_plan(vec![change("kv.a", Action::NoOp, None, None)]);
+        let s = classify(&plan, &DriftPolicy::conservative_default()).summary;
+        assert_eq!(
+            serde_json::to_value(&s).unwrap().get("unchanged"),
+            Some(&json!(1)),
+        );
     }
 
     #[test]

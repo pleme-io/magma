@@ -1699,6 +1699,7 @@ dependencies = [
  "magma-fsm",
  "magma-stream",
  "magma-test-laws",
+ "magma-types 0.1.10",
  "proptest",
  "serde",
  "serde_json",

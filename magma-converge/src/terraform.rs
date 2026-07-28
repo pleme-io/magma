@@ -147,6 +147,10 @@ impl<B: magma_backend::Backend + 'static> Reconciler for TerraformReconciler<B> 
             variables: Default::default(),
             resource_changes: magma_changes,
             output_changes: vec![],
+            // An apply-side reconstruction of an already-decided change
+            // set — it observed nothing itself. The trust record belongs
+            // to whatever produced the universal plan upstream.
+            observation: magma_types::Observation::unrefreshed(),
         };
 
         let outcome = magma_apply::run_plan(&magma_plan, &mut state)

@@ -102,6 +102,7 @@ fn plan_of(n: usize) -> Plan {
             })
             .collect(),
         output_changes: Vec::new(),
+        observation: magma_types::Observation::unrefreshed(),
     }
 }
 
