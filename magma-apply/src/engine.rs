@@ -1072,11 +1072,28 @@ fn collect_phantom_parents(failed: &[FailedChange]) -> HashSet<String> {
     let mut out = HashSet::new();
     for f in failed {
         let r = f.reason.as_str();
+
         // `.../repos/<owner>/<repo>/<child>...` → repo NAME (a child 404'd on
         // a repo that doesn't exist). Require the 3rd `/`-segment (a child
         // path) so a bare `/repos/owner/repo` or an `/orgs/.../repos`
         // create-404 isn't mistaken for a parent.
-        let mut rest = r;
+        // GATE THE PATH-SHAPE BRANCH ON 404 — necessary, because the shape
+        // alone is NOT sufficient: a child's already-exists **422** carries the
+        // very same `/repos/<owner>/<repo>/<child>` path as a genuine parent
+        // 404. Ungated, a label that already exists was read as proof its
+        // parent repository is a phantom, and `drop_repos_from_state` evicted a
+        // repo that is perfectly real — 11 live repositories per failed apply on
+        // pleme-io-opensource (state 2722 -> 2711, serial 36 -> 37), re-created
+        // next plan, colliding again: a churn loop that never converged.
+        //
+        // The doc comment above already promised this ("Only repo-scoped 404
+        // paths match"); the code never implemented it.
+        //
+        // Scoped to THIS branch only. The `${github_repository.X}` branch below
+        // is a different signal — an unresolved reference means the parent is
+        // genuinely absent from state regardless of any status code — so gating
+        // it on 404 would break real phantom detection.
+        let mut rest = if r.contains("404") { r } else { "" };
         while let Some(i) = rest.find("/repos/") {
             let after = &rest[i + "/repos/".len()..];
             let parts: Vec<&str> = after.splitn(3, '/').collect();
@@ -3448,6 +3465,45 @@ mod tests {
             Action::NoOp,
             "config matches unchanged state — still a NoOp",
         );
+    }
+
+    #[test]
+    fn a_422_already_exists_must_not_evict_its_parent_repo() {
+        use magma_types::{ModulePath, ResourceAddress, ResourceKind, ResourceTypeId};
+        let mkfail = |type_id: &str, name: &str, reason: &str| FailedChange {
+            address: ResourceAddress {
+                module: ModulePath::root(),
+                kind: ResourceKind::Managed,
+                type_id: ResourceTypeId(type_id.into()),
+                name: name.into(),
+                key: None,
+            },
+            action: Action::Create,
+            reason: reason.into(),
+        };
+
+        // A label that ALREADY EXISTS 422s, and its error text carries the very
+        // same /repos/<owner>/<repo>/<child> path as a genuine parent 404. Read
+        // as a phantom, this evicted 11 live repositories per failed apply on
+        // pleme-io-opensource (state 2722 -> 2711) and the loop never converged.
+        let already_exists = mkfail(
+            "github_issue_label",
+            "banken-label-bug",
+            "422 Validation Failed: POST https://api.github.com/repos/pleme-io/banken/labels — already_exists",
+        );
+        assert!(
+            collect_phantom_parents(&[already_exists]).is_empty(),
+            "a 422 already-exists must NOT nominate its parent repo as a phantom"
+        );
+
+        // The genuine case still works: a real 404 on a child path.
+        let genuine_404 = mkfail(
+            "github_issue_label",
+            "ghost-label-bug",
+            "404 Not Found: POST https://api.github.com/repos/pleme-io/ghost/labels",
+        );
+        let got = collect_phantom_parents(&[genuine_404]);
+        assert!(got.contains("ghost"), "a real 404 must still nominate the parent, got {got:?}");
     }
 
     #[test]
