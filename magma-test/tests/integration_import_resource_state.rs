@@ -305,6 +305,94 @@ async fn configured_import_environment_reuses_one_dialed_provider_across_calls()
     assert_eq!(state.resources.len(), 2);
 }
 
+// ── Law 6: an adopted resource is NEVER identity-less ──────────────
+//
+// THE regression this pins. `ImportResourceState` is, by protocol
+// contract, only step ONE: it returns a STUB carrying just enough
+// identity for step two, `ReadResource`, which is what populates every
+// other attribute — including every COMPUTED one. `ConfiguredImportEnvironment`
+// used to call step one alone and hand the raw stub to `absorb()`.
+//
+// The damage is not "slightly incomplete state". It is a resource whose
+// ADDRESS exists (so the next plan stops proposing a Create — the loop
+// looks fixed) while its IDENTITY does not, and magma's `refresh` is an
+// M0.10 no-op so it never self-heals. Every dependent referencing a
+// computed attribute then resolves to null FOREVER:
+// `github_branch_protection.repository_id = ${github_repository.X.node_id}`
+// → `""` → GitHub's "Could not resolve to a node with the global id of ''"
+// → NOT an already-exists diagnostic → the reactive adopt path is never
+// reached → the pre-existing branch protection can never adopt. Live
+// receipt: nine `github_repository` entries in the pleme-io-opensource
+// state carrying `name: null, node_id: null`, with 50 children failing
+// every cycle behind them.
+//
+// The `stub-` id makes the mock behave like a real provider (see
+// `mock_provider`'s `import_resource_state` / `read_resource`). Run
+// against the pre-fix code this assertion fails on a null `name` — the
+// deliberately-broken-input red run this gate is required to have.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adopted_resource_is_never_identity_less() {
+    let ws = configured_provider_workspace();
+    let ctx = ApplyContext::new(ws.path().to_path_buf());
+    let env = ConfiguredImportEnvironment::new(&ctx);
+
+    let directives = ImportDirectives::default().with_explicit("mock_resource.adopted", "stub-xyz");
+
+    let mut state = empty_state();
+    let outcome = run_explicit_prepass(&env, &directives, &mut state)
+        .await
+        .expect("prepass structurally ok");
+
+    assert_eq!(outcome.newly_absorbed(), 1, "{outcome:?}");
+    assert!(outcome.all_succeeded(), "{outcome:?}");
+
+    let attrs = &state.resources[0].instances[0].attributes;
+    assert_eq!(attrs["id"], "stub-xyz", "identity present");
+    // The two attributes the import STUB left null. Both are populated
+    // only by the protocol's confirming ReadResource.
+    assert_eq!(
+        attrs["name"], "stub-xyz",
+        "adoption must run the confirming ReadResource — absorbing the raw \
+         import stub persists an identity-less resource: {attrs:?}",
+    );
+    assert_eq!(
+        attrs["imported_by"], "mock_provider",
+        "every computed attribute the stub left null must be hydrated, not \
+         just the one magma happens to backfill by hand: {attrs:?}",
+    );
+}
+
+/// The same law stated the other way: NO attribute the provider declares
+/// may be left null by an adoption whose confirming read succeeded. Stated
+/// as an exhaustive scan rather than named fields so a future schema
+/// attribute cannot silently join the identity-less set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adoption_leaves_no_null_attribute_when_the_read_confirms() {
+    let ws = configured_provider_workspace();
+    let ctx = ApplyContext::new(ws.path().to_path_buf());
+    let env = ConfiguredImportEnvironment::new(&ctx);
+
+    let directives = ImportDirectives::default().with_explicit("mock_resource.adopted", "stub-abc");
+    let mut state = empty_state();
+    run_explicit_prepass(&env, &directives, &mut state)
+        .await
+        .expect("prepass structurally ok");
+
+    let attrs = &state.resources[0].instances[0].attributes;
+    let nulls: Vec<&String> = attrs
+        .as_object()
+        .expect("attributes are an object")
+        .iter()
+        .filter(|(_, v)| v.is_null())
+        .map(|(k, _)| k)
+        .collect();
+    assert!(
+        nulls.is_empty(),
+        "an adopted resource whose confirming ReadResource succeeded must carry \
+         no null attributes; these came straight from the import stub: {nulls:?}",
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn configured_import_environment_missing_schema_is_typed_failure_not_panic() {
     // "mock_missing_type" also resolves to provider "mock" (dials +

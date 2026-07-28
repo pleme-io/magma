@@ -540,7 +540,8 @@ pub async fn run_plan_with_providers_resumable(
         // `partition_changes` ever routes a non-NoOp through here, its writes
         // reach state instead of being silently dropped.
         let mut rec = NodeRecord::default();
-        let outcome = apply_one(change, &mut rec, &mut registry).await;
+        // A NoOp never mutates, so it can never conflict: no adoption id.
+        let outcome = apply_one(change, None, &mut rec, &mut registry).await;
         rec.commit(state);
         match outcome {
             Ok(a) => applied.push(a),
@@ -795,8 +796,21 @@ pub async fn run_plan_with_providers_resumable(
             // runs on BOTH arms: a replace that destroyed the old instance and
             // then failed to create its replacement has really destroyed it,
             // and state must say so.
+            // Derive the adoption id HERE, where both halves exist: the RAW
+            // change (whose `${type.name.attr}` references say *which* parent a
+            // composite id points at) and `state_map` (which says what that
+            // parent is really NAMED). `apply_one` sees only the substituted
+            // clone, where the reference has already collapsed into a node id
+            // or a convention-guessed string — which is exactly why deriving it
+            // down there produced un-importable ids for every reference-keyed
+            // type. Computed for creates only; nothing else can conflict.
+            let adoption = if change.action == Action::Create {
+                crate::natural_id::derive(change, resolved.after.as_ref(), &state_map)
+            } else {
+                None
+            };
             let mut rec = NodeRecord::default();
-            let outcome = apply_one(&resolved, &mut rec, &mut registry).await;
+            let outcome = apply_one(&resolved, adoption.as_ref(), &mut rec, &mut registry).await;
             rec.commit(state);
             stats.pacer_wait_ms_total = stats
                 .pacer_wait_ms_total
@@ -1615,10 +1629,20 @@ pub async fn refresh_then_plan(
     Ok((plan, report))
 }
 
-/// Does a provider error message indicate the resource already exists
-/// (a create-conflict to be adopted via import, not a hard failure)?
-/// Matches the GitHub provider's 422 shapes ("name already exists on this
-/// account", "has already been blocked") + generic already-exists/409.
+/// Does a provider error message *look like* an already-exists diagnostic?
+///
+/// **RETIRED AS A GATE (kept as telemetry).** This was the condition on the
+/// adopt-on-conflict path; it is now only a log field. A substring oracle over
+/// a provider's prose is only-mitigated in both directions — it misses a real
+/// conflict worded differently, and it fires on any message that merely
+/// contains the digits "422"/"409". Worse, the failure that actually wedged
+/// pleme-io-opensource never matched it at all: a child create sent to a wrong
+/// URL returns **404**, so a resource that plainly exists was never considered
+/// for adoption. The gate is now the provider's own answer —
+/// `ImportResourceState` returning a non-null state. This function survives so
+/// the log can still distinguish "we expected this conflict" from "we adopted
+/// something the diagnostic never advertised", which is the signal that a
+/// *different* bug (a bad URL, a bad reference) is upstream of the conflict.
 fn is_already_exists(msg: &str) -> bool {
     let m = msg.to_ascii_lowercase();
     m.contains("already exists")
@@ -1628,81 +1652,146 @@ fn is_already_exists(msg: &str) -> bool {
         || m.contains("409")
 }
 
-/// The provider-native import id for a create-conflict adoption. Most
-/// providers key import on the `name` attribute (github_repository's id IS
-/// its name); fall back to the resource's address name.
+/// **The** adoption primitive: run the Terraform import protocol's TWO
+/// mandated steps against a live provider and return the adopted resource's
+/// full attribute object.
 ///
-/// COMPOSITE-KEYED types (2026-07-07): GitHub sub-resources do NOT key import
-/// on a bare `name` — they key on `<parent>:<subkey>` (e.g.
-/// `github_branch_protection` imports by `<repo>:<pattern>`, NOT its address
-/// name "akeyless_stack_main"). Without the composite id, adopt-on-conflict
-/// resolves the wrong import id, `import_resource_state` fails, and the
-/// create-that-exists never adopts — the pleme-io-opensource "8 stuck creates /
-/// all-422" wedge. These arms mirror the pangea-operator import.rs
-/// `bundled_natural_ids` templates so magma's in-engine reactive adopt matches
-/// the operator's proactive prepass. Non-github / name-keyed types fall through
-/// to the original `name`/address-name behavior unchanged.
+/// `ImportResourceState` returns a **STUB** — by protocol contract it carries
+/// only enough identity for the follow-up read (for `github_repository`, just
+/// `id`); every other attribute, including every COMPUTED one (`name`,
+/// `node_id`, `repo_id`, `full_name`, …), comes back `null`. The protocol's
+/// second step, `ReadResource` on that stub, is what populates them. Persisting
+/// the stub is therefore not "a slightly incomplete adopt" — it is a resource
+/// whose address exists in state while its identity does not, and magma's
+/// `refresh` is an M0.10 no-op, so it never self-heals. Every dependent that
+/// references a computed attribute then resolves to `null` FOREVER:
+/// `github_branch_protection.repository_id = ${github_repository.X.node_id}`
+/// becomes `""` → GitHub's "Could not resolve to a node with the global id of
+/// ''" → NOT `is_already_exists` → the reactive adopt path is never reached, so
+/// the already-existing branch protection can never adopt. That is a permanent
+/// wedge, produced by the adoption that was supposed to end one.
+///
+/// This function exists so the two-step protocol is implemented **once**. Both
+/// adoption entry points drive it:
+///
+/// 1. the reactive mid-apply arm ([`apply_one_inner`]'s `Action::Create` +
+///    [`is_already_exists`] branch — `importPolicy.autoOnConflict`), and
+/// 2. the proactive pre-plan prepass
+///    ([`crate::import_prepass::ConfiguredImportEnvironment`], which the
+///    operator's `import()` drives for every resolved import target).
+///
+/// Before this existed only (1) performed the confirming read; (2) absorbed the
+/// raw stub, which is exactly how the pleme-io-opensource state came to hold
+/// nine `github_repository` entries with `name: null, node_id: null`.
+///
+/// Returns `Ok(None)` when the provider imported nothing (a cty-null import
+/// state — the resource genuinely isn't there). A failed *confirming read*
+/// never fails the adoption: it falls back to the stub plus the identity
+/// backfill below, because a tracked-with-identity resource strictly dominates
+/// a re-created one.
+pub(crate) async fn import_and_confirm(
+    lp: &mut LiveProvider,
+    type_name: &str,
+    id: &str,
+    pacer: Option<&LeakyBucket>,
+) -> Result<Option<serde_json::Value>, EngineError> {
+    let provider_name = provider_local_name(type_name);
+    let implied = lp
+        .schema
+        .resource(type_name)
+        .cloned()
+        .ok_or_else(|| EngineError::NoResourceSchema(type_name.into(), provider_name.clone()))?;
+
+    let Some(imp_dv) = rpc_retry!(pacer, lp.conn.import_resource_state(type_name, id))
+        .map_err(|e| EngineError::Rpc(provider_name.clone(), format!("import_resource_state: {e}")))?
+    else {
+        return Ok(None);
+    };
+
+    // Step 2 — the protocol-mandated confirming read. RETRIED: a TRANSIENT
+    // read failure (RPC hiccup, secondary rate limit, momentary provider
+    // crash) falling straight through to the stub is precisely how an
+    // identity-less entry gets persisted.
+    let full_dv = match rpc_retry!(pacer, lp.conn.read_resource(type_name, &imp_dv)) {
+        Ok(Some(read_dv)) => read_dv,
+        // `Ok(None)` is NOT a failed read — it is the provider affirmatively
+        // answering "that resource is not there" (a cty-null `new_state`,
+        // `ProviderConn::read_resource`'s absent signal). Falling through to
+        // the stub here is the worst reachable outcome of the whole adoption
+        // path: an import stub for a resource the provider just refuted gets
+        // persisted (with its identity backfilled from the id, which makes it
+        // look healthy), the resource is then absent from every future plan,
+        // and it is NEVER CREATED — silently. A passthrough importer
+        // (`ImportStatePassthroughContext`, which `github_repository` uses)
+        // makes no API call at all, so step 1 alone can never be the gate;
+        // this read is. Refusing here costs one re-created resource at worst;
+        // accepting costs one that never exists.
+        Ok(None) => {
+            tracing::warn!(
+                resource_type = %type_name,
+                import_id = %id,
+                "magma adopt: import returned a stub but the confirming ReadResource says the \
+                 resource is absent; refusing to adopt (a stub adopted here would never be created)"
+            );
+            return Ok(None);
+        }
+        // A genuinely FAILED read (RPC error, after retry) is different: the
+        // resource's existence is unrefuted, and a tracked-with-identity
+        // resource still dominates a re-created one.
+        Err(_) => imp_dv,
+    };
+    let mut attrs = full_dv
+        .to_json(&implied)
+        .map_err(|e| EngineError::Cty(e.to_string()))?;
+
+    // Defense-in-depth: if even the retried read couldn't confirm and we fell
+    // back to the stub, a name-keyed resource's import id IS its name — backfill
+    // it so an adopted state is NEVER identity-less. Computed attributes may
+    // still be incomplete; the `${…name}` fallback in `substitute_refs` covers
+    // references either way. Scoped to `github_repository` because that is the
+    // one type where `id == name` is a schema fact, not a guess.
+    if type_name == "github_repository"
+        && attrs
+            .get("name")
+            .is_none_or(serde_json::Value::is_null)
+    {
+        if let Some(o) = attrs.as_object_mut() {
+            o.insert("name".to_string(), serde_json::Value::String(id.to_string()));
+        }
+        tracing::warn!(
+            resource_type = %type_name,
+            import_id = %id,
+            "magma adopt: ReadResource could not confirm a name after retry; backfilled identity from import id (computed attrs may be incomplete)"
+        );
+    }
+    Ok(Some(attrs))
+}
+
+/// The provider-native import id for a create-conflict adoption — now a thin
+/// forwarder onto the typed catalog in [`crate::natural_id`].
+///
+/// The per-type `match` that used to live here is gone, and with it the class
+/// of bug it kept producing: a component that is a **reference to a parent**
+/// was indistinguishable from a plain attribute, so
+/// `github_branch_protection.repository_id` (a `${…node_id}` reference) became
+/// either the raw `${…}` literal or a GraphQL node id, and neither is
+/// importable. See [`crate::natural_id::IdPart::ParentName`].
+///
+/// This forwarder is now TEST-ONLY. Production has exactly one derivation
+/// site — the apply loop, which owns the resolution map — and one consumption
+/// site, [`resolve_import_id`], which gates the result on
+/// [`crate::natural_id::Confidence::is_exact`]. A second production caller
+/// would be a second, ungated path to the same guess.
+#[cfg(test)]
 fn natural_import_id(change: &ResourceChange) -> Option<String> {
-    let get = |k: &str| {
-        change
-            .after
-            .as_ref()
-            .and_then(|a| a.get(k))
-            .and_then(|v| v.as_str())
-    };
-    // A sub-resource's `repository` field is authored as a typed reference to
-    // its parent — `${github_repository.<name>.name}`. The plan's `after` holds
-    // RAW config: reference substitution runs later in the create path, AFTER
-    // import-id construction, so `get("repository")` here yields the literal
-    // `${github_repository.izumi.name}`, not `izumi`. The parent repo's `.name`
-    // attribute IS its resource name (the org-posture convention), so extract
-    // `<name>` syntactically — exactly as `collect_phantom_parents` does. This
-    // is state-independent: the import id resolves to `izumi:bug` whether or not
-    // izumi's `github_repository` is currently in the state_map, so the existing
-    // GitHub labels adopt instead of failing `${…}:bug` import → empty-repo 404
-    // create → parent-phantom-drop loop (the izumi/asobi "8 stuck creates"
-    // residual after the composite-key fix). An already-resolved value (no
-    // `${github_repository.` prefix) passes through unchanged. NOTE: only `.name`
-    // references deref this way — `github_branch_protection.repository_id` is a
-    // `${…node_id}` reference whose value is NOT the name, so it keeps raw `get`.
-    let deref_repo = |v: &str| -> String {
-        v.strip_prefix("${github_repository.")
-            .and_then(|rest| rest.split(['.', '}']).next())
-            .filter(|s| !s.is_empty())
-            .unwrap_or(v)
-            .to_string()
-    };
-    let repo_get = |k: &str| get(k).map(deref_repo);
-    let pair = |a: &str, b: &str| match (get(a), get(b)) {
-        (Some(x), Some(y)) => Some(format!("{x}:{y}")),
-        _ => None,
-    };
-    // `<repo>:<subkey>` where `<repo>` is a parent reference to deref.
-    let pair_repo = |a: &str, b: &str| match (repo_get(a), get(b)) {
-        (Some(x), Some(y)) => Some(format!("{x}:{y}")),
-        _ => None,
-    };
-    let composite = match change.address.type_id.0.as_str() {
-        // repository_id is a `${…node_id}` reference, NOT `.name` — keep raw.
-        "github_branch_protection" => pair("repository_id", "pattern"),
-        "github_actions_secret" => pair_repo("repository", "secret_name"),
-        "github_actions_variable" => pair_repo("repository", "variable_name"),
-        "github_repository_environment" => pair_repo("repository", "environment"),
-        "github_issue_label" => pair_repo("repository", "name"),
-        // Repo-scoped singletons import by the parent repo name.
-        "github_repository_topics"
-        | "github_repository_collaborators"
-        | "github_actions_repository_permissions" => repo_get("repository"),
-        _ => None,
-    };
-    composite
-        .or_else(|| get("name").map(str::to_string))
-        .or_else(|| Some(change.address.name.clone()))
+    crate::natural_id::derive(change, change.after.as_ref(), &HashMap::new())
+        .map(|i| i.id)
 }
 
 /// Resolve the provider-native import id for adopting a create-conflicted
 /// resource (an `is_already_exists` Create). Most providers key import on the
-/// `name` attribute, so [`natural_import_id`] suffices. Some assign an OPAQUE
+/// `name` attribute, so the typed catalog in [`crate::natural_id`] suffices.
+/// Some assign an OPAQUE
 /// server id that is absent from config and only knowable by DISCOVERY — e.g.
 /// `cloudflare_dns_record`'s import id is `<zone_id>/<record_id>`, and
 /// `record_id` can only be found by listing the zone and matching the natural
@@ -1717,10 +1806,14 @@ async fn resolve_import_id(
     change: &ResourceChange,
     type_name: &str,
     lp: &mut LiveProvider,
+    precomputed: Option<&crate::natural_id::ImportId>,
 ) -> Option<String> {
     // An opaque-id type registers an `AdoptionSpec`; the generic interpreter
     // discovers its id via a list-data-source read. Everything else keys
-    // import on the natural `name`.
+    // import on the natural id — derived by the caller against the apply
+    // loop's resolution map (`precomputed`), because a composite id whose
+    // component is a parent REFERENCE cannot be derived from `change` alone.
+    // The state-less forwarder is the fallback for callers that have no map.
     match crate::adopt::spec_for(type_name) {
         Some(spec) => match discover_via_spec(&spec, change, lp).await {
             Ok(opt) => opt,
@@ -1734,7 +1827,54 @@ async fn resolve_import_id(
                 None
             }
         },
-        None => natural_import_id(change),
+        None => {
+            let derived = precomputed.cloned().or_else(|| {
+                crate::natural_id::derive(change, change.after.as_ref(), &HashMap::new())
+            });
+            gate_on_confidence(derived, &change.address, type_name)
+        }
+    }
+}
+
+/// THE CONFIDENCE GATE, as a pure function so it is *testable*.
+///
+/// Kept out of [`resolve_import_id`]'s body deliberately: that function needs a
+/// live `LiveProvider`, so a gate inlined there can only be exercised through
+/// a provider whose types all happen to derive an exact id — which is to say,
+/// never exercised at all (★★ UNREPRESENTABILITY Tier ⊥: a guard never
+/// observed to refuse may be refusing nothing).
+fn gate_on_confidence(
+    derived: Option<crate::natural_id::ImportId>,
+    address: &ResourceAddress,
+    type_name: &str,
+) -> Option<String> {
+    // `Confidence` used to be computed and then only LOGGED, which made
+    // `is_exact` dead code and left the two guessing arms —
+    // `CatalogWithGuessedParent` (parent absent from state, so the id falls
+    // back to the RESOURCE name under the `resource-name == repo-name`
+    // convention that underscore-sanitized names like `tag_forge` vs
+    // `tag-forge` break) and `AddressName` (no rule, no `name` attribute at
+    // all) — feeding `ImportResourceState` on exactly the same footing as a
+    // fully-resolved one. A wrong import id is not a failed adoption, it is an
+    // adoption of SOMETHING ELSE, and the resource it adopts is then diffed
+    // and can be routed to `apply_replace` — a destroy of a live resource
+    // nobody planned to touch. Refusing a guess costs a re-create attempt on
+    // the next cycle, by which point the parent is in state (via `sm_insert`)
+    // and the id resolves exactly.
+    match derived {
+        Some(i) if i.confidence.is_exact() => Some(i.id),
+        Some(i) => {
+            tracing::warn!(
+                address = ?address,
+                resource_type = %type_name,
+                rejected_import_id = %i.id,
+                confidence = ?i.confidence,
+                "magma adopt: refusing to import on a non-exact id; \
+                 falling through to the create failure"
+            );
+            None
+        }
+        None => None,
     }
 }
 
@@ -1872,11 +2012,12 @@ impl NodeRecord {
 /// inner already measured cannot miss a path.
 async fn apply_one(
     change: &ResourceChange,
+    adoption: Option<&crate::natural_id::ImportId>,
     rec: &mut NodeRecord,
     reg: &mut Registry<'_>,
 ) -> Result<AppliedChange, EngineError> {
     let started = std::time::Instant::now();
-    let out = apply_one_inner(change, rec, reg).await;
+    let out = apply_one_inner(change, adoption, rec, reg).await;
     let total = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     // Whatever was not spent waiting on the rate limiter was spent in (or
     // on the way to) the provider. `saturating_sub` because the two clocks
@@ -1887,6 +2028,7 @@ async fn apply_one(
 
 async fn apply_one_inner(
     change: &ResourceChange,
+    adoption: Option<&crate::natural_id::ImportId>,
     rec: &mut NodeRecord,
     reg: &mut Registry<'_>,
 ) -> Result<AppliedChange, EngineError> {
@@ -2043,80 +2185,81 @@ async fn apply_one_inner(
                 Ok(dv) => dv,
                 Err(e) => {
                     let msg = e.to_string();
-                    // Import-on-conflict: a Create whose provider returns an
-                    // "already exists" diagnostic (e.g. GitHub 422) means the
-                    // resource EXISTS in cloud but is absent from magma's
-                    // state. Adopt it via ImportResourceState instead of
-                    // failing — otherwise the plan re-creates it every cycle
-                    // and 422-loops forever (the pleme-io-opensource
-                    // created:0 / all-422 wedge). This is the magma analog of
-                    // tofu's importPolicy.autoOnConflict.
-                    if change.action == Action::Create && is_already_exists(&msg) {
-                        // Resolve the import id: the natural `name` for
-                        // name-keyed providers (github), or a discovered
+                    // Import-on-conflict: a Create that FAILED may have failed
+                    // because the resource already EXISTS in cloud while being
+                    // absent from magma's state. Adopt it via
+                    // ImportResourceState instead of failing — otherwise the
+                    // plan re-creates it every cycle and loops forever (the
+                    // pleme-io-opensource created:0 / all-422 wedge). This is
+                    // the magma analog of tofu's importPolicy.autoOnConflict.
+                    //
+                    // THE GATE IS THE PROVIDER'S ANSWER, NOT THE ERROR STRING.
+                    // It used to be `is_already_exists(&msg)` — a substring
+                    // match on "already exists" / "422" / "409". That oracle
+                    // is only-mitigated in both directions: it MISSES a real
+                    // conflict whose diagnostic is worded differently, and it
+                    // misses the case that actually wedged pleme-io-opensource
+                    // — a child create posted to a wrong URL (a parent name
+                    // resolved from a convention rather than from state)
+                    // returns 404, so the resource that plainly exists is
+                    // never even *considered* for adoption. `ImportResourceState`
+                    // returning a non-null state is the provider telling us the
+                    // resource exists; that is a fact, where the string was a
+                    // guess. The cost is one import RPC on a path that has
+                    // already failed — creates that fail are the exception, and
+                    // the pacer bounds them. `is_already_exists` survives as
+                    // TELEMETRY (below) so the "expected conflict vs surprise
+                    // adoption" split stays visible in the log.
+                    if change.action == Action::Create {
+                        // Resolve the import id: the caller-derived natural id
+                        // (composite, parent references resolved against the
+                        // apply loop's resolution map), or a discovered
                         // `<zone_id>/<record_id>` for opaque-id resources
                         // (cloudflare_dns_record) via the per-type resolver.
-                        if let Some(id) = resolve_import_id(change, &type_name, lp).await {
-                            if let Ok(Some(imp_dv)) =
-                                lp.conn.import_resource_state(&type_name, &id).await
+                        if let Some(id) =
+                            resolve_import_id(change, &type_name, lp, adoption).await
+                        {
+                            // The SHARED two-step adoption primitive — import
+                            // then the protocol-mandated confirming ReadResource,
+                            // with identity backfill. Implemented once in
+                            // `import_and_confirm` so the pre-plan prepass
+                            // (ConfiguredImportEnvironment) cannot drift from this
+                            // path; before that extraction the prepass absorbed
+                            // the raw stub and produced identity-less state.
+                            if let Ok(Some(attrs)) =
+                                import_and_confirm(lp, &type_name, &id, pacer.as_deref()).await
                             {
-                                // ImportResourceState returns a STUB (the id +
-                                // minimal fields). The terraform import protocol
-                                // requires a follow-up ReadResource to populate
-                                // the full current attributes (node_id, name,
-                                // …). Skipping it leaves computed attrs empty, so
-                                // dependents referencing them (e.g.
-                                // github_branch_protection.repository_id =
-                                // github_repository.X.node_id) resolve to "" and
-                                // fail with "Could not resolve to a node with the
-                                // global id of ''". Refresh the stub; fall back
-                                // to it only if the read can't confirm.
-                                // RETRY the confirming ReadResource. Every other
-                                // read path uses rpc_retry!; this one didn't, so
-                                // a TRANSIENT read failure (RPC hiccup, rate
-                                // limit, momentary provider crash) fell straight
-                                // through to `imp_dv` — the bare import STUB (id
-                                // only). For a name-keyed github_repository that
-                                // persists `attributes.name = null`, and every
-                                // dependent `${github_repository.X.name}` then
-                                // resolves to null → empty-URL 404. This is the
-                                // izumi/asobi 2/831 corruption: not a legacy
-                                // entry, but two adopts whose confirming read
-                                // hiccupped with no retry.
-                                let full_dv = match rpc_retry!(
-                                    pacer.as_deref(),
-                                    lp.conn.read_resource(&type_name, &imp_dv)
+                                // THE IDENTITY GATE. A successful import means
+                                // "something exists under this id" — never
+                                // "this is the resource you planned". Nothing
+                                // else on this path compares the object that
+                                // came back with the change that asked for it,
+                                // so a derived id that happens to name a real
+                                // but DIFFERENT resource is adopted silently,
+                                // under the planned address, and the next
+                                // cycle diffs config against it. Refuse.
+                                if let Err(m) = crate::natural_id::verify_identity(
+                                    change,
+                                    change.after.as_ref(),
+                                    &attrs,
                                 ) {
-                                    Ok(Some(read_dv)) => read_dv,
-                                    _ => imp_dv,
-                                };
-                                let mut attrs = full_dv
-                                    .to_json(&implied)
-                                    .map_err(|e| EngineError::Cty(e.to_string()))?;
-                                // Defense-in-depth: if even the retried read
-                                // couldn't confirm and we fell back to the stub,
-                                // the import id IS the name for a name-keyed
-                                // github_repository — backfill it so the adopted
-                                // state is NEVER identity-less (computed attrs may
-                                // still be incomplete; a refresh reconciles them,
-                                // and the ${…name} fallback in substitute_refs
-                                // covers references either way).
-                                if change.address.type_id.0 == "github_repository"
-                                    && attrs
-                                        .get("name")
-                                        .map_or(true, serde_json::Value::is_null)
-                                {
-                                    if let Some(o) = attrs.as_object_mut() {
-                                        o.insert(
-                                            "name".to_string(),
-                                            serde_json::Value::String(id.clone()),
-                                        );
-                                    }
-                                    tracing::warn!(
+                                    tracing::error!(
                                         address = ?change.address,
                                         import_id = %id,
-                                        "magma apply: adopt ReadResource could not confirm a name after retry; backfilled identity from import id (computed attrs may be incomplete)"
+                                        attr = %m.attr,
+                                        planned = %m.planned,
+                                        imported = %m.imported,
+                                        "magma adopt: imported resource is NOT the planned one; \
+                                         refusing the adoption"
                                     );
+                                    let (crash, close) = provider_failure_signals(lp);
+                                    return Err(rpc_error(
+                                        &provider_name,
+                                        "apply_resource_change",
+                                        crash,
+                                        close,
+                                        &msg,
+                                    ));
                                 }
                                 rec.insert(
                                     &change.address,
@@ -2126,7 +2269,13 @@ async fn apply_one_inner(
                                 tracing::info!(
                                     address = ?change.address,
                                     import_id = %id,
-                                    "magma apply: adopted pre-existing resource via import-on-conflict + ReadResource refresh (was already-exists)"
+                                    id_confidence = ?adoption.map(|i| i.confidence),
+                                    // TELEMETRY, not a gate: `false` here means
+                                    // the create's diagnostic did NOT look like
+                                    // a conflict and the old string oracle
+                                    // would have refused this adoption.
+                                    diagnostic_looked_like_conflict = is_already_exists(&msg),
+                                    "magma apply: adopted pre-existing resource via import-on-conflict + ReadResource refresh"
                                 );
                                 return Ok(AppliedChange {
                                     address: change.address.clone(),
@@ -3015,6 +3164,56 @@ mod tests {
     /// import_resource_state fails → the create-that-exists never adopts (the
     /// pleme-io-opensource 8-stuck-creates / all-422 wedge). Name-keyed
     /// (github_repository) and non-github types are unchanged.
+    /// The confidence gate REFUSES, and refuses exactly the guessing arms.
+    ///
+    /// This is the gate's only non-vacuous exercise: the integration provider
+    /// (`mock_resource`) is name-keyed, so every id it derives is
+    /// `NameAttribute`/exact and the gate there never sees an input it would
+    /// reject — a guard that only ever meets inputs it accepts proves nothing
+    /// (★★ UNREPRESENTABILITY Tier ⊥).
+    ///
+    /// RED RUN (performed): replacing the gate body with a bare
+    /// `derived.map(|i| i.id)` fails both refusal assertions below — i.e.
+    /// `tag_forge:bug` (a repo really named `tag-forge`) and a bare address
+    /// name are handed straight to `ImportResourceState`.
+    #[test]
+    fn the_confidence_gate_refuses_a_guessed_import_id() {
+        use crate::natural_id::{Confidence, ImportId};
+        use magma_types::{ModulePath, ResourceKind, ResourceTypeId};
+        let addr = ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Managed,
+            type_id: ResourceTypeId("github_issue_label".into()),
+            name: "tag_forge_label_bug".into(),
+            key: None,
+        };
+        let gate = |c: Confidence| {
+            gate_on_confidence(
+                Some(ImportId { id: "tag_forge:bug".into(), confidence: c }),
+                &addr,
+                "github_issue_label",
+            )
+        };
+
+        assert_eq!(gate(Confidence::Catalog), Some("tag_forge:bug".to_string()));
+        assert_eq!(
+            gate(Confidence::NameAttribute),
+            Some("tag_forge:bug".to_string())
+        );
+        assert_eq!(
+            gate(Confidence::CatalogWithGuessedParent),
+            None,
+            "the parent was guessed from the resource name; the real repo is \
+             `tag-forge`, so this id names a DIFFERENT repository's label"
+        );
+        assert_eq!(
+            gate(Confidence::AddressName),
+            None,
+            "no rule and no `name` attribute is a pure guess"
+        );
+        assert_eq!(gate_on_confidence(None, &addr, "github_issue_label"), None);
+    }
+
     #[test]
     fn natural_import_id_builds_composite_keys_for_github_sub_resources() {
         use magma_types::{ModulePath, ResourceKind, ResourceTypeId};
@@ -3082,14 +3281,20 @@ mod tests {
             )),
             Some("breathe".to_string())
         );
-        // A composite type missing a key falls back to name/address-name (no panic).
+        // CHANGED, deliberately (see `natural_id::derive`): a composite type
+        // missing a key now REFUSES instead of falling back to the address
+        // name. `github_actions_secret.orphan` with no `secret_name` used to
+        // yield the import id `"orphan"` — a syntactically valid id that names
+        // a DIFFERENT resource (a secret literally called "orphan", if one
+        // exists). A failed adoption costs a cycle; a wrong adoption writes
+        // someone else's state under this address.
         assert_eq!(
             natural_import_id(&mk(
                 "github_actions_secret",
                 "orphan",
                 serde_json::json!({ "repository": "breathe" })
             )),
-            Some("orphan".to_string())
+            None
         );
         // THE izumi/asobi residual: a sub-resource's `repository` is authored as
         // an UNRESOLVED `${github_repository.<name>.name}` reference in plan
@@ -3123,17 +3328,26 @@ mod tests {
             )),
             Some("izumi".to_string())
         );
-        // BOUNDARY: branch_protection's `repository_id` is a `${…node_id}`
-        // reference whose value is NOT the resource name — it must stay raw
-        // (deref'ing to the name would be wrong). Documents the intentional
-        // scope: only `.name` references deref.
+        // THE CORRECTED BOUNDARY. This assertion previously pinned
+        // `"${github_repository.izumi.node_id}:main"` as *intended* — the
+        // reasoning being "a node_id reference is not a name, so keep it raw."
+        // Both halves are true and the conclusion was still wrong: the GitHub
+        // provider imports a branch protection by `<repository NAME>:<pattern>`
+        // (registry docs: `terraform import github_branch_protection.terraform
+        // terraform:main`; the importer calls `getRepositoryID(<first
+        // segment>)`). So keeping it raw guaranteed an un-importable id, and
+        // every branch protection that already existed on GitHub re-planned as
+        // a create forever. `IdPart::ParentName` is the fix: the component is
+        // declared as a PARENT, and a parent always resolves to its name — via
+        // state when the parent is known, via the resource name as a labelled
+        // guess when it is not (this state-less forwarder is the latter case).
         assert_eq!(
             natural_import_id(&mk(
                 "github_branch_protection",
                 "izumi_main",
                 serde_json::json!({ "repository_id": "${github_repository.izumi.node_id}", "pattern": "main" })
             )),
-            Some("${github_repository.izumi.node_id}:main".to_string())
+            Some("izumi:main".to_string())
         );
     }
 

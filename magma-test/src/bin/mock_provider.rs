@@ -74,6 +74,20 @@ fn mock_replace_resource_implied_type() -> magma_cty::CtyType {
 /// against `mock_replace_resource_implied_type()`. `None` for an absent/
 /// null value (a create's `prior_state`, or a destroy's `planned_state`)
 /// or a decode failure.
+/// The `name` attribute of a `mock_resource` wire value, used by
+/// `apply_resource_change` to drive the create-failure sentinels below.
+fn mock_resource_name_of(dv: &Option<tfplugin6::DynamicValue>) -> Option<String> {
+    let dv = dv.as_ref()?;
+    let json = magma_cty::DynamicValue {
+        msgpack: dv.msgpack.clone(),
+    }
+    .to_json(&mock_resource_implied_type())
+    .ok()?;
+    json.get("name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
 fn immutable_field_of(dv: &Option<tfplugin6::DynamicValue>) -> Option<String> {
     let dv = dv.as_ref()?;
     let json = magma_cty::DynamicValue {
@@ -327,6 +341,46 @@ impl Provider for MockProvider {
                 }
             }
         }
+        // ── Create-failure sentinel: a create that fails WITHOUT saying
+        // "already exists" ────────────────────────────────────────────────
+        //
+        // The pleme-io-opensource wedge was not a plain 422. A child create
+        // whose parent name came from a naming convention rather than from
+        // state posted to a URL for a repo that does not exist, so GitHub
+        // answered **404** — a diagnostic that no substring oracle over
+        // "already exists"/"422"/"409" will ever match, even though the
+        // resource itself plainly exists and is importable.
+        //
+        // Any `mock_resource` whose `name` contains `boom` fails with exactly
+        // that shape. The detail is deliberately free of the strings
+        // `is_already_exists` matches, so this fixture DISTINGUISHES the two
+        // gates rather than passing under either: under the retired
+        // string-oracle gate the change fails; under the provider-answer gate
+        // it adopts (`import_resource_state` below still knows the resource).
+        // Without this the adopt-on-conflict test would be vacuous — a gate
+        // that only ever sees inputs it already accepts proves nothing
+        // (★★ UNREPRESENTABILITY Tier ⊥).
+        if r.type_name == "mock_resource" {
+            if let Some(name) = mock_resource_name_of(&r.planned_state) {
+                if name.contains("boom") {
+                    return Ok(Response::new(tfplugin6::apply_resource_change::Response {
+                        new_state: None,
+                        private: vec![],
+                        diagnostics: vec![tfplugin6::Diagnostic {
+                            severity: tfplugin6::diagnostic::Severity::Error as i32,
+                            summary: "404 Not Found".into(),
+                            detail: format!(
+                                "mock: POST https://api.example.test/repos/org/{name}/labels: \
+                                 404 Not Found"
+                            ),
+                            attribute: None,
+                        }],
+                        legacy_type_system: false,
+                        new_identity: None,
+                    }));
+                }
+            }
+        }
         // Canned response: new_state = planned_state (apply succeeds as-is).
         Ok(Response::new(tfplugin6::apply_resource_change::Response {
             new_state: r.planned_state,
@@ -356,18 +410,74 @@ impl Provider for MockProvider {
         // is also exactly the "nothing changed since the last apply" case
         // `refresh_state`'s UpgradeResourceState-migration tests exercise.
         let r = req.into_inner();
-        let is_gone = r
-            .current_state
+        let decoded = r.current_state.as_ref().and_then(|dv| {
+            magma_cty::DynamicValue {
+                msgpack: dv.msgpack.clone(),
+            }
+            .to_json(&mock_resource_implied_type())
+            .ok()
+        });
+        let id_of = decoded
             .as_ref()
-            .and_then(|dv| {
-                magma_cty::DynamicValue {
-                    msgpack: dv.msgpack.clone(),
-                }
-                .to_json(&mock_resource_implied_type())
-                .ok()
-            })
-            .and_then(|json| json.get("id").and_then(|v| v.as_str()).map(str::to_string))
-            .is_some_and(|id| id == "gone");
+            .and_then(|json| json.get("id").and_then(|v| v.as_str()).map(str::to_string));
+        // `gone` is the out-of-band-deletion sentinel for the refresh laws.
+        // `vanished` is its ADOPTION-path sibling: a resource whose
+        // `ImportResourceState` happily returns a state (step 1 of the import
+        // protocol makes no API call for a passthrough importer) while the
+        // protocol's mandated confirming `ReadResource` answers a cty-null
+        // `new_state` — "it is not there". Without this the `Ok(None)`
+        // branch of `import_and_confirm` had no fixture at all, so the arm
+        // that decides whether a refuted import is persisted was untested in
+        // either direction.
+        let is_gone = id_of
+            .as_deref()
+            .is_some_and(|i| i == "gone" || i.contains("vanished"));
+
+        // ── Protocol step 2: HYDRATE an import stub ──────────────────
+        //
+        // The Terraform import protocol is explicitly two-step:
+        // `ImportResourceState` returns a STUB carrying only enough
+        // identity for this call, and `ReadResource` on that stub is what
+        // populates every other (chiefly COMPUTED) attribute. A real
+        // provider — the GitHub one included — behaves exactly this way,
+        // and `import_resource_state` below models it for any `stub-`
+        // prefixed id. Mirror the other half here: a `current_state` whose
+        // computed attributes are still null is an un-hydrated stub, so
+        // return the fully-populated resource.
+        //
+        // This is what makes "adoption absorbs an identity-less stub"
+        // OBSERVABLE in a test. Without it the mock returned a fully-
+        // populated state straight from the import RPC, so skipping the
+        // confirming read looked indistinguishable from performing it —
+        // a vacuous gate, per ★★ UNREPRESENTABILITY Tier ⊥. Non-stub
+        // states are echoed back unchanged, so every pre-existing
+        // refresh/upgrade law is untouched.
+        let needs_hydration = decoded
+            .as_ref()
+            .is_some_and(|json| json.get("name").is_none_or(serde_json::Value::is_null));
+        if !is_gone && needs_hydration {
+            if let Some(id) = id_of {
+                let full = serde_json::json!({
+                    "id": id,
+                    "name": id,
+                    "imported_by": "mock_provider",
+                });
+                let msgpack =
+                    magma_cty::DynamicValue::from_json(&full, &mock_resource_implied_type())
+                        .map(|dv| dv.msgpack)
+                        .unwrap_or_default();
+                return Ok(Response::new(tfplugin6::read_resource::Response {
+                    new_state: Some(tfplugin6::DynamicValue {
+                        msgpack,
+                        json: serde_json::to_vec(&full).unwrap_or_default(),
+                    }),
+                    diagnostics: vec![],
+                    private: vec![],
+                    deferred: None,
+                    new_identity: None,
+                }));
+            }
+        }
 
         Ok(Response::new(tfplugin6::read_resource::Response {
             new_state: if is_gone { None } else { r.current_state },
@@ -389,8 +499,13 @@ impl Provider for MockProvider {
         // exists. A sentinel id of "missing" yields an ERROR
         // diagnostic so the per-resource-failure-isolation law can be
         // exercised against the real wire path.
+        // The "missing" sentinel is a PREFIX (was an exact match) so a
+        // fixture can be simultaneously un-appliable (`boom`) and
+        // un-importable (`missing-…`) — the genuinely-absent case, which must
+        // stay a hard failure and must report the ORIGINAL apply error rather
+        // than the import's.
         let r = req.into_inner();
-        if r.id == "missing" {
+        if r.id.starts_with("missing") {
             return Ok(Response::new(tfplugin6::import_resource_state::Response {
                 imported_resources: vec![],
                 diagnostics: vec![tfplugin6::Diagnostic {
@@ -402,11 +517,39 @@ impl Provider for MockProvider {
                 deferred: None,
             }));
         }
-        let state_json = serde_json::json!({
-            "id":   r.id,
-            "name": r.id,
-            "imported_by": "mock_provider",
-        });
+        // A `stub-`-prefixed id models what REAL providers return from
+        // `ImportResourceState`: a STUB carrying only `id`, every other
+        // (especially computed) attribute null, to be filled in by the
+        // protocol's mandated follow-up `ReadResource`. See `read_resource`
+        // above for the hydrating half. Any other id keeps the original
+        // already-populated behavior so the pre-existing import laws are
+        // untouched.
+        let state_json = if r.id.contains("wrong") {
+            // The WRONG-RESOURCE fixture. A derived import id can be
+            // syntactically valid and name a real resource that belongs to
+            // something else — the provider then answers "yes, that exists"
+            // and returns ITS attributes, not the planned ones. Every other
+            // adoption fixture here is correct-by-construction (the mock
+            // echoes the requested id back as the name), so this is the only
+            // shape that can prove the identity gate is not vacuous.
+            serde_json::json!({
+                "id":   r.id,
+                "name": "someone-elses-resource",
+                "imported_by": "mock_provider",
+            })
+        } else if r.id.starts_with("stub-") {
+            serde_json::json!({
+                "id":   r.id,
+                "name": serde_json::Value::Null,
+                "imported_by": serde_json::Value::Null,
+            })
+        } else {
+            serde_json::json!({
+                "id":   r.id,
+                "name": r.id,
+                "imported_by": "mock_provider",
+            })
+        };
         // Encode BOTH wire fields:
         //   * `.msgpack`, type-driven against `mock_resource_implied_type()`
         //     (the SAME shape `get_provider_schema` declares above) — the

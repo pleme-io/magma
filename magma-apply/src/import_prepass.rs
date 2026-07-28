@@ -340,36 +340,36 @@ impl ImportEnvironment for ConfiguredImportEnvironment<'_> {
             .get_mut(&provider_name)
             .expect("provider just dialed + inserted");
 
-        let implied = lp.schema.resource(type_name).cloned().ok_or_else(|| {
-            format!(
-                "provider {provider_name:?} has no schema for resource type {type_name:?} \
-                 (GetProviderSchema did not declare it — check the resource type name)"
-            )
-        })?;
-
-        let dv = lp
-            .conn
-            .import_resource_state(type_name, id)
+        // Drive the SHARED two-step adoption primitive — `ImportResourceState`
+        // followed by the protocol-mandated confirming `ReadResource`, plus the
+        // identity backfill — exactly as the apply engine's reactive
+        // on-conflict arm does. This function used to call
+        // `import_resource_state` alone and hand the raw STUB to `absorb()`,
+        // which is how nine `github_repository` entries reached the
+        // pleme-io-opensource state with `name: null, node_id: null`: present
+        // at their address (so the plan stopped proposing a Create) but
+        // identity-less forever (so every dependent's
+        // `${github_repository.X.node_id}` resolved to null, and magma's
+        // `refresh` being an M0.10 no-op meant it never self-healed). Two
+        // adoption entry points, one protocol — implemented once.
+        //
+        // Unpaced (`None`): the prepass runs pre-plan against a handful of
+        // operator-resolved targets, not the apply's full mutation stream.
+        match crate::engine::import_and_confirm(lp, type_name, id, None)
             .await
-            .map_err(|e| e.to_string())?;
-
-        match dv {
-            Some(dv) => {
-                let attrs = dv
-                    .to_json(&implied)
-                    .map_err(|e| format!("decode imported {type_name} state: {e}"))?;
-                Ok(vec![ImportedInstance {
-                    type_name: type_name.to_string(),
-                    attributes: attrs,
-                    // `ProviderConn::import_resource_state` (like the apply
-                    // engine's own on-conflict adopt call) returns only the
-                    // decoded state — the wire response's `private` bytes
-                    // aren't threaded through. Matches the existing,
-                    // already-proven mid-apply adopt path's behavior; not a
-                    // regression introduced here.
-                    private: Vec::new(),
-                }])
-            }
+            .map_err(|e| e.to_string())?
+        {
+            Some(attrs) => Ok(vec![ImportedInstance {
+                type_name: type_name.to_string(),
+                attributes: attrs,
+                // `ProviderConn::import_resource_state` (like the apply
+                // engine's own on-conflict adopt call) returns only the
+                // decoded state — the wire response's `private` bytes
+                // aren't threaded through. Matches the existing,
+                // already-proven mid-apply adopt path's behavior; not a
+                // regression introduced here.
+                private: Vec::new(),
+            }]),
             // The provider imported nothing (cty-null state) — an empty
             // instance list; `absorb()` records a tracked-but-empty
             // placeholder, same as the raw path's empty-state case.
