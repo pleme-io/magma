@@ -135,6 +135,33 @@ pub const CATALOG: &[NaturalIdRule] = &[
         parts: &[IdPart::ParentName("repository"), IdPart::Attr("name")],
         sep: ':',
     },
+    // Types whose import key is a SPECIFIC own attribute — not `name`. Without
+    // a row these fall through to the no-catalog `name` branch, which is
+    // exactly the silent-wrong case: `github_team` carries BOTH `name` and
+    // `slug` and imports by the slug, so the fallback would hand the importer
+    // a plausible string naming a different key space. `aws_s3_bucket` has no
+    // `name` at all and would degrade to the address name.
+    NaturalIdRule {
+        resource_type: "github_team",
+        parts: &[IdPart::Attr("slug")],
+        sep: ':',
+    },
+    NaturalIdRule {
+        resource_type: "aws_s3_bucket",
+        parts: &[IdPart::Attr("bucket")],
+        sep: ':',
+    },
+    // Org-scoped, single-component, and keyed on an attribute that is NOT
+    // `name` — so without a row it degrades to `AddressName` (the resource's
+    // own address, `blocked_OyaAIProd`) and is correctly refused rather than
+    // guessed. The importer wants the blocked user's login:
+    // `terraform import github_organization_block.example someuser`
+    // (integrations/github 6.13.0, resources/organization_block).
+    NaturalIdRule {
+        resource_type: "github_organization_block",
+        parts: &[IdPart::Attr("username")],
+        sep: ':',
+    },
     // Repo-scoped singletons: the import id IS the parent repo's name.
     NaturalIdRule {
         resource_type: "github_repository_topics",
@@ -451,6 +478,16 @@ mod tests {
                 expect: "tag-forge:bug",
             },
             Row {
+                ty: "github_team",
+                after: || serde_json::json!({ "name": "Platform Team", "slug": "platform-team" }),
+                expect: "platform-team",
+            },
+            Row {
+                ty: "aws_s3_bucket",
+                after: || serde_json::json!({ "bucket": "pleme-io-artifacts" }),
+                expect: "pleme-io-artifacts",
+            },
+            Row {
                 ty: "github_repository_topics",
                 after: || {
                     serde_json::json!({
@@ -476,6 +513,11 @@ mod tests {
                     })
                 },
                 expect: "tag-forge",
+            },
+            Row {
+                ty: "github_organization_block",
+                after: || serde_json::json!({ "username": "someuser" }),
+                expect: "someuser",
             },
         ];
         assert_eq!(
