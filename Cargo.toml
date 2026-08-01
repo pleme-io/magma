@@ -61,7 +61,10 @@ must_use_candidate = "allow"
 
 [workspace.dependencies]
 # ── Workspace crates ─────────────────────────────────────────
-magma           = { path = "magma", version = "0.1.10" }
+# Aliased: the package is `magma-core` on crates.io (the bare name is
+# RustCrypto's), but it stays `magma` to every consumer in this workspace, so
+# no `use magma::…` had to change for the rename.
+magma           = { path = "magma", version = "0.1.10", package = "magma-core" }
 magma-types     = { path = "magma-types", version = "0.1.10" }
 magma-cty       = { path = "magma-cty", version = "0.1.10" }
 

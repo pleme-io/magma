@@ -1,6 +1,17 @@
 [package]
-name        = "magma"
-description = "magma — Rust-native Pangea-Ruby-first OpenTofu-compatible IaC executor. Umbrella crate; re-exports the public surface from the workspace's typed primitives."
+# `magma` on crates.io is TAKEN — RustCrypto/block-ciphers publishes the GOST
+# R 34.12-2015 "Magma" block cipher there (v0.10.0). It is not ours and will
+# not become ours, so this umbrella crate ships as `magma-core`.
+#
+# Everything else keeps the name. The workspace dependency table aliases it
+# back with `package = "magma-core"`, so every internal `use magma::…` is
+# untouched, and the CLI binary is still `magma` (a [[bin]] name is not a
+# crates.io registration and cannot collide).
+#
+# Checked 2026-08-01: of the 41 crate names in this workspace, this is the
+# ONLY collision — the other 40 are free.
+name        = "magma-core"
+description = "magma — Rust-native Pangea-Ruby-first OpenTofu-compatible IaC executor. Umbrella crate; re-exports the public surface from the workspace's typed primitives. (Published as `magma-core`: the bare `magma` name on crates.io belongs to RustCrypto's GOST block cipher.)"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
