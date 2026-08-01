@@ -97,6 +97,22 @@ pub enum EngineError {
     },
     #[error("provider {1:?} has no schema for resource type {0:?}")]
     NoResourceSchema(String, String),
+    /// Distinct from [`Self::NoResourceSchema`] ON PURPOSE. Both used to
+    /// render "has no schema for RESOURCE TYPE", including when the lookup
+    /// that failed was `schema.data_source(..)`. That wording is actively
+    /// misleading: it sends the reader to the resource table for a data
+    /// source that simply does not exist under that name.
+    ///
+    /// Measured 2026-08-01: `data.aws_network_acl` (SINGULAR) reported "has
+    /// no schema for resource type", which reads as a magma schema-loading
+    /// bug. It was not — hashicorp/aws exposes only `aws_network_acls`
+    /// (plural, a list); the config was wrong and magma was right. The
+    /// message cost real debugging time before the provider's own data-source
+    /// index settled it.
+    #[error(
+        "provider {1:?} has no DATA SOURCE {0:?} (this is a data-source lookup,          not a resource one — check the provider's data-source index; e.g.          hashicorp/aws has `aws_network_acls` but no `aws_network_acl`)"
+    )]
+    NoDataSourceSchema(String, String),
     #[error("cty encode/decode: {0}")]
     Cty(String),
 }
@@ -2690,7 +2706,7 @@ async fn read_data_source_one(
     let implied = lp
         .schema
         .data_source(&type_name)
-        .ok_or_else(|| EngineError::NoResourceSchema(type_name.clone(), provider_name.clone()))?
+        .ok_or_else(|| EngineError::NoDataSourceSchema(type_name.clone(), provider_name.clone()))?
         .clone();
     let config_json = change.after.clone().unwrap_or(serde_json::Value::Null);
     let config_dv = DynamicValue::from_json(&config_json, &implied)
