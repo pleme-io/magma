@@ -2185,11 +2185,35 @@ async fn apply_one_inner(
             // confusing), or a provider that silently no-ops the
             // immutable field while updating the rest, leaving magma's
             // recorded state wrong with no error surfaced.
-            let is_replace = !planned.requires_replace.is_empty()
-                || matches!(
-                    change.action,
-                    Action::Replace | Action::CreateThenDelete | Action::DeleteThenCreate
-                );
+            // A CREATE CAN NEVER BE A REPLACE — replace means "destroy the
+            // existing object, then make a new one", and on a create there is
+            // no existing object. So `requires_replace` is only meaningful
+            // when a prior state exists.
+            //
+            // Without the `has_prior` guard this misroutes EVERY create whose
+            // provider marks any attribute ForceNew — which for the AWS
+            // provider is most of them (`name` on aws_iam_role,
+            // `vpc_id` on aws_security_group, …). The consequences are not
+            // cosmetic:
+            //
+            //   1. It takes `apply_replace`, whose create half has NO
+            //      import-on-conflict. So a create that hits
+            //      EntityAlreadyExists — the ONE case adoption exists for —
+            //      can never self-heal. Measured 2026-08-01 on
+            //      camelot-eks-shaar-concentrator: aws_iam_role failed
+            //      `CreateRole 409` against an orphan for cycle after cycle,
+            //      with zero `magma adopt:` lines, because the adoption code
+            //      is on a path the change never reached.
+            //   2. Every error is mislabelled `apply_resource_change[replace:create]`,
+            //      which reads as "magma decided to replace this" when magma
+            //      decided nothing of the sort — the provider merely listed
+            //      ForceNew attributes, as it does on every create.
+            let has_prior = change.before.as_ref().is_some_and(|b| !b.is_null());
+            let is_replace = should_replace(
+                has_prior,
+                !planned.requires_replace.is_empty(),
+                change.action,
+            );
             if is_replace {
                 return apply_replace(
                     change,
@@ -2356,6 +2380,67 @@ async fn apply_one_inner(
                 after: Some(new_attrs),
             })
         }
+    }
+}
+
+/// A CREATE is never a REPLACE, expressed as a pure predicate so it is
+/// testable without a live provider.
+///
+/// Extracted from `apply_one`'s inline condition for exactly the reason the
+/// project keeps rediscovering: a branch reachable only through a real
+/// provider connection is a branch no test ever exercises, and this one was
+/// wrong in production for as long as it existed.
+pub(crate) fn should_replace(
+    has_prior: bool,
+    requires_replace_non_empty: bool,
+    action: Action,
+) -> bool {
+    has_prior
+        && (requires_replace_non_empty
+            || matches!(
+                action,
+                Action::Replace | Action::CreateThenDelete | Action::DeleteThenCreate
+            ))
+}
+
+#[cfg(test)]
+mod replace_routing_tests {
+    use super::*;
+
+    /// The regression. The AWS provider marks attributes ForceNew on a CREATE
+    /// too (`name` on aws_iam_role, `vpc_id` on aws_security_group), so
+    /// `requires_replace` is routinely non-empty with no prior state. Routing
+    /// that to `apply_replace` costs the create its import-on-conflict, and
+    /// import-on-conflict is the entire mechanism for recovering an orphan —
+    /// which is what camelot-eks-shaar-concentrator needed and never got
+    /// (CreateRole 409, cycle after cycle, zero `magma adopt:` lines).
+    #[test]
+    fn a_create_is_never_a_replace_even_when_the_provider_forces_new() {
+        assert!(
+            !should_replace(false, true, Action::Create),
+            "no prior state means nothing to destroy — this must take the \
+             create path so import-on-conflict can adopt an orphan"
+        );
+    }
+
+    #[test]
+    fn a_real_replace_still_replaces() {
+        assert!(should_replace(true, true, Action::Update));
+        assert!(should_replace(true, false, Action::Replace));
+        assert!(should_replace(true, false, Action::DeleteThenCreate));
+        assert!(should_replace(true, false, Action::CreateThenDelete));
+    }
+
+    /// An explicit Replace action with NO prior state is incoherent, and the
+    /// honest answer is the create path rather than a destroy of nothing.
+    #[test]
+    fn an_explicit_replace_without_prior_state_still_takes_the_create_path() {
+        assert!(!should_replace(false, false, Action::Replace));
+    }
+
+    #[test]
+    fn an_ordinary_update_with_no_force_new_is_not_a_replace() {
+        assert!(!should_replace(true, false, Action::Update));
     }
 }
 
