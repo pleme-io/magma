@@ -302,9 +302,36 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     })
 }
 
+/// The config block for `addr` — from `data:` for a data source, `resource:`
+/// for a managed one.
+///
+/// THE KIND SPLIT IS LOAD-BEARING. This used to read `config.resources`
+/// unconditionally, so every `ResourceKind::Data` address resolved to `None`
+/// and its `ResourceChange.after` was null. A data source whose config never
+/// reaches the plan is then READ WITH AN EMPTY CONFIG, and an empty filter
+/// does not error — it MATCHES EVERYTHING:
+///
+/// ```text
+/// multiple EC2 VPCs matched; use additional constraints ...
+/// multiple EC2 Subnets matched ...
+/// reading SSM Parameter (): ...                    <- empty name
+/// ```
+///
+/// Measured 2026-08-01 on camelot-eks-shaar-concentrator, whose
+/// `data.aws_vpc.camelot_eks` is `{"id": "vpc-090f93f4590e59ebc"}` — a fully
+/// constrained, exact id that never reached the provider. The failure reads
+/// like an under-constrained filter in the CONFIG, which is what makes it
+/// expensive: the evidence points away from the defect.
+///
+/// It predates the Read/NoOp work and was merely hidden by it — while data
+/// sources planned as `Create`/`NoOp` they were rarely re-read, so the null
+/// `after` mostly went unnoticed.
 fn lookup_config_value(config: &Config, addr: &ResourceAddress) -> Option<serde_json::Value> {
-    config
-        .resources
+    let table = match addr.kind {
+        ResourceKind::Data => &config.data,
+        _ => &config.resources,
+    };
+    table
         .get(&addr.type_id.0)
         .and_then(|by_name| by_name.get(&addr.name))
         .cloned()
@@ -858,6 +885,36 @@ mod tests {
             Action::Read,
             "a data source must never plan as {:?} — that inflates +N and trips the approval gate",
             c.action
+        );
+    }
+
+    /// A data source's config must reach the plan's `after`.
+    ///
+    /// `lookup_config_value` read only `config.resources`, so every data
+    /// source got `after = None` and was later READ WITH AN EMPTY CONFIG —
+    /// and an empty filter does not error, it matches EVERYTHING
+    /// ("multiple EC2 VPCs matched"). The failure blames the config's filter,
+    /// which is exactly where the defect is NOT.
+    #[test]
+    fn a_data_sources_config_reaches_the_plan_not_just_a_resources_config() {
+        let cfg = serde_json::from_value(serde_json::json!({
+            "data": { "aws_vpc": { "camelot_eks": { "id": "vpc-090f93f4590e59ebc" } } }
+        }))
+        .unwrap();
+
+        let p = plan(&cfg, &empty_state()).unwrap();
+        let c = p
+            .resource_changes
+            .iter()
+            .find(|c| c.address.kind == ResourceKind::Data)
+            .expect("the data source must appear in the plan");
+        let after = c.after.as_ref().expect(
+            "a data source MUST carry its config as `after` — a null one is read \
+                     with an empty filter, which matches every VPC in the account",
+        );
+        assert_eq!(
+            after["id"], "vpc-090f93f4590e59ebc",
+            "the exact filter must survive into the plan, got {after:?}"
         );
     }
 
