@@ -54,6 +54,7 @@ pub fn assert_apply_converges(cfg: &Config) {
         outcome.failed,
     );
     // Re-plan against post-apply state.
+    let p2 = plan(cfg, &state).expect("post-apply plan failed");
     //
     // `Read` is settled work, not pending work. A data source is READ on every
     // plan by definition — it has no state row to converge into, so it can
