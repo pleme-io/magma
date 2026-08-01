@@ -1,5 +1,59 @@
 name: ci
 
+# Thin shim onto substrate's reusable cargo-ci.yml — the fleet standard
+# (★ pleme-actions: "a hand-authored composite action inside a workflow is
+# drift"; a consumer is a 5-line shim).
+#
+# ── WHY THIS REPLACED A HAND-WRITTEN JOB (2026-08-01) ───────────────────
+#
+# The previous version ran its own `runs-on: macos-15` job: checkout →
+# install nix → `nix flake check` → `cargo fmt --check` → `cargo test
+# --workspace`. It had one fatal omission: NO GIT CREDENTIALS.
+#
+# magma depends on private pleme-io crates by git URL, so `nix flake check`
+# reaches `cargo-build-spec-ifd`, which tries to fetch them and dies:
+#
+#   attempted to find username/password via git's `credential.helper`
+#   support, but failed
+#   failed to acquire username/password from local configuration
+#
+# That is a known fleet class, not a magma quirk: ANY hand-written cargo job
+# touching private git deps needs credentials, and the reusables already
+# carry them (substrate's cargo-auto-release.yml uses
+# `pleme-io/actions/git-credentials@main`). Hand-writing the job is how you
+# opt out of that without noticing.
+#
+# ── THE SECOND, LARGER REASON CI WAS DEAD ──────────────────────────────
+#
+# Fixing the workflow alone would have changed nothing: ACTIONS WERE
+# DISABLED on this repository. Zero runs fired between 2026-07-18 and
+# 2026-08-01, including four pushes on the latter day. Re-enabled through
+# the REST API — note `-f enabled=true` sends a STRING and 422s, so a JSON
+# body is required:
+#
+#   echo '{"enabled":true,"allowed_actions":"all"}' \
+#     | gh api -X PUT repos/pleme-io/magma/actions/permissions --input -
+#
+# The 2026-07-18 failure that preceded the blackout is separately already
+# fixed in code: it was gen's `workspace-member-missing-lib-target` on
+# magma-config-0.1.1, and `gen check` on HEAD reports 0 violations.
+#
+# ── WHAT THIS SHIM RUNS, AND WHAT IT DOES NOT ──────────────────────────
+#
+# cargo-ci.yml is two jobs: `nix flake check` (which builds
+# `checks.<system>.*` and nothing else — read that workflow's own header,
+# it is blunt about a period when this compiled nothing at all), and
+# `cargo test` inside the flake devShell, which is the leg that actually
+# executes magma's tests. Its default test-args are
+# `--workspace --all-features --no-fail-fast` — strictly more than the
+# bare `--workspace` the hand-written job passed.
+#
+# DROPPED, deliberately, and said out loud rather than lost:
+# `cargo fmt --all -- --check`. The reusable has no fmt step and exposes no
+# input for one. That gate is worth having, but it belongs in substrate's
+# cargo-ci.yml so EVERY consumer inherits it — re-adding a bespoke fmt job
+# here would recreate exactly the hand-written drift this change removes.
+
 on:
   push:
     branches:
@@ -7,20 +61,12 @@ on:
   pull_request:
     branches:
       - main
-  workflow_dispatch:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-    name: build
-    runs-on: macos-15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-      - name: Flake check
-        run: nix flake check
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-      - name: cargo test
-        run: cargo test --workspace
+  check:
+    uses: pleme-io/substrate/.github/workflows/cargo-ci.yml@main
+    secrets: inherit
