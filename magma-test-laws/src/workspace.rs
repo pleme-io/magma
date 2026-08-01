@@ -54,11 +54,32 @@ pub fn assert_apply_converges(cfg: &Config) {
         outcome.failed,
     );
     // Re-plan against post-apply state.
-    let p2 = plan(cfg, &state).expect("post-apply plan failed");
+    //
+    // `Read` is settled work, not pending work. A data source is READ on every
+    // plan by definition — it has no state row to converge into, so it can
+    // never become a NoOp. Counting it as unconverged makes this law
+    // unsatisfiable for any workspace containing a `data` block.
+    //
+    // This mattered the moment `Action::Read` became a thing magma actually
+    // EMITS. Before 3de7bbb, `magma_plan::plan` never constructed `Read` at all
+    // — an unread data source came out as `Create`, so this filter only ever
+    // saw managed-resource actions and "non-NoOp" was a fine proxy for "work
+    // remaining". Making data sources honest turned that proxy false.
+    //
+    // Measured 2026-08-01 on camelot-eks-shaar-concentrator: the apply failed
+    // with "re-plan has 4 non-NoOp changes", and all four were
+    // `kind: Data, action: Read` — the workspace's aws_vpc / aws_subnet /
+    // aws_network_acl / aws_ssm_parameter lookups. Nothing was unconverged;
+    // the law was counting reads as debt.
+    //
+    // Deliberately matched on the ACTION rather than `address.kind == Data`:
+    // the law is about whether the plan still has work to do, and a `Read` is
+    // not work whatever it is attached to. Delete/Forget on a data ORPHAN stays
+    // counted — that IS pending work (dropping it from state).
     let non_noop: Vec<_> = p2
         .resource_changes
         .iter()
-        .filter(|c| !matches!(c.action, Action::NoOp))
+        .filter(|c| !matches!(c.action, Action::NoOp | Action::Read))
         .collect();
     assert!(
         non_noop.is_empty(),

@@ -293,12 +293,24 @@ impl Plan {
         self
     }
 
-    /// Resources this plan intends to change (every non-`NoOp` change).
+    /// Resources this plan intends to CHANGE — excludes both `NoOp` and
+    /// `Read`.
+    ///
+    /// A `Read` is a data-source lookup: it mutates nothing, and it recurs on
+    /// every plan because a data source has no state row to settle into. It is
+    /// observation, not intent.
+    ///
+    /// This only became reachable once `magma_plan::plan` started EMITTING
+    /// `Read` (3de7bbb) — before that an unread data source came out as
+    /// `Create`, so "non-NoOp" was an accurate proxy for "intends to change".
+    /// Making data sources honest turned that proxy false, and this count feeds
+    /// operator-facing summaries where an inflated number reads as pending
+    /// mutation.
     #[must_use]
     pub fn change_count(&self) -> usize {
         self.resource_changes
             .iter()
-            .filter(|c| c.action != Action::NoOp)
+            .filter(|c| !matches!(c.action, Action::NoOp | Action::Read))
             .count()
     }
 
@@ -699,5 +711,86 @@ mod tests {
         assert_eq!(inst.private, vec![1, 2, 3]);
         assert_eq!(inst.status, InstanceStatus::Ready);
         assert_eq!(inst.schema_version, 0);
+    }
+}
+
+#[cfg(test)]
+mod read_is_not_a_change_tests {
+    use super::*;
+
+    fn addr(kind: ResourceKind, name: &str) -> ResourceAddress {
+        ResourceAddress {
+            module: ModulePath::root(),
+            kind,
+            type_id: ResourceTypeId("aws_vpc".into()),
+            name: name.into(),
+            key: None,
+        }
+    }
+
+    fn plan_of(changes: Vec<ResourceChange>) -> Plan {
+        Plan {
+            id: PlanId([0u8; 32]),
+            created_at: Utc::now(),
+            config_root: PathBuf::new(),
+            variables: HashMap::new(),
+            resource_changes: changes,
+            output_changes: vec![],
+            observation: Observation::default(),
+        }
+    }
+
+    fn change(kind: ResourceKind, name: &str, action: Action) -> ResourceChange {
+        ResourceChange {
+            address: addr(kind, name),
+            action,
+            before: None,
+            after: None,
+            reasons: vec![],
+        }
+    }
+
+    /// A `Read` is observation, not intent — `change_count` must exclude it.
+    ///
+    /// This became reachable only when `magma_plan::plan` started EMITTING
+    /// `Read` for data sources (3de7bbb). Before that an unread data source
+    /// came out as `Create`, so "non-NoOp" was an accurate proxy for "intends
+    /// to change" everywhere in the codebase. Making data sources honest turned
+    /// that proxy false — and the failure was not theoretical: the
+    /// camelot-eks-shaar-concentrator apply died on
+    /// `assert_apply_converges` with "re-plan has 4 non-NoOp changes", all four
+    /// being `kind: Data, action: Read`. A workspace with a `data` block could
+    /// never converge, because a data source has no state row to settle into
+    /// and is re-read on every plan by definition.
+    #[test]
+    fn change_count_excludes_reads_and_noops() {
+        let p = plan_of(vec![
+            change(ResourceKind::Managed, "real", Action::Create),
+            change(ResourceKind::Managed, "settled", Action::NoOp),
+            change(ResourceKind::Data, "lookup_a", Action::Read),
+            change(ResourceKind::Data, "lookup_b", Action::Read),
+        ]);
+        assert_eq!(
+            p.change_count(),
+            1,
+            "only the managed Create is an intended change; NoOp and Read are not"
+        );
+    }
+
+    /// The inverse guard: a data ORPHAN (in state, gone from config) IS pending
+    /// work — it must be dropped from state — so Delete stays counted. Without
+    /// this, "exclude data sources" could be over-applied by kind and silently
+    /// hide a real removal.
+    #[test]
+    fn a_data_orphan_delete_still_counts_as_a_change() {
+        let p = plan_of(vec![
+            change(ResourceKind::Data, "orphan", Action::Delete),
+            change(ResourceKind::Data, "live", Action::Read),
+        ]);
+        assert_eq!(
+            p.change_count(),
+            1,
+            "a data orphan's Delete is real pending work; only Read is not"
+        );
     }
 }

@@ -1021,10 +1021,17 @@ async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
     } else {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     }
-    let has_changes = plan
-        .resource_changes
-        .iter()
-        .any(|c| !matches!(c.action, magma::types::Action::NoOp));
+    // `Read` is excluded alongside `NoOp`: this drives the --detailed exit
+    // code (2 = "there are changes"), and a data-source lookup is not a change.
+    // Counting reads here would make ANY workspace containing a `data` block
+    // report drift forever, which is exactly the false positive `--detailed`
+    // exists to avoid. See Plan::change_count for the same correction.
+    let has_changes = plan.resource_changes.iter().any(|c| {
+        !matches!(
+            c.action,
+            magma::types::Action::NoOp | magma::types::Action::Read
+        )
+    });
     Ok(if detailed && has_changes { 2 } else { 0 })
 }
 
