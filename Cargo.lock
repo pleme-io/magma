@@ -1575,25 +1575,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 
 [[package]]
-name = "magma"
-version = "0.1.10"
-dependencies = [
- "magma-apply",
- "magma-attest",
- "magma-backend",
- "magma-config 0.1.10",
- "magma-graph",
- "magma-mcp",
- "magma-pangea",
- "magma-plan",
- "magma-plugin",
- "magma-protocol",
- "magma-providers",
- "magma-state",
- "magma-types 0.1.10",
-]
-
-[[package]]
 name = "magma-apply"
 version = "0.1.10"
 dependencies = [
@@ -1716,8 +1697,8 @@ dependencies = [
  "clap",
  "hex",
  "indexmap 2.14.0",
- "magma",
  "magma-arch-test",
+ "magma-core",
  "magma-flow",
  "magma-lava",
  "magma-migrate",
@@ -1801,6 +1782,25 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "magma-core"
+version = "0.1.10"
+dependencies = [
+ "magma-apply",
+ "magma-attest",
+ "magma-backend",
+ "magma-config 0.1.10",
+ "magma-graph",
+ "magma-mcp",
+ "magma-pangea",
+ "magma-plan",
+ "magma-plugin",
+ "magma-protocol",
+ "magma-providers",
+ "magma-state",
+ "magma-types 0.1.10",
 ]
 
 [[package]]
@@ -2228,10 +2228,10 @@ dependencies = [
  "base64",
  "chrono",
  "insta",
- "magma",
  "magma-apply",
  "magma-arch-test",
  "magma-config 0.1.10",
+ "magma-core",
  "magma-cty",
  "magma-pangea",
  "magma-plan",
