@@ -80,6 +80,19 @@ pub struct WorkspaceReport {
 pub struct CompatibilitySummary {
     pub parses: bool,
     pub plans_cleanly: bool,
+    /// Every MUTATION planned against empty state is a Create.
+    ///
+    /// `Action::Read` does not violate this and never did: a `data` block
+    /// against empty state MUST plan as a Read — that is the data source being
+    /// resolved, not a change to the world. Until 2026-08-01 a data source was
+    /// mislabelled `Create`, so this flag happened to hold for the wrong
+    /// reason; correcting the label exposed that the predicate was really
+    /// "no non-Create actions at all", which would now fail any fixture that
+    /// legitimately reads one.
+    ///
+    /// The honest predicate is about mutations. An Update or Delete against
+    /// empty state still means what it always meant: the fixture is not
+    /// self-contained.
     pub all_creates: bool,
     pub uses_in_memory_chains: bool,
 }
@@ -337,7 +350,8 @@ fn report_from(cfg: &Config, plan_out: &Plan, shape: String) -> WorkspaceReport 
     for change in &plan_out.resource_changes {
         let action_str = action_name(change.action);
         *action_histogram.entry(action_str.into()).or_insert(0) += 1;
-        if !matches!(change.action, Action::Create) {
+        // Read is not a mutation — see `CompatibilitySummary::all_creates`.
+        if !matches!(change.action, Action::Create | Action::Read) {
             all_creates = false;
         }
     }
@@ -560,6 +574,41 @@ mod tests {
         assert_eq!(report.resource_change_count, 1);
         assert!(report.action_histogram.contains_key("create"));
         assert!(report.compatibility.all_creates);
+    }
+
+    /// A `data` block against empty state plans as a **Read**, and a Read is
+    /// not a mutation — so a fixture that reads a data source is still
+    /// "pure creates" in the sense that matters (nothing pre-exists that it
+    /// expects to change). Pins the 2026-08-01 correction: before it, the data
+    /// source planned as a Create, and this flag held only by accident.
+    #[tokio::test]
+    async fn a_data_source_read_does_not_break_all_creates() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("test.tf.json"),
+            serde_json::to_string(&json!({
+                "resource": { "aws_vpc": { "main": { "cidr_block": "10.0.0.0/16" } } },
+                "data": { "aws_availability_zones": { "available": {} } }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = WorkspaceTestHarness::new(tmp.path().to_path_buf())
+            .verify()
+            .await
+            .unwrap();
+        assert_eq!(
+            report.action_histogram.get("read"),
+            Some(&1),
+            "the data block must plan as a Read, not a Create: {:?}",
+            report.action_histogram,
+        );
+        assert!(
+            report.compatibility.all_creates,
+            "a Read is not a mutation and must not clear all_creates: {:?}",
+            report.action_histogram,
+        );
     }
 
     #[tokio::test]

@@ -173,6 +173,32 @@ pub enum ProviderError {
     Diagnostics(Vec<Diag>),
     #[error("provider returned no new_state from apply")]
     NoNewState,
+    /// The provider returned an error diagnostic AND a `new_state` — the
+    /// resource IS (at least partially) committed provider-side.
+    ///
+    /// This is not a rare edge: it is how the tfplugin contract expresses a
+    /// partial apply, and how Terraform core knows to persist a
+    /// half-created resource. AWS EIP is the canonical shape —
+    /// `AllocateAddress` commits, a follow-up call (tagging, association, the
+    /// post-create read) fails, and the provider returns the allocation id
+    /// together with an error.
+    ///
+    /// Before this variant existed, `check_diags(...)?` ran BEFORE
+    /// `new_state` was read, so that state was thrown away and the caller
+    /// recorded nothing. The next reconcile re-planned a CREATE and allocated
+    /// a SECOND resource. Measured 2026-08-01: two orphaned EIPs
+    /// (3.151.179.36, 18.227.192.150), each billable, neither in state, while
+    /// the run reported `created: 0`.
+    ///
+    /// Carrying the state in the ERROR — rather than returning `Ok` — keeps
+    /// the apply correctly failed while making the committed resource
+    /// impossible to drop on the floor: a caller must destructure this
+    /// variant to handle the error at all.
+    #[error("provider returned {} error diagnostic(s) WITH a new_state (partial apply — resource is committed): {}", .diags.len(), fmt_diags(.diags))]
+    PartiallyApplied {
+        diags: Vec<Diag>,
+        state: Box<DynamicValue>,
+    },
     #[error("schema: {0}")]
     Schema(#[from] SchemaError),
 }
@@ -213,9 +239,14 @@ pub fn is_retryable(e: &ProviderError) -> bool {
     };
     match e {
         ProviderError::Transport(s) => hit(s),
-        ProviderError::Diagnostics(diags) => diags
-            .iter()
-            .any(|d| hit(&d.summary) || hit(&d.detail)),
+        ProviderError::Diagnostics(diags) => {
+            diags.iter().any(|d| hit(&d.summary) || hit(&d.detail))
+        }
+        // NEVER retryable, whatever the diagnostic text says. The resource is
+        // already committed provider-side; re-issuing a create without an
+        // idempotency key allocates a SECOND one. Retrying a partial apply is
+        // strictly worse than failing it.
+        ProviderError::PartiallyApplied { .. } => false,
         ProviderError::NoNewState | ProviderError::Schema(_) => false,
     }
 }
@@ -448,10 +479,14 @@ impl ProviderConn {
                     .await
                     .map_err(transport)?
                     .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag6))?;
-                resp.new_state
-                    .map(from_pb6)
-                    .ok_or(ProviderError::NoNewState)
+                // Read `new_state` BEFORE deciding on diagnostics. The old order
+                // was `check_diags(...)?` first, which discarded a committed
+                // resource whenever the provider reported an error alongside it
+                // — the partial-apply leak (see ProviderError::PartiallyApplied).
+                apply_outcome(
+                    error_diags(resp.diagnostics.iter().map(diag6)),
+                    resp.new_state.map(from_pb6),
+                )
             }
             Client::V5(c) => {
                 let resp = c
@@ -465,10 +500,14 @@ impl ProviderConn {
                     .await
                     .map_err(transport)?
                     .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag5))?;
-                resp.new_state
-                    .map(from_pb5)
-                    .ok_or(ProviderError::NoNewState)
+                // Read `new_state` BEFORE deciding on diagnostics. The old order
+                // was `check_diags(...)?` first, which discarded a committed
+                // resource whenever the provider reported an error alongside it
+                // — the partial-apply leak (see ProviderError::PartiallyApplied).
+                apply_outcome(
+                    error_diags(resp.diagnostics.iter().map(diag5)),
+                    resp.new_state.map(from_pb5),
+                )
             }
         }
     }
@@ -787,15 +826,44 @@ fn diag5(d: &tfplugin5::Diagnostic) -> (i32, String, String) {
 /// tfplugin5 + tfplugin6); warnings (`2`) are non-fatal. The single
 /// chokepoint that turns provider errors into typed failures rather than
 /// silent success.
-fn check_diags(diags: impl Iterator<Item = (i32, String, String)>) -> Result<(), ProviderError> {
-    let errors: Vec<Diag> = diags
+fn error_diags(diags: impl Iterator<Item = (i32, String, String)>) -> Vec<Diag> {
+    diags
         .filter(|(sev, _, _)| *sev == 1)
         .map(|(_, summary, detail)| Diag {
             severity: Severity::Error,
             summary,
             detail,
         })
-        .collect();
+        .collect()
+}
+
+/// Decide an `ApplyResourceChange` outcome from the two halves of the
+/// provider's response. Pure, so every combination is directly testable —
+/// the leak this closes lived in an `async fn` that no test could reach.
+///
+/// The load-bearing row is `(errors, Some(state))`: the provider failed AND
+/// committed. Returning `Err` keeps the apply honestly failed, while
+/// `PartiallyApplied` carries the committed state out so the caller can
+/// record it. The old code called `check_diags(...)?` before even looking at
+/// `new_state`, which dropped that row into `Diagnostics` and lost the
+/// resource.
+fn apply_outcome(
+    errs: Vec<Diag>,
+    new_state: Option<DynamicValue>,
+) -> Result<DynamicValue, ProviderError> {
+    match (errs.is_empty(), new_state) {
+        (true, Some(dv)) => Ok(dv),
+        (true, None) => Err(ProviderError::NoNewState),
+        (false, Some(dv)) => Err(ProviderError::PartiallyApplied {
+            diags: errs,
+            state: Box::new(dv),
+        }),
+        (false, None) => Err(ProviderError::Diagnostics(errs)),
+    }
+}
+
+fn check_diags(diags: impl Iterator<Item = (i32, String, String)>) -> Result<(), ProviderError> {
+    let errors = error_diags(diags);
     if errors.is_empty() {
         Ok(())
     } else {
@@ -806,6 +874,83 @@ fn check_diags(diags: impl Iterator<Item = (i32, String, String)>) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn err_diag(msg: &str) -> Vec<Diag> {
+        vec![Diag {
+            severity: Severity::Error,
+            summary: msg.to_string(),
+            detail: String::new(),
+        }]
+    }
+
+    /// The shape that leaked: an EIP whose allocation COMMITTED.
+    fn eip_type() -> CtyType {
+        CtyType::Object(BTreeMap::from([("id".to_string(), CtyType::String)]))
+    }
+
+    fn some_state() -> DynamicValue {
+        DynamicValue::from_json(&serde_json::json!({"id": "eipalloc-1"}), &eip_type())
+            .expect("test fixture must encode")
+    }
+
+    /// The row that leaked money: the provider FAILED but COMMITTED. The
+    /// committed state must survive the error, or the next plan creates a
+    /// duplicate (two orphaned EIPs, camelot, 2026-08-01).
+    #[test]
+    fn error_with_new_state_is_partially_applied_and_keeps_the_state() {
+        let out = apply_outcome(err_diag("tagging failed"), Some(some_state()));
+        match out {
+            Err(ProviderError::PartiallyApplied { diags, state }) => {
+                assert_eq!(diags.len(), 1);
+                assert_eq!(diags[0].summary, "tagging failed");
+                // Not merely present — the allocation id must survive intact,
+                // since that is what the next plan needs to avoid re-creating.
+                let attrs = state
+                    .to_json(&eip_type())
+                    .expect("partial state must decode");
+                assert_eq!(attrs["id"], "eipalloc-1");
+            }
+            other => panic!("expected PartiallyApplied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_without_new_state_stays_plain_diagnostics() {
+        assert!(matches!(
+            apply_outcome(err_diag("boom"), None),
+            Err(ProviderError::Diagnostics(_))
+        ));
+    }
+
+    #[test]
+    fn clean_apply_with_state_is_ok() {
+        assert!(apply_outcome(Vec::new(), Some(some_state())).is_ok());
+    }
+
+    #[test]
+    fn clean_apply_without_state_is_no_new_state() {
+        assert!(matches!(
+            apply_outcome(Vec::new(), None),
+            Err(ProviderError::NoNewState)
+        ));
+    }
+
+    /// A partial apply is NEVER retryable, whatever the diagnostic text says.
+    /// `apply_resource_change` is not idempotent; re-issuing a create whose
+    /// resource already landed allocates a SECOND one. This is the guard that
+    /// keeps `rpc_retry!` (up to 7 attempts) from multiplying the leak.
+    #[test]
+    fn a_partial_apply_is_never_retryable_even_when_the_text_looks_transient() {
+        let e = ProviderError::PartiallyApplied {
+            // Wording chosen to match the transient substring oracle.
+            diags: err_diag("connection reset by peer: timeout"),
+            state: Box::new(some_state()),
+        };
+        assert!(
+            !is_retryable(&e),
+            "retrying a committed resource duplicates it"
+        );
+    }
 
     #[test]
     fn empty_diagnostics_is_ok() {
@@ -884,7 +1029,11 @@ mod tests {
     #[test]
     fn attribute_path_to_string_v6_indexed_then_attribute() {
         let path = tfplugin6::AttributePath {
-            steps: vec![v6_attr_step("rules"), v6_index_step(2), v6_attr_step("port")],
+            steps: vec![
+                v6_attr_step("rules"),
+                v6_index_step(2),
+                v6_attr_step("port"),
+            ],
         };
         assert_eq!(attribute_path_to_string_v6(&path), "rules[2].port");
     }
@@ -914,11 +1063,15 @@ mod tests {
     #[test]
     fn planned_change_requires_replace_is_empty_iff_no_paths() {
         let no_replace = PlannedChange {
-            state: DynamicValue { msgpack: vec![0xc0] },
+            state: DynamicValue {
+                msgpack: vec![0xc0],
+            },
             requires_replace: vec![],
         };
         let must_replace = PlannedChange {
-            state: DynamicValue { msgpack: vec![0xc0] },
+            state: DynamicValue {
+                msgpack: vec![0xc0],
+            },
             requires_replace: vec!["instance_types".to_string()],
         };
         assert!(no_replace.requires_replace.is_empty());

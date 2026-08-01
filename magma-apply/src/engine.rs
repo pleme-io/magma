@@ -20,15 +20,15 @@ use std::time::Instant;
 
 use chrono::Utc;
 use magma_config::resolve_reference;
-use samba::LeakyBucket;
 use magma_cty::{CtyType, DynamicValue};
 use magma_graph::ResourceGraph;
-use magma_plugin::provider::{ProviderConn, ProviderSchema, is_retryable};
+use magma_plugin::provider::{ProviderConn, ProviderError, ProviderSchema, is_retryable};
 use magma_plugin::{Plugin, PluginSpec, ProviderCrash};
 use magma_types::{
     Action, Plan, ResourceAddress, ResourceChange, ResourceKind, State, StateInstance,
     StateResource,
 };
+use samba::LeakyBucket;
 
 use crate::checkpoint::CheckpointSink;
 use crate::cursor::{ApplyCursor, CycleOutcome, CycleStats, Progress, Quantum, Resume};
@@ -130,7 +130,10 @@ fn rpc_error(
     if let Some(c) = crash {
         // Prefer the human-meaningful panic header; fall back to the raw
         // error when nothing was captured.
-        let panic = c.headline().map(str::to_string).unwrap_or_else(|| err.to_string());
+        let panic = c
+            .headline()
+            .map(str::to_string)
+            .unwrap_or_else(|| err.to_string());
         let sig = c
             .signal
             .map(|s| format!(" (signal {s})"))
@@ -812,9 +815,7 @@ pub async fn run_plan_with_providers_resumable(
             let mut rec = NodeRecord::default();
             let outcome = apply_one(&resolved, adoption.as_ref(), &mut rec, &mut registry).await;
             rec.commit(state);
-            stats.pacer_wait_ms_total = stats
-                .pacer_wait_ms_total
-                .saturating_add(rec.pacer_wait_ms);
+            stats.pacer_wait_ms_total = stats.pacer_wait_ms_total.saturating_add(rec.pacer_wait_ms);
             stats.node_rpc_ms_total = stats.node_rpc_ms_total.saturating_add(rec.rpc_ms);
             stats.node_rpc_ms_max = stats.node_rpc_ms_max.max(rec.rpc_ms);
             match outcome {
@@ -849,7 +850,13 @@ pub async fn run_plan_with_providers_resumable(
                 // A failed change is deliberately NOT recorded as completed —
                 // the next cycle retries it. Recording it would make the cursor
                 // claim progress the cloud never made.
-                Err(e) => failed.push(mkfail(change, e)),
+                Err(e) => {
+                    // Count it. NOT recording it as *completed* is correct (the
+                    // next cycle retries), but leaving it uncounted entirely is
+                    // what let a 17/0 cycle read as "nothing to do".
+                    stats.nodes_failed += 1;
+                    failed.push(mkfail(change, e));
+                }
             }
         }
     }
@@ -882,6 +889,7 @@ pub async fn run_plan_with_providers_resumable(
 
     let remaining = pending.len().saturating_sub(stats.nodes_completed);
     stats.nodes_remaining = remaining;
+    stats.debug_assert_consistent();
     stats.elapsed_ms = elapsed_ms(cycle_start);
 
     let partial = ApplyOutcome {
@@ -911,6 +919,7 @@ pub async fn run_plan_with_providers_resumable(
         tracing::error!(
             checkpoint_failures = stats.checkpoint_failures,
             nodes_completed = stats.nodes_completed,
+            nodes_failed = stats.nodes_failed,
             nodes_remaining = remaining,
             "magma apply: cycle ended on a durability failure, not the quantum — \
              progress beyond this point would not have been recoverable"
@@ -1123,7 +1132,10 @@ fn collect_phantom_parents(failed: &[FailedChange]) -> HashSet<String> {
         let mut rest2 = r;
         while let Some(i) = rest2.find("${github_repository.") {
             let after = &rest2[i + "${github_repository.".len()..];
-            let name: String = after.chars().take_while(|c| *c != '.' && *c != '}').collect();
+            let name: String = after
+                .chars()
+                .take_while(|c| *c != '.' && *c != '}')
+                .collect();
             if !name.is_empty() {
                 out.insert(name);
             }
@@ -1311,18 +1323,27 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
                     continue;
                 }
             };
-            let prior_dv =
-                match resolve_prior_dv(lp, None, &type_name, &implied, current_version, &inst)
-                    .await
-                {
-                    Ok(d) => d,
-                    Err(()) => {
-                        report.kept_on_error += 1;
-                        kept_instances.push(inst);
-                        continue;
-                    }
-                };
-            match rpc_retry!(None::<&LeakyBucket>, lp.conn.read_resource(&type_name, &prior_dv)) {
+            let prior_dv = match resolve_prior_dv(
+                lp,
+                None,
+                &type_name,
+                &implied,
+                current_version,
+                &inst,
+            )
+            .await
+            {
+                Ok(d) => d,
+                Err(()) => {
+                    report.kept_on_error += 1;
+                    kept_instances.push(inst);
+                    continue;
+                }
+            };
+            match rpc_retry!(
+                None::<&LeakyBucket>,
+                lp.conn.read_resource(&type_name, &prior_dv)
+            ) {
                 Ok(None) => {
                     // Confirmed gone — drop this phantom/deleted instance.
                     report.dropped_instances += 1;
@@ -1510,7 +1531,10 @@ pub async fn refresh_named(
                     continue;
                 }
             };
-            match rpc_retry!(pacer.as_deref(), lp.conn.read_resource(&type_name, &prior_dv)) {
+            match rpc_retry!(
+                pacer.as_deref(),
+                lp.conn.read_resource(&type_name, &prior_dv)
+            ) {
                 Ok(None) => {
                     // Provider confirms gone — STAGE the instance for dropping.
                     // The mass-drop guard (below) may yet restore it if the
@@ -1696,14 +1720,15 @@ pub(crate) async fn import_and_confirm(
     pacer: Option<&LeakyBucket>,
 ) -> Result<Option<serde_json::Value>, EngineError> {
     let provider_name = provider_local_name(type_name);
-    let implied = lp
-        .schema
-        .resource(type_name)
-        .cloned()
-        .ok_or_else(|| EngineError::NoResourceSchema(type_name.into(), provider_name.clone()))?;
+    let implied =
+        lp.schema.resource(type_name).cloned().ok_or_else(|| {
+            EngineError::NoResourceSchema(type_name.into(), provider_name.clone())
+        })?;
 
-    let Some(imp_dv) = rpc_retry!(pacer, lp.conn.import_resource_state(type_name, id))
-        .map_err(|e| EngineError::Rpc(provider_name.clone(), format!("import_resource_state: {e}")))?
+    let Some(imp_dv) =
+        rpc_retry!(pacer, lp.conn.import_resource_state(type_name, id)).map_err(|e| {
+            EngineError::Rpc(provider_name.clone(), format!("import_resource_state: {e}"))
+        })?
     else {
         return Ok(None);
     };
@@ -1750,13 +1775,13 @@ pub(crate) async fn import_and_confirm(
     // still be incomplete; the `${…name}` fallback in `substitute_refs` covers
     // references either way. Scoped to `github_repository` because that is the
     // one type where `id == name` is a schema fact, not a guess.
-    if type_name == "github_repository"
-        && attrs
-            .get("name")
-            .is_none_or(serde_json::Value::is_null)
+    if type_name == "github_repository" && attrs.get("name").is_none_or(serde_json::Value::is_null)
     {
         if let Some(o) = attrs.as_object_mut() {
-            o.insert("name".to_string(), serde_json::Value::String(id.to_string()));
+            o.insert(
+                "name".to_string(),
+                serde_json::Value::String(id.to_string()),
+            );
         }
         tracing::warn!(
             resource_type = %type_name,
@@ -1784,8 +1809,7 @@ pub(crate) async fn import_and_confirm(
 /// would be a second, ungated path to the same guess.
 #[cfg(test)]
 fn natural_import_id(change: &ResourceChange) -> Option<String> {
-    crate::natural_id::derive(change, change.after.as_ref(), &HashMap::new())
-        .map(|i| i.id)
+    crate::natural_id::derive(change, change.after.as_ref(), &HashMap::new()).map(|i| i.id)
 }
 
 /// Resolve the provider-native import id for adopting a create-conflicted
@@ -1899,8 +1923,8 @@ async fn discover_via_spec(
         return Ok(None);
     };
     let filter = crate::adopt::render_filter(&spec.filter_template, after);
-    let filter_dv =
-        DynamicValue::from_json(&filter, &ds_schema).map_err(|e| EngineError::Cty(e.to_string()))?;
+    let filter_dv = DynamicValue::from_json(&filter, &ds_schema)
+        .map_err(|e| EngineError::Cty(e.to_string()))?;
     let Some(result_dv) = lp
         .conn
         .read_data_source(&spec.list_data_source, &filter_dv)
@@ -2081,10 +2105,18 @@ async fn apply_one_inner(
         Action::Delete | Action::Forget => {
             let null_dv = DynamicValue::from_json(&null_json, &implied)
                 .map_err(|e| EngineError::Cty(e.to_string()))?;
-            if let Err(e) = rpc_retry!(pacer.as_deref(), lp
-                .conn
-                .apply_resource_change(&type_name, &prior_dv, &null_dv, &null_dv))
-            {
+            if let Err(e) = rpc_retry!(
+                pacer.as_deref(),
+                lp.conn
+                    .apply_resource_change(&type_name, &prior_dv, &null_dv, &null_dv)
+            ) {
+                // A PARTIAL DELETE: the provider errored but handed back a
+                // non-null state, meaning the resource is still (partly)
+                // there. Re-record it rather than letting `rec.remove` below
+                // be skipped into silence — a resource dropped from state
+                // while still alive in the cloud is an orphan nobody bills us
+                // for noticing.
+                record_partial_apply(rec, &change.address, &e, &implied, current_schema_version);
                 // RPC future has resolved → the mutable conn borrow is over;
                 // read the crash/close signals off the same `lp` and build a
                 // crash-aware error.
@@ -2113,12 +2145,11 @@ async fn apply_one_inner(
             // Provider normalizes the proposed state (computes defaults +
             // marks computed attributes unknown). Terraform requires the
             // planned state to flow from plan → apply.
-            let planned = match rpc_retry!(pacer.as_deref(), lp.conn.plan_resource_change(
-                &type_name,
-                &prior_dv,
-                &config_dv,
-                &config_dv
-            )) {
+            let planned = match rpc_retry!(
+                pacer.as_deref(),
+                lp.conn
+                    .plan_resource_change(&type_name, &prior_dv, &config_dv, &config_dv)
+            ) {
                 Ok(p) => p,
                 Err(e) => {
                     let (crash, close) = provider_failure_signals(lp);
@@ -2176,15 +2207,33 @@ async fn apply_one_inner(
             }
 
             let planned_dv = planned.state;
-            let new_dv = match rpc_retry!(pacer.as_deref(), lp.conn.apply_resource_change(
-                &type_name,
-                &prior_dv,
-                &planned_dv,
-                &config_dv
-            )) {
+            let new_dv = match rpc_retry!(
+                pacer.as_deref(),
+                lp.conn
+                    .apply_resource_change(&type_name, &prior_dv, &planned_dv, &config_dv)
+            ) {
                 Ok(dv) => dv,
                 Err(e) => {
                     let msg = e.to_string();
+                    // PARTIAL APPLY comes first: the provider already told us
+                    // exactly what it committed, so there is nothing to adopt
+                    // and no reason to spend an import RPC guessing.
+                    if record_partial_apply(
+                        rec,
+                        &change.address,
+                        &e,
+                        &implied,
+                        current_schema_version,
+                    ) {
+                        let (crash, close) = provider_failure_signals(lp);
+                        return Err(rpc_error(
+                            &provider_name,
+                            "apply_resource_change",
+                            crash,
+                            close,
+                            &msg,
+                        ));
+                    }
                     // Import-on-conflict: a Create that FAILED may have failed
                     // because the resource already EXISTS in cloud while being
                     // absent from magma's state. Adopt it via
@@ -2216,8 +2265,7 @@ async fn apply_one_inner(
                         // apply loop's resolution map), or a discovered
                         // `<zone_id>/<record_id>` for opaque-id resources
                         // (cloudflare_dns_record) via the per-type resolver.
-                        if let Some(id) =
-                            resolve_import_id(change, &type_name, lp, adoption).await
+                        if let Some(id) = resolve_import_id(change, &type_name, lp, adoption).await
                         {
                             // The SHARED two-step adoption primitive — import
                             // then the protocol-mandated confirming ReadResource,
@@ -2261,11 +2309,7 @@ async fn apply_one_inner(
                                         &msg,
                                     ));
                                 }
-                                rec.insert(
-                                    &change.address,
-                                    attrs.clone(),
-                                    current_schema_version,
-                                );
+                                rec.insert(&change.address, attrs.clone(), current_schema_version);
                                 tracing::info!(
                                     address = ?change.address,
                                     import_id = %id,
@@ -2311,6 +2355,62 @@ async fn apply_one_inner(
                 before: change.before.clone(),
                 after: Some(new_attrs),
             })
+        }
+    }
+}
+
+/// Persist a resource the provider **committed** even though the apply RPC
+/// returned an error.
+///
+/// `ProviderError::PartiallyApplied` is the tfplugin contract's way of saying
+/// "the mutation landed, and then something went wrong" — an AWS EIP whose
+/// `AllocateAddress` succeeded before a follow-up call failed is the canonical
+/// shape. Before this existed, the provider border discarded that state and
+/// the engine recorded nothing, so the next reconcile re-planned a CREATE and
+/// allocated a SECOND resource. Measured 2026-08-01 against camelot: two
+/// orphaned EIPs (3.151.179.36, 18.227.192.150), both billable, neither in
+/// state, while the run reported `created: 0`.
+///
+/// Recording here does NOT make the apply succeed — the caller still returns
+/// `Err`. It makes the committed resource *known*, so the next plan sees it and
+/// converges instead of duplicating it.
+///
+/// Returns true when state was recorded, for the caller's log line.
+fn record_partial_apply(
+    rec: &mut NodeRecord,
+    address: &ResourceAddress,
+    err: &ProviderError,
+    implied: &CtyType,
+    schema_version: u64,
+) -> bool {
+    let ProviderError::PartiallyApplied { state, .. } = err else {
+        return false;
+    };
+    // A null new_state on a partial DELETE means the resource really is gone;
+    // there is nothing to record and the absence is already correct.
+    match state.to_json(implied) {
+        Ok(attrs) if !attrs.is_null() => {
+            rec.insert(address, attrs, schema_version);
+            tracing::error!(
+                address = %address,
+                "magma apply: provider FAILED but COMMITTED this resource; \
+                 recording the partial state so the next plan converges on it \
+                 instead of creating a duplicate"
+            );
+            true
+        }
+        Ok(_) => false,
+        Err(e) => {
+            // Do not swallow: an undecodable partial state is the one case
+            // where the resource exists and we cannot record it. Say so loudly
+            // — this is the shape that leaks money.
+            tracing::error!(
+                address = %address,
+                error = %e,
+                "magma apply: provider COMMITTED this resource but its state \
+                 could not be decoded; IT IS ORPHANED — reconcile by hand"
+            );
+            false
         }
     }
 }
@@ -2399,15 +2499,12 @@ async fn apply_replace(
     // 3. Create the replacement.
     let new_dv = match rpc_retry!(
         pacer,
-        lp.conn.apply_resource_change(
-            type_name,
-            &null_dv,
-            &create_planned.state,
-            config_dv
-        )
+        lp.conn
+            .apply_resource_change(type_name, &null_dv, &create_planned.state, config_dv)
     ) {
         Ok(dv) => dv,
         Err(e) => {
+            record_partial_apply(rec, &change.address, &e, implied, current_schema_version);
             let (crash, close) = provider_failure_signals(lp);
             return Err(rpc_error(
                 provider_name,
@@ -2810,11 +2907,20 @@ mod tests {
             Some("izumi".to_string())
         );
         // NOT `.name` → no fallback (node_id ≠ resource-name)
-        assert_eq!(repo_name_ref_fallback("github_repository.izumi.node_id"), None);
+        assert_eq!(
+            repo_name_ref_fallback("github_repository.izumi.node_id"),
+            None
+        );
         // deeper path → no fallback
-        assert_eq!(repo_name_ref_fallback("github_repository.izumi.name.x"), None);
+        assert_eq!(
+            repo_name_ref_fallback("github_repository.izumi.name.x"),
+            None
+        );
         // other type → no fallback
-        assert_eq!(repo_name_ref_fallback("github_branch_protection.x.name"), None);
+        assert_eq!(
+            repo_name_ref_fallback("github_branch_protection.x.name"),
+            None
+        );
     }
 
     #[test]
@@ -2874,7 +2980,9 @@ mod tests {
         substitute_refs(&mut content, &sm);
         assert_eq!(
             content,
-            serde_json::json!("jobs:\n  bump:\n    secrets:\n      BOT_PAT: ${{ secrets.BOT_PAT }}\n")
+            serde_json::json!(
+                "jobs:\n  bump:\n    secrets:\n      BOT_PAT: ${{ secrets.BOT_PAT }}\n"
+            )
         );
     }
 
@@ -2883,7 +2991,10 @@ mod tests {
         let sm: HashMap<String, serde_json::Value> = HashMap::new();
         let mut v = serde_json::json!("literal directive: %%{if true}yes%%{endif}");
         substitute_refs(&mut v, &sm);
-        assert_eq!(v, serde_json::json!("literal directive: %{if true}yes%{endif}"));
+        assert_eq!(
+            v,
+            serde_json::json!("literal directive: %{if true}yes%{endif}")
+        );
     }
 
     #[test]
@@ -2895,7 +3006,10 @@ mod tests {
         );
         let mut v = serde_json::json!("$${{ secrets.BOT_PAT }} repo=${github_repository.izumi.id}");
         substitute_refs(&mut v, &sm);
-        assert_eq!(v, serde_json::json!("${{ secrets.BOT_PAT }} repo=R_kgAizumi"));
+        assert_eq!(
+            v,
+            serde_json::json!("${{ secrets.BOT_PAT }} repo=R_kgAizumi")
+        );
     }
 
     #[test]
@@ -2903,7 +3017,10 @@ mod tests {
         let sm: HashMap<String, serde_json::Value> = HashMap::new();
         let mut v = serde_json::json!("caf\u{e9} $${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}");
         substitute_refs(&mut v, &sm);
-        assert_eq!(v, serde_json::json!("caf\u{e9} ${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}"));
+        assert_eq!(
+            v,
+            serde_json::json!("caf\u{e9} ${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}")
+        );
 
         // A null NON-`.name` ref keeps prior behavior (replace-with-null, no fallback).
         let mut node = serde_json::json!("${github_repository.izumi.node_id}");
@@ -3024,7 +3141,10 @@ mod tests {
         // Whole suspect set going gone at once → refuse regardless of size.
         assert!(mass_drop_should_suppress(MASS_DROP_FLOOR, MASS_DROP_FLOOR));
         // Half the probed targets going gone → refuse (boundary, inclusive).
-        assert!(mass_drop_should_suppress(MASS_DROP_FLOOR, MASS_DROP_FLOOR * 2));
+        assert!(mass_drop_should_suppress(
+            MASS_DROP_FLOOR,
+            MASS_DROP_FLOOR * 2
+        ));
     }
 
     #[test]
@@ -3033,16 +3153,25 @@ mod tests {
         assert!(!mass_drop_should_suppress(0, 1000));
         // A handful of real phantoms among many healthy targets → honor it.
         assert!(!mass_drop_should_suppress(2, 600));
-        assert!(!mass_drop_should_suppress(MASS_DROP_FLOOR - 1, MASS_DROP_FLOOR - 1));
+        assert!(!mass_drop_should_suppress(
+            MASS_DROP_FLOOR - 1,
+            MASS_DROP_FLOOR - 1
+        ));
         // At/above the floor but < half of probed targets → honor it.
-        assert!(!mass_drop_should_suppress(MASS_DROP_FLOOR, MASS_DROP_FLOOR * 2 + 1));
+        assert!(!mass_drop_should_suppress(
+            MASS_DROP_FLOOR,
+            MASS_DROP_FLOOR * 2 + 1
+        ));
     }
 
     #[test]
     fn apply_context_has_default_pacer() {
         // Every apply paces mutation RPCs by default (1 req/s).
         let ctx = ApplyContext::new(PathBuf::from("/tmp/x"));
-        assert!(ctx.pacer.is_some(), "default ApplyContext must carry a pacer");
+        assert!(
+            ctx.pacer.is_some(),
+            "default ApplyContext must carry a pacer"
+        );
     }
 
     #[test]
@@ -3189,7 +3318,10 @@ mod tests {
         };
         let gate = |c: Confidence| {
             gate_on_confidence(
-                Some(ImportId { id: "tag_forge:bug".into(), confidence: c }),
+                Some(ImportId {
+                    id: "tag_forge:bug".into(),
+                    confidence: c,
+                }),
                 &addr,
                 "github_issue_label",
             )
@@ -3374,11 +3506,26 @@ mod tests {
         };
         let changes = vec![
             // a data source the planner marked NoOp (the bug trigger)
-            mk(ResourceKind::Data, "cloudflare_zones", "rio_zone", Action::NoOp),
+            mk(
+                ResourceKind::Data,
+                "cloudflare_zones",
+                "rio_zone",
+                Action::NoOp,
+            ),
             // the dependent managed create (grafana CNAME)
-            mk(ResourceKind::Managed, "cloudflare_dns_record", "grafana", Action::Create),
+            mk(
+                ResourceKind::Managed,
+                "cloudflare_dns_record",
+                "grafana",
+                Action::Create,
+            ),
             // an unrelated NoOp managed resource (must stay in noops)
-            mk(ResourceKind::Managed, "cloudflare_dns_record", "auth", Action::NoOp),
+            mk(
+                ResourceKind::Managed,
+                "cloudflare_dns_record",
+                "auth",
+                Action::NoOp,
+            ),
         ];
         let (datas, noops, reals) = partition_changes(&changes);
         // The NoOp data source is in `datas` (read path), NOT `noops`.
@@ -3555,7 +3702,10 @@ mod tests {
         let a = &outcome.applied[0];
         assert_eq!(a.address, orphan);
         assert_eq!(a.action, Action::Delete);
-        assert!(a.after.is_none(), "a forgotten data source has no after-state");
+        assert!(
+            a.after.is_none(),
+            "a forgotten data source has no after-state"
+        );
         // And it is gone from state — the manual Postgres purge is now automatic.
         assert!(
             state.resources.iter().all(|r| r.address != orphan),
@@ -3632,7 +3782,10 @@ mod tests {
 
         assert_eq!(report.dropped_instances, 0, "must not drop on read failure");
         assert_eq!(report.dropped_resources, 0);
-        assert_eq!(report.kept_on_error, 1, "kept the instance it couldn't read");
+        assert_eq!(
+            report.kept_on_error, 1,
+            "kept the instance it couldn't read"
+        );
         assert_eq!(state.resources.len(), 1, "resource survives uncertainty");
     }
 
@@ -3659,14 +3812,16 @@ mod tests {
         let direct = magma_plan::plan(&cfg, &state).unwrap();
         let (via_helper, report) = refresh_then_plan(&cfg, &mut state, None).await.unwrap();
 
-        assert!(report.is_none(), "ctx = None must not produce a refresh report");
+        assert!(
+            report.is_none(),
+            "ctx = None must not produce a refresh report"
+        );
         assert_eq!(
             via_helper.resource_changes.len(),
             direct.resource_changes.len()
         );
         assert_eq!(
-            via_helper.resource_changes[0].action,
-            direct.resource_changes[0].action,
+            via_helper.resource_changes[0].action, direct.resource_changes[0].action,
             "identical plan to calling magma_plan::plan directly",
         );
     }
@@ -3722,10 +3877,15 @@ mod tests {
 
         let td = tempfile::tempdir().unwrap();
         let ctx = ApplyContext::new(td.path().to_path_buf());
-        let (plan, report) = refresh_then_plan(&cfg, &mut state, Some(&ctx)).await.unwrap();
+        let (plan, report) = refresh_then_plan(&cfg, &mut state, Some(&ctx))
+            .await
+            .unwrap();
 
         let report = report.expect("ctx = Some(_) must produce a refresh report");
-        assert_eq!(report.kept_on_error, 1, "no provider reachable — kept, not dropped");
+        assert_eq!(
+            report.kept_on_error, 1,
+            "no provider reachable — kept, not dropped"
+        );
         assert_eq!(report.dropped_instances, 0);
         assert_eq!(state.resources.len(), 1, "state untouched on uncertainty");
         assert_eq!(
@@ -3771,7 +3931,10 @@ mod tests {
             "404 Not Found: POST https://api.github.com/repos/pleme-io/ghost/labels",
         );
         let got = collect_phantom_parents(&[genuine_404]);
-        assert!(got.contains("ghost"), "a real 404 must still nominate the parent, got {got:?}");
+        assert!(
+            got.contains("ghost"),
+            "a real 404 must still nominate the parent, got {got:?}"
+        );
     }
 
     #[test]
@@ -3805,8 +3968,14 @@ mod tests {
             ),
         ];
         let parents = collect_phantom_parents(&failed);
-        assert!(parents.contains("kanchi"), "repo name from /repos/owner/kanchi/labels 404");
-        assert!(parents.contains("akeyless_stack"), "resource name from the ${{github_repository.X}} ref");
+        assert!(
+            parents.contains("kanchi"),
+            "repo name from /repos/owner/kanchi/labels 404"
+        );
+        assert!(
+            parents.contains("akeyless_stack"),
+            "resource name from the ${{github_repository.X}} ref"
+        );
 
         // A repo-CREATE 422 on /orgs/.../repos must NOT implicate a parent
         // (inverse-phantom — exists in cloud, not state — handled elsewhere).
@@ -3815,7 +3984,10 @@ mod tests {
             "breathe",
             "POST https://api.github.com/orgs/pleme-io/repos: 422 Repository creation failed [name already exists]",
         )];
-        assert!(collect_phantom_parents(&inverse).is_empty(), "repo-create 422 is not a phantom signal");
+        assert!(
+            collect_phantom_parents(&inverse).is_empty(),
+            "repo-create 422 is not a phantom signal"
+        );
 
         let mkrepo = |rname: &str, attr: &str| StateResource {
             address: ResourceAddress {
@@ -3847,15 +4019,18 @@ mod tests {
             lineage: uuid::Uuid::nil(),
             outputs: Default::default(),
             resources: vec![
-                mkrepo("kanchi", "kanchi"),               // phantom → dropped
+                mkrepo("kanchi", "kanchi"),                 // phantom → dropped
                 mkrepo("akeyless_stack", "akeyless-stack"), // phantom (addr-name match) → dropped
-                mkrepo("galho", "galho"),                 // not implicated → kept
+                mkrepo("galho", "galho"),                   // not implicated → kept
             ],
         };
         let dropped = drop_repos_from_state(&mut state, &parents);
         assert_eq!(dropped, 2, "kanchi + akeyless_stack dropped");
         assert_eq!(state.resources.len(), 1);
-        assert_eq!(state.resources[0].address.name, "galho", "non-phantom survives");
+        assert_eq!(
+            state.resources[0].address.name, "galho",
+            "non-phantom survives"
+        );
     }
 
     // ── Bounded, resumable cycles ──────────────────────────────────
@@ -4020,8 +4195,16 @@ mod tests {
         rb.commit(&mut s1);
         rb.commit(&mut s2);
         ra.commit(&mut s2);
-        let mut n1: Vec<_> = s1.resources.iter().map(|r| r.address.name.clone()).collect();
-        let mut n2: Vec<_> = s2.resources.iter().map(|r| r.address.name.clone()).collect();
+        let mut n1: Vec<_> = s1
+            .resources
+            .iter()
+            .map(|r| r.address.name.clone())
+            .collect();
+        let mut n2: Vec<_> = s2
+            .resources
+            .iter()
+            .map(|r| r.address.name.clone())
+            .collect();
         n1.sort();
         n2.sort();
         assert_eq!(n1, n2, "commit order must not change the resulting state");
@@ -4171,7 +4354,10 @@ mod tests {
         )
         .await;
 
-        assert!(out.is_complete(), "a fully-covered plan is finished: {out:?}");
+        assert!(
+            out.is_complete(),
+            "a fully-covered plan is finished: {out:?}"
+        );
         assert!(!out.needs_another_cycle());
         assert_eq!(out.stats().nodes_attempted, 0);
         assert_eq!(out.stats().nodes_remaining, 0);
@@ -4179,7 +4365,10 @@ mod tests {
             out.outcome().failed.is_empty(),
             "nothing was executed, so nothing can have failed"
         );
-        assert!(out.cursor().is_none(), "a finished plan carries no position");
+        assert!(
+            out.cursor().is_none(),
+            "a finished plan carries no position"
+        );
     }
 
     /// Zero-regression: the run-to-completion wrapper is exactly the resumable
@@ -4438,8 +4627,7 @@ mod tests {
         let mut stats = CycleStats::default();
         let state = empty_state();
 
-        let r =
-            record_data_read(&mut cursor, &addr, &value, &state, Some(&sink), &mut stats).await;
+        let r = record_data_read(&mut cursor, &addr, &value, &state, Some(&sink), &mut stats).await;
 
         assert_eq!(r, Recorded::Durable);
         let (_, persisted) = sink.last().await.expect("a pair was recorded");

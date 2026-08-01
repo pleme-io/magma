@@ -154,7 +154,11 @@ pub struct Progress(Vec<ResourceAddress>);
 impl Progress {
     /// The only constructor. `None` for an empty vec.
     pub fn new(addrs: Vec<ResourceAddress>) -> Option<Self> {
-        if addrs.is_empty() { None } else { Some(Self(addrs)) }
+        if addrs.is_empty() {
+            None
+        } else {
+            Some(Self(addrs))
+        }
     }
 
     pub fn as_slice(&self) -> &[ResourceAddress] {
@@ -475,7 +479,8 @@ impl ApplyCursor {
         if self.data_index.contains_key(&addr) {
             return false;
         }
-        self.data_index.insert(addr.clone(), self.data_results.len());
+        self.data_index
+            .insert(addr.clone(), self.data_results.len());
         self.data_results.push(DataResult {
             address: addr,
             value,
@@ -594,6 +599,19 @@ pub struct CycleStats {
     pub nodes_attempted: usize,
     /// Real changes this cycle applied successfully.
     pub nodes_completed: usize,
+    /// Real changes this cycle ATTEMPTED and that FAILED.
+    ///
+    /// Without this field the triple `(attempted, completed, remaining)` could
+    /// not distinguish "nothing was tried" from "everything was tried and every
+    /// one failed" — both render as `completed: 0`. Measured 2026-08-01 on the
+    /// camelot concentrator: a cycle reported `17 attempted / 0 completed` while
+    /// silently failing all 17 and leaking two billable EIPs, and no counter in
+    /// the struct disagreed with a healthy-looking run.
+    ///
+    /// INVARIANT (asserted in `debug_assert_consistent`): a real change that was
+    /// attempted either completed, failed, or is still remaining —
+    /// `nodes_completed + nodes_failed <= nodes_attempted`.
+    pub nodes_failed: usize,
     /// Real changes still outstanding when the cycle ended.
     pub nodes_remaining: usize,
     /// Dependency waves entered this cycle.
@@ -641,6 +659,21 @@ pub struct CycleStats {
     /// stopped early to keep the unrecorded set bounded, and that durability
     /// — not the quantum, not the providers — is the thing to fix.
     pub checkpoint_failures: usize,
+}
+
+impl CycleStats {
+    /// Every attempted change is accounted for: completed, failed, or still
+    /// pending. A cycle that attempts work and reports neither a success nor a
+    /// failure for it is the shape that hid the 2026-08-01 EIP leak.
+    pub fn debug_assert_consistent(&self) {
+        debug_assert!(
+            self.nodes_completed + self.nodes_failed <= self.nodes_attempted,
+            "CycleStats accounting broken: completed {} + failed {} > attempted {}",
+            self.nodes_completed,
+            self.nodes_failed,
+            self.nodes_attempted,
+        );
+    }
 }
 
 // ── CycleOutcome ───────────────────────────────────────────────────
@@ -911,7 +944,10 @@ mod tests {
     fn a_fingerprint_round_trips_as_hex() {
         let fp = ChangeFingerprint::of(&create("a"));
         let json = serde_json::to_string(&fp).expect("serialize");
-        assert!(json.starts_with('"'), "fingerprints serialize as hex: {json}");
+        assert!(
+            json.starts_with('"'),
+            "fingerprints serialize as hex: {json}"
+        );
         let back: ChangeFingerprint = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(fp, back);
 
