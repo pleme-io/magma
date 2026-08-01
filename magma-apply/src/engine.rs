@@ -1189,6 +1189,13 @@ pub struct RefreshReport {
     pub refreshed: usize,
     /// Instances the provider reported gone (dropped from state).
     pub dropped_instances: usize,
+    /// Instances dropped because they carry NO resource `id` and are therefore
+    /// unmanageable by construction — not because a provider said they were
+    /// gone. Counted apart from [`Self::dropped_instances`] on purpose: these
+    /// are a local structural verdict that never touched the network, so they
+    /// must not feed the mass-drop guard, whose whole job is to spot a
+    /// systemic `ReadResource` malfunction.
+    pub dropped_unmanageable: usize,
     /// Resources dropped entirely (all their instances were gone).
     pub dropped_resources: usize,
     /// Instances kept unchanged because refresh couldn't be performed
@@ -1331,6 +1338,44 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
 
         let mut kept_instances: Vec<StateInstance> = Vec::new();
         for inst in resource.instances {
+            // STRUCTURAL DROP, and the one principled exception to the
+            // "never delete because a read failed" rule above.
+            //
+            // The predicate is deliberately NARROWER than "has no id". An
+            // id-less instance cannot be read — ReadResource has nothing to
+            // look up — so it never reaches the provider-reports-gone arm that
+            // self-heals ordinary phantoms; it fails, lands in
+            // `kept_on_error`, and survives every refresh forever while
+            // re-planning as a pending change, wedging the workspace on
+            // `apply didn't converge` permanently.
+            //
+            // But missing-id ALONE is not safe to act on: `id` is mandatory
+            // for legacy-SDK resources and merely conventional for
+            // plugin-framework (protocol v6) ones, so a blanket drop could
+            // delete legitimate state. The second half of the predicate is
+            // what makes it decisive — an UNRESOLVED `${…}` interpolation in
+            // an attribute. State holds resolved values by definition; a
+            // `${…}` there is never a refreshed read, only ever a config echo
+            // recorded from a failed apply. Both together identify a phantom
+            // with no plausible innocent reading.
+            //
+            // Measured on camelot-eks-shaar-concentrator (2026-08-01): a failed
+            // SG create recorded the provider's config echo (no id, `vpc_id`
+            // still the literal `${data.aws_vpc.camelot_eks.id}`), and every
+            // cycle thereafter failed with "re-plan has 1 non-NoOp changes"
+            // while AWS showed no such SG. `record_partial_apply` now refuses
+            // to create these; this arm heals the ones already written.
+            if is_unmanageable_phantom(&inst.attributes) {
+                report.dropped_unmanageable += 1;
+                tracing::warn!(
+                    address = %resource.address,
+                    "magma refresh: dropping a state instance with NO id — it is \
+                     unmanageable by construction (cannot be read, updated or \
+                     destroyed) and would wedge every plan. The next plan will \
+                     create the resource."
+                );
+                continue;
+            }
             let lp = match registry.get(&provider_name).await {
                 Ok(l) => l,
                 Err(_) => {
@@ -2477,6 +2522,51 @@ mod replace_routing_tests {
 /// converges instead of duplicating it.
 ///
 /// Returns true when state was recorded, for the caller's log line.
+/// Does this state object carry a usable resource identity?
+///
+/// Every provider that actually creates something assigns `id` — it is the
+/// handle refresh reads with and destroy deletes by. A state object without
+/// one cannot be managed at all, so for our purposes it is not a resource.
+///
+/// Absent, `null`, and `""` are all treated the same, deliberately: an empty
+/// string is what a provider echoes back for an unset computed attribute, and
+/// it is exactly as unusable as a missing key.
+pub(crate) fn has_resource_id(attrs: &serde_json::Value) -> bool {
+    match attrs.get("id") {
+        Some(serde_json::Value::String(s)) => !s.is_empty(),
+        // A non-string id (number/bool) is still an identity a provider chose.
+        Some(v) => !v.is_null(),
+        None => false,
+    }
+}
+
+/// Does any string anywhere in this value still contain an unresolved `${…}`
+/// interpolation?
+///
+/// State stores RESOLVED values. A `${…}` surviving into state is never the
+/// product of a successful read — it is a provider echoing back the config it
+/// was handed before references were substituted.
+fn has_unresolved_interpolation(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::String(s) => s.contains("${"),
+        serde_json::Value::Array(a) => a.iter().any(has_unresolved_interpolation),
+        serde_json::Value::Object(o) => o.values().any(has_unresolved_interpolation),
+        _ => false,
+    }
+}
+
+/// A state instance that magma can neither read, update nor destroy, AND that
+/// demonstrably came from a failed apply rather than a real read.
+///
+/// Both halves are required. Missing-`id` alone is NOT sufficient: `id` is
+/// mandatory for legacy-SDK resources but only conventional for
+/// plugin-framework (protocol v6) ones, so dropping on that alone risks
+/// deleting legitimate state. The unresolved-`${…}` half is what removes the
+/// ambiguity.
+pub(crate) fn is_unmanageable_phantom(attrs: &serde_json::Value) -> bool {
+    !has_resource_id(attrs) && has_unresolved_interpolation(attrs)
+}
+
 fn record_partial_apply(
     rec: &mut NodeRecord,
     address: &ResourceAddress,
@@ -2491,6 +2581,41 @@ fn record_partial_apply(
     // there is nothing to record and the absence is already correct.
     match state.to_json(implied) {
         Ok(attrs) if !attrs.is_null() => {
+            // A partial state with NO usable `id` is not a resource — it is the
+            // provider echoing back the config it was handed, before it assigned
+            // an identity. Recording it creates a PHANTOM that can never be
+            // cleaned up:
+            //
+            //   * refresh cannot ReadResource it (there is no id to read),
+            //   * destroy cannot delete it (same),
+            //   * and it re-plans as a pending Update forever, so the workspace
+            //     trips `apply didn't converge` on every single cycle.
+            //
+            // Measured on camelot-eks-shaar-concentrator (2026-08-01): the SG
+            // create failed while `vpc_id` was still the unresolved literal
+            // `${data.aws_vpc.camelot_eks.id}`. The provider returned that echo
+            // with no `id`, magma recorded it, and the workspace then failed
+            // with "re-plan has 1 non-NoOp changes" on EVERY cycle — while
+            // `describe-security-groups` proved no such SG existed (12 SGs
+            // visible, that name absent). Nothing in the system could remove it.
+            //
+            // The tradeoff, stated rather than hidden: this is the guard that
+            // exists to stop a committed-but-unrecorded resource becoming a
+            // duplicate, so skipping a record is not free. It is still correct
+            // here — a provider that actually created something assigns an id,
+            // so an id-less echo means nothing was committed to converge on.
+            // Between "might duplicate a resource that has no identity" and
+            // "permanently wedge the workspace", the former is recoverable.
+            if !has_resource_id(&attrs) {
+                tracing::error!(
+                    address = %address,
+                    "magma apply: provider FAILED and returned a state with NO id — \
+                     treating it as NOT committed. Recording it would create a \
+                     phantom that refresh cannot read and destroy cannot remove, \
+                     wedging every future plan on `apply didn't converge`."
+                );
+                return false;
+            }
             rec.insert(address, attrs, schema_version);
             tracing::error!(
                 address = %address,
@@ -2995,6 +3120,84 @@ fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shape that wedged camelot-eks-shaar-concentrator: the provider
+    /// echoed the config back (including an unresolved `${…}`) with no `id`.
+    /// Recording that produced a phantom refresh could not read and destroy
+    /// could not remove, so every subsequent plan failed `apply didn't
+    /// converge`.
+    #[test]
+    fn id_less_partial_state_is_not_a_resource() {
+        let echoed = serde_json::json!({
+            "name": "shaar-concentrator-camelot-sg",
+            "description": "ShaarConcentrator WireGuard hub for camelot",
+            "vpc_id": "${data.aws_vpc.camelot_eks.id}",
+        });
+        assert!(
+            !has_resource_id(&echoed),
+            "a config echo with no id must NOT be treated as committed"
+        );
+    }
+
+    #[test]
+    fn empty_and_null_ids_are_as_unusable_as_a_missing_one() {
+        assert!(!has_resource_id(&serde_json::json!({ "id": "" })));
+        assert!(!has_resource_id(&serde_json::json!({ "id": null })));
+        assert!(!has_resource_id(&serde_json::json!({})));
+    }
+
+    /// The camelot phantom: no id AND an unresolved `${…}`. Both halves.
+    #[test]
+    fn phantom_needs_both_no_id_and_an_unresolved_interpolation() {
+        let phantom = serde_json::json!({
+            "name": "shaar-concentrator-camelot-sg",
+            "vpc_id": "${data.aws_vpc.camelot_eks.id}",
+        });
+        assert!(is_unmanageable_phantom(&phantom));
+    }
+
+    /// The safety case that made the predicate narrower than "no id".
+    /// A plugin-framework (protocol v6) resource is not REQUIRED to carry
+    /// `id`; dropping state on that alone would be data loss.
+    #[test]
+    fn id_less_but_fully_resolved_state_is_kept() {
+        let framework_resource = serde_json::json!({
+            "name": "keep_me",
+            "vpc_id": "vpc-090f93f4590e59ebc",
+        });
+        assert!(
+            !is_unmanageable_phantom(&framework_resource),
+            "a resolved id-less resource is legitimate state and must survive"
+        );
+    }
+
+    /// And an interpolation alone is not enough either — a resource with a
+    /// real id is manageable, so refresh/destroy can deal with it normally.
+    #[test]
+    fn an_interpolation_with_a_real_id_is_not_dropped() {
+        let odd_but_manageable = serde_json::json!({
+            "id": "sg-0860b967",
+            "vpc_id": "${data.aws_vpc.camelot_eks.id}",
+        });
+        assert!(!is_unmanageable_phantom(&odd_but_manageable));
+    }
+
+    #[test]
+    fn unresolved_interpolation_is_found_when_nested() {
+        assert!(has_unresolved_interpolation(&serde_json::json!({
+            "ingress": [{ "security_groups": ["${aws_security_group.x.id}"] }]
+        })));
+        assert!(!has_unresolved_interpolation(&serde_json::json!({
+            "ingress": [{ "security_groups": ["sg-123"] }]
+        })));
+    }
+
+    #[test]
+    fn a_real_id_still_records() {
+        assert!(has_resource_id(&serde_json::json!({ "id": "sg-0860b967" })));
+        // a provider that chose a non-string identity still chose one
+        assert!(has_resource_id(&serde_json::json!({ "id": 42 })));
+    }
 
     #[test]
     fn repo_name_ref_fallback_scoped_to_dot_name() {
