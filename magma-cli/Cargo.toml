@@ -19,9 +19,35 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+# `tlisp` is OFF by default, and that default is what makes magma-cli
+# publishable at all.
+#
+# `--tlisp` synthesizes a workspace through `magma-lava`, whose own
+# manifest reaches five PRIVATE repos (lava-core/-eval/-schema/-runtime/
+# -architectures) and then loops back to `magma-config` from this repo.
+# An outsider cannot resolve any of that, so while the dependency was
+# unconditional there was no build of magma-cli they could produce —
+# independent of whether this repo itself is public.
+#
+# Off by default therefore means: the default build reaches only public
+# crates. Turning it on is a pleme-io-internal choice (`--features tlisp`),
+# not the shape we hand to the world.
+#
+# Measured before flipping it: NOTHING in the fleet invokes `--tlisp`
+# (zoekt across the org finds only magma-cli's own flag declaration), so
+# the default-off build loses no live capability today.
+#
+# Note the flags are `#[cfg]`'d out with the dependency, so on a default
+# build `--tlisp` is rejected by the ARGUMENT PARSER — an unknown flag —
+# rather than accepted and then failed at runtime. Parse-time-rejected,
+# not merely mitigated.
+[features]
+default = []
+tlisp   = ["dep:magma-lava"]
+
 [dependencies]
 magma               = { workspace = true }
-magma-lava          = { workspace = true }
+magma-lava          = { workspace = true, optional = true }
 indexmap            = { workspace = true }
 magma-arch-test     = { workspace = true }
 magma-migrate       = { workspace = true }

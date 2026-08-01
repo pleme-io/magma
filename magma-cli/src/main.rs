@@ -405,15 +405,22 @@ struct PlanArgs {
     /// workspace-on-disk path entirely and synthesizes via magma-lava.
     /// The state is still read from the workspace dir (or in-memory
     /// empty state when --tlisp-state-dir is unset).
+    ///
+    /// Requires the `tlisp` feature (off by default — see magma-cli's
+    /// Cargo.toml for why). Without it this flag does not exist and clap
+    /// rejects it as unknown.
+    #[cfg(feature = "tlisp")]
     #[arg(long)]
     tlisp: Option<PathBuf>,
     /// Repeatable `key=value` binding for the .tlisp architecture's
     /// `:inputs` slot. Required for any architecture whose interface
     /// declares non-optional inputs.
+    #[cfg(feature = "tlisp")]
     #[arg(long = "tlisp-binding", value_name = "KEY=VALUE")]
     tlisp_bindings: Vec<String>,
     /// Optional typed-interface gate name. Validated against bundled
     /// interfaces via lava-architectures.
+    #[cfg(feature = "tlisp")]
     #[arg(long)]
     tlisp_gate: Option<String>,
     /// Refresh state against real providers before planning — Terraform's
@@ -441,13 +448,16 @@ struct ApplyArgs {
     #[arg(long)]
     auto_approve: bool,
     /// Path to a `.tlisp` lava architecture. Same semantics as
-    /// `plan --tlisp`.
+    /// `plan --tlisp`, including the `tlisp` feature requirement.
+    #[cfg(feature = "tlisp")]
     #[arg(long)]
     tlisp: Option<PathBuf>,
     /// Repeatable `key=value` binding.
+    #[cfg(feature = "tlisp")]
     #[arg(long = "tlisp-binding", value_name = "KEY=VALUE")]
     tlisp_bindings: Vec<String>,
     /// Optional typed-interface gate name.
+    #[cfg(feature = "tlisp")]
     #[arg(long)]
     tlisp_gate: Option<String>,
     /// Same as `plan --refresh` — on by default. See [`PlanArgs::refresh`].
@@ -871,9 +881,57 @@ fn cmd_init(args: InitArgs) -> Result<u8> {
 /// operates on a Pangea-rendered workspace shares this prelude;
 /// keeping it in one helper means future load-bearing changes
 /// (e.g. caching, multi-file workspace support) land in one place.
+/// The triple every command needs before it can plan: parsed config, the
+/// state backend, and the state itself. Named so the two ways of
+/// producing it (rendered terraform.json on disk, or tlisp synthesis)
+/// have one shared return type.
+type LoadedWorkspace = (
+    magma::config::Config,
+    magma::backend::LocalBackend,
+    magma::types::State,
+);
+
+/// `plan` and `apply` resolve their workspace identically, and both have
+/// to gate the tlisp arm on the `tlisp` feature. Generating the accessor
+/// states that gate exactly ONCE instead of copying the same `#[cfg]`
+/// pair into each command — the duplication that would otherwise drift
+/// the moment a third command grows a `--tlisp`.
+macro_rules! impl_loaded_workspace {
+    ($($args:ty),+ $(,)?) => { $(
+        impl $args {
+            #[cfg(feature = "tlisp")]
+            async fn load_workspace(&self) -> Result<LoadedWorkspace> {
+                match &self.tlisp {
+                    Some(path) => {
+                        synthesize_via_tlisp(
+                            path,
+                            &self.tlisp_bindings,
+                            self.tlisp_gate.as_deref(),
+                            &self.dir,
+                        )
+                        .await
+                    }
+                    None => load_workspace_and_state(&self.dir).await,
+                }
+            }
+
+            /// Without the `tlisp` feature there is no second source to
+            /// choose between — the flags do not exist, so this is not a
+            /// fallback, it is the only path.
+            #[cfg(not(feature = "tlisp"))]
+            async fn load_workspace(&self) -> Result<LoadedWorkspace> {
+                load_workspace_and_state(&self.dir).await
+            }
+        }
+    )+ };
+}
+
+impl_loaded_workspace!(PlanArgs, ApplyArgs);
+
 /// Synthesize a tlisp-sourced workspace. State still comes from
 /// `state_dir`'s local backend, so plan/apply work the same way they
 /// do with rendered terraform.json sources.
+#[cfg(feature = "tlisp")]
 async fn synthesize_via_tlisp(
     tlisp_path: &std::path::Path,
     bindings: &[String],
@@ -975,17 +1033,7 @@ fn report_refresh(report: &magma::apply::engine::RefreshReport) {
 }
 
 async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
-    let (cfg, backend, mut state) = if let Some(tlisp_path) = &args.tlisp {
-        synthesize_via_tlisp(
-            tlisp_path,
-            &args.tlisp_bindings,
-            args.tlisp_gate.as_deref(),
-            &args.dir,
-        )
-        .await?
-    } else {
-        load_workspace_and_state(&args.dir).await?
-    };
+    let (cfg, backend, mut state) = args.load_workspace().await?;
     let refresh_ctx = args
         .refresh
         .then(|| magma::apply::engine::ApplyContext::new(args.dir.clone()));
@@ -1036,17 +1084,7 @@ async fn cmd_plan(args: PlanArgs, detailed: bool) -> Result<u8> {
 }
 
 async fn cmd_apply(args: ApplyArgs) -> Result<u8> {
-    let (cfg, backend, mut state) = if let Some(tlisp_path) = &args.tlisp {
-        synthesize_via_tlisp(
-            tlisp_path,
-            &args.tlisp_bindings,
-            args.tlisp_gate.as_deref(),
-            &args.dir,
-        )
-        .await?
-    } else {
-        load_workspace_and_state(&args.dir).await?
-    };
+    let (cfg, backend, mut state) = args.load_workspace().await?;
     let refresh_ctx = args
         .refresh
         .then(|| magma::apply::engine::ApplyContext::new(args.dir.clone()));
