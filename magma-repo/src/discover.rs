@@ -126,7 +126,7 @@ mod tests {
         fs::create_dir_all(&alpha).unwrap();
         fs::write(
             alpha.join("pangea.yml"),
-            "default_namespace: alpha\naccount: akeyless-development\n",
+            "default_namespace: alpha\naccount: example-development\n",
         )
         .unwrap();
         fs::write(alpha.join("alpha.rb"), "# pangea template\n").unwrap();

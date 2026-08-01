@@ -63,7 +63,7 @@ mod tests {
     const SEPH_VPC: &str = r#"
 default_namespace: seph-vpc
 
-account: akeyless-development
+account: example-development
 
 tags:
   Purpose: seph-vpc
@@ -83,7 +83,7 @@ namespaces:
     fn parses_seph_vpc_workspace() {
         let cfg = parse(SEPH_VPC).unwrap();
         assert_eq!(cfg.default_namespace, "seph-vpc");
-        assert_eq!(cfg.account.as_deref(), Some("akeyless-development"));
+        assert_eq!(cfg.account.as_deref(), Some("example-development"));
         assert_eq!(cfg.tags.get("Cluster").map(String::as_str), Some("seph"));
         let ns = cfg.namespaces.get("seph-vpc").unwrap();
         assert!(ns.state.is_some());

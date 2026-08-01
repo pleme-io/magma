@@ -131,8 +131,14 @@ tags:
   Team: platform
 
 accounts:
-  akeyless-development:
-    account_id: "376129857990"
+  # Generic fixture values. This test asserts the PARSER, so nothing here
+  # needs to name a real estate — and naming one is how a private repo
+  # becomes unpublishable. 123456789012 is AWS's documentation-reserved
+  # account id; the previous fixture carried a real one belonging to the
+  # HOST account this tool operates in, which is a host-facing disclosure
+  # the moment this repo goes public.
+  example-development:
+    account_id: "123456789012"
     region: us-east-1
     role: AdministratorAccess
 
@@ -142,9 +148,9 @@ sso:
 
 state:
   s3:
-    bucket: pleme-dev-terraform-state
+    bucket: example-terraform-state
     region: us-east-1
-    dynamodb_table: pleme-dev-terraform-locks
+    dynamodb_table: example-terraform-locks
     encrypt: true
 
 cascade:
@@ -159,13 +165,13 @@ cascade:
             Some("pangea")
         );
         assert_eq!(
-            cfg.accounts.get("akeyless-development").unwrap().account_id,
-            "376129857990"
+            cfg.accounts.get("example-development").unwrap().account_id,
+            "123456789012"
         );
         assert!(cfg.sso.is_some());
         assert_eq!(
             cfg.state.as_ref().unwrap().s3.as_ref().unwrap().bucket,
-            "pleme-dev-terraform-state"
+            "example-terraform-state"
         );
         assert_eq!(cfg.cascade.as_ref().unwrap().default_depth, 0);
     }
