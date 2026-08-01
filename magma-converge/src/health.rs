@@ -63,7 +63,12 @@ use crate::inventory::ResourceRef;
 /// string (typed enough for operator display, free-form enough
 /// to surface the K8s condition message verbatim).
 #[derive(
-    Debug, Clone, PartialEq, Eq, Serialize, Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
     gen_platform::Discriminant,
     gen_platform::IsVariant,
     gen_platform::OutcomeLattice,
@@ -330,20 +335,11 @@ mod tests {
     fn ready_state_severity_order() {
         // Failed > InProgress > Unknown > Ready
         assert!(
-            ReadyState::Failed {
-                reason: "x".into()
-            }
-            .severity()
-                > ReadyState::InProgress {
-                    reason: "x".into()
-                }
-                .severity()
+            ReadyState::Failed { reason: "x".into() }.severity()
+                > ReadyState::InProgress { reason: "x".into() }.severity()
         );
         assert!(
-            ReadyState::InProgress {
-                reason: "x".into()
-            }
-            .severity()
+            ReadyState::InProgress { reason: "x".into() }.severity()
                 > ReadyState::Unknown.severity()
         );
         assert!(ReadyState::Unknown.severity() > ReadyState::Ready.severity());
@@ -353,19 +349,10 @@ mod tests {
     fn ready_state_state_discriminant() {
         assert_eq!(ReadyState::Ready.state(), "ready");
         assert_eq!(
-            ReadyState::InProgress {
-                reason: "x".into()
-            }
-            .state(),
+            ReadyState::InProgress { reason: "x".into() }.state(),
             "in-progress"
         );
-        assert_eq!(
-            ReadyState::Failed {
-                reason: "x".into()
-            }
-            .state(),
-            "failed"
-        );
+        assert_eq!(ReadyState::Failed { reason: "x".into() }.state(), "failed");
         assert_eq!(ReadyState::Unknown.state(), "unknown");
     }
 
@@ -450,8 +437,12 @@ mod tests {
         // First non-Ready check determines the outcome.
         let c: ChainedHealthCheck<i32> = ChainedHealthCheck::new()
             .with_check(AlwaysReady)
-            .with_check(NeverReady { reason: "first failure" })
-            .with_check(NeverReady { reason: "second failure" });
+            .with_check(NeverReady {
+                reason: "first failure",
+            })
+            .with_check(NeverReady {
+                reason: "second failure",
+            });
 
         match c.evaluate(&42) {
             ReadyState::Failed { reason } => assert_eq!(reason, "first failure"),
@@ -477,7 +468,10 @@ mod tests {
     fn report_empty_overall_is_ready() {
         let r = HealthReport::new();
         assert!(r.is_empty());
-        assert!(r.overall().is_ready(), "vacuous truth: no resources → Ready");
+        assert!(
+            r.overall().is_ready(),
+            "vacuous truth: no resources → Ready"
+        );
         assert_eq!(r.counts().total(), 0);
     }
 
@@ -555,12 +549,7 @@ mod tests {
                 reason: "rolling".into(),
             },
         );
-        r.set(
-            dep("ns", "d"),
-            ReadyState::Failed {
-                reason: "x".into(),
-            },
-        );
+        r.set(dep("ns", "d"), ReadyState::Failed { reason: "x".into() });
         r.set(dep("ns", "e"), ReadyState::Unknown);
 
         let c = r.counts();
@@ -593,12 +582,7 @@ mod tests {
     fn report_serde_round_trip() {
         let mut r = HealthReport::new();
         r.set(dep("ns", "a"), ReadyState::Ready);
-        r.set(
-            dep("ns", "b"),
-            ReadyState::Failed {
-                reason: "x".into(),
-            },
-        );
+        r.set(dep("ns", "b"), ReadyState::Failed { reason: "x".into() });
         let json = serde_json::to_string(&r).unwrap();
         let back: HealthReport = serde_json::from_str(&json).unwrap();
         assert_eq!(r, back);
@@ -620,11 +604,7 @@ mod tests {
             replicas_desired: u32,
         }
 
-        let inventory = Inventory::from_iter([
-            dep("ns", "a"),
-            dep("ns", "b"),
-            dep("ns", "c"),
-        ]);
+        let inventory = Inventory::from_iter([dep("ns", "a"), dep("ns", "b"), dep("ns", "c")]);
 
         let cluster_state: BTreeMap<ResourceRef, FakeResource> = [
             (

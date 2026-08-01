@@ -105,10 +105,7 @@ impl ArtifactDigest {
                 got: hex.len(),
             });
         }
-        if !hex
-            .chars()
-            .all(|c| matches!(c, '0'..='9' | 'a'..='f'))
-        {
+        if !hex.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
             return Err(DigestError::NotLowercaseHex(hex));
         }
         Ok(Self { algo, hex })
@@ -355,14 +352,22 @@ mod tests {
 
     #[test]
     fn artifact_is_fresh_within_limit() {
-        let a = Artifact::new(digest_blake3_aaa(), provenance(), TarballBytes(vec![1, 2, 3]));
+        let a = Artifact::new(
+            digest_blake3_aaa(),
+            provenance(),
+            TarballBytes(vec![1, 2, 3]),
+        );
         // fetched_at = 1000; now = 1300; limit = 600s → fresh
         assert!(a.is_fresh(Duration::from_secs(600), t(1300)));
     }
 
     #[test]
     fn artifact_is_not_fresh_past_limit() {
-        let a = Artifact::new(digest_blake3_aaa(), provenance(), TarballBytes(vec![1, 2, 3]));
+        let a = Artifact::new(
+            digest_blake3_aaa(),
+            provenance(),
+            TarballBytes(vec![1, 2, 3]),
+        );
         // fetched_at = 1000; now = 2000; limit = 600s → stale
         assert!(!a.is_fresh(Duration::from_secs(600), t(2000)));
     }
@@ -401,7 +406,11 @@ mod tests {
 
     #[test]
     fn artifact_serde_round_trip() {
-        let a = Artifact::new(digest_blake3_aaa(), provenance(), TarballBytes(vec![1, 2, 3, 4]));
+        let a = Artifact::new(
+            digest_blake3_aaa(),
+            provenance(),
+            TarballBytes(vec![1, 2, 3, 4]),
+        );
         let json = serde_json::to_string(&a).unwrap();
         let back: Artifact<TarballBytes> = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);

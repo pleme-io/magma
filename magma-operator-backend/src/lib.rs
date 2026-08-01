@@ -237,9 +237,9 @@ pub mod tofu_state {
     //!      fixture that caught this.
 
     use magma_state::StateError;
+    pub use magma_state::tfstate_v4::{format_provider_reference, parse_provider_reference};
     use magma_types::State;
     use serde_json::Value;
-    pub use magma_state::tfstate_v4::{format_provider_reference, parse_provider_reference};
 
     #[derive(Debug, thiserror::Error)]
     pub enum TofuStateError {

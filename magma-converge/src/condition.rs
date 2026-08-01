@@ -76,7 +76,14 @@ pub const AVAILABLE: &str = "Available";
 /// is typed: `s.parse::<ConditionStatus>().unwrap().name() == s` for
 /// every valid wire string.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
     gen_platform::Discriminant,
     gen_platform::IsVariant,
     gen_platform::FromStrKind,
@@ -267,12 +274,16 @@ impl ConditionSet {
 
     /// `true` when the condition exists AND its status is `True`.
     pub fn is_true(&self, r#type: &str) -> bool {
-        self.get(r#type).map(|c| c.status.is_true()).unwrap_or(false)
+        self.get(r#type)
+            .map(|c| c.status.is_true())
+            .unwrap_or(false)
     }
 
     /// `true` when the condition exists AND its status is `False`.
     pub fn is_false(&self, r#type: &str) -> bool {
-        self.get(r#type).map(|c| c.status.is_false()).unwrap_or(false)
+        self.get(r#type)
+            .map(|c| c.status.is_false())
+            .unwrap_or(false)
     }
 
     /// Number of conditions in the set.
@@ -376,10 +387,7 @@ mod tests {
     /// lowercase status values.
     #[test]
     fn condition_status_from_str_is_case_sensitive() {
-        assert_eq!(
-            ConditionStatus::from_str("True"),
-            Ok(ConditionStatus::True),
-        );
+        assert_eq!(ConditionStatus::from_str("True"), Ok(ConditionStatus::True),);
         assert!(ConditionStatus::from_str("true").is_err());
         assert!(ConditionStatus::from_str("TRUE").is_err());
     }
@@ -539,7 +547,7 @@ mod tests {
     fn iter_in_canonical_type_order() {
         let mut s = ConditionSet::new();
         s.set(reconciling_true()); // type=Reconciling
-        s.set(ready_true());        // type=Ready
+        s.set(ready_true()); // type=Ready
         // Sorted by type: "Ready" < "Reconciling" alphabetically.
         let types: Vec<&str> = s.iter().map(|c| c.r#type.as_str()).collect();
         assert_eq!(types, vec![READY, RECONCILING]);

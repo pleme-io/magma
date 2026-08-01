@@ -10,9 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::load_path::{
-    GemLocator, LoadPathError, resolve_load_path, resolve_load_path_for_roots,
-};
+use crate::load_path::{GemLocator, LoadPathError, resolve_load_path, resolve_load_path_for_roots};
 use crate::lockfile::Lockfile;
 use crate::tree::VirtualGemTree;
 
@@ -139,7 +137,10 @@ mod tests {
         let env = resolve_ruby_env(&lock, &loc, "3.3.0").expect("resolves");
         assert_eq!(
             env.ruby_lib,
-            vec![PathBuf::from("/g/base/lib"), PathBuf::from("/g/dependent/lib")]
+            vec![
+                PathBuf::from("/g/base/lib"),
+                PathBuf::from("/g/dependent/lib")
+            ]
         );
         assert_eq!(env.ruby_version, "3.3.0");
         assert_eq!(env.gem_tree_attestation.len(), 64);

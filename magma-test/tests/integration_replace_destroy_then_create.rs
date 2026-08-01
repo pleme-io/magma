@@ -130,7 +130,10 @@ async fn force_new_attribute_change_applies_as_destroy_then_create() {
         "the recorded action must reflect what ACTUALLY happened \
          (destroy+create), not the incoming plan's Update classification"
     );
-    let new_attrs = applied.after.as_ref().expect("replacement carries new state");
+    let new_attrs = applied
+        .after
+        .as_ref()
+        .expect("replacement carries new state");
     assert_eq!(
         new_attrs.get("immutable_field").and_then(|v| v.as_str()),
         Some("new-value"),

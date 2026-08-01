@@ -21,7 +21,14 @@ use serde_json::Value;
 
 /// What the policy engine wants done with a Change.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
     gen_platform::Discriminant,
     gen_platform::IsVariant,
 )]

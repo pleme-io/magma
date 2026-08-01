@@ -257,8 +257,7 @@ async fn refresh_state_migrates_a_stale_schema_version_end_to_end() {
          provider's resource schema evolves'",
     );
     assert!(
-        inst.attributes.get("legacy_owner").is_none()
-            || inst.attributes["legacy_owner"].is_null(),
+        inst.attributes.get("legacy_owner").is_none() || inst.attributes["legacy_owner"].is_null(),
         "the stale v0 field name must not survive: {:?}",
         inst.attributes,
     );

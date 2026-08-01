@@ -80,7 +80,6 @@ impl RefSpec {
             | RefSpec::Digest(s) => s.as_str(),
         }
     }
-
 }
 
 impl fmt::Display for RefSpec {
@@ -94,7 +93,9 @@ impl fmt::Display for RefSpec {
 pub enum RefSpecParseError {
     #[error("ref string missing 'kind:value' separator: {0:?}")]
     MissingSeparator(String),
-    #[error("unknown ref kind {kind:?} in {full:?}; expected one of branch/tag/semver/commit/name/digest")]
+    #[error(
+        "unknown ref kind {kind:?} in {full:?}; expected one of branch/tag/semver/commit/name/digest"
+    )]
     UnknownKind { kind: String, full: String },
     #[error("ref value cannot be empty in {0:?}")]
     EmptyValue(String),
@@ -167,8 +168,11 @@ mod tests {
             RefSpec::Name("a".into()),
             RefSpec::Digest("a".into()),
         ] {
-            assert_ne!(spec.is_immutable(), spec.is_floating(),
-                "variant {spec:?} must be exactly one of immutable or floating");
+            assert_ne!(
+                spec.is_immutable(),
+                spec.is_floating(),
+                "variant {spec:?} must be exactly one of immutable or floating"
+            );
         }
     }
 

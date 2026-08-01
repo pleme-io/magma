@@ -486,8 +486,7 @@ async fn handle_tool_call(
                 .get("refresh")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let refresh_ctx =
-                refresh.then(|| magma_apply::engine::ApplyContext::new(dir.clone()));
+            let refresh_ctx = refresh.then(|| magma_apply::engine::ApplyContext::new(dir.clone()));
             let (plan, refresh_report) =
                 magma_apply::engine::refresh_then_plan(&cfg, &mut state, refresh_ctx.as_ref())
                     .await

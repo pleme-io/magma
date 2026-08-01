@@ -44,7 +44,9 @@ use serde::{Deserialize, Serialize};
 
 /// K8s set-based operator. Wire format matches K8s exactly: `"In"` /
 /// `"NotIn"` / `"Exists"` / `"DoesNotExist"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, gen_platform::Discriminant)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, gen_platform::Discriminant,
+)]
 #[discriminant(method = "name", case = "title")]
 pub enum LabelSelectorOperator {
     /// Label exists AND its value is in `values`.
@@ -64,7 +66,6 @@ impl LabelSelectorOperator {
     pub fn ignores_values(self) -> bool {
         matches!(self, Self::Exists | Self::DoesNotExist)
     }
-
 }
 
 /// A single set-based requirement (`key`, `operator`, `values`) in
@@ -333,11 +334,8 @@ mod tests {
 
     #[test]
     fn requirement_invalid_when_exists_carries_values() {
-        let r = LabelSelectorRequirement::new(
-            "k",
-            LabelSelectorOperator::Exists,
-            vec!["bad".into()],
-        );
+        let r =
+            LabelSelectorRequirement::new("k", LabelSelectorOperator::Exists, vec!["bad".into()]);
         assert!(r.has_invalid_values());
     }
 
@@ -363,7 +361,10 @@ mod tests {
     fn requirement_exists_matches_label_present() {
         let r = LabelSelectorRequirement::exists("tier");
         assert!(r.matches(&labels(&[("tier", "frontend")])));
-        assert!(r.matches(&labels(&[("tier", "")])), "empty value still exists");
+        assert!(
+            r.matches(&labels(&[("tier", "")])),
+            "empty value still exists"
+        );
         assert!(!r.matches(&labels(&[("env", "prod")])));
     }
 
@@ -412,8 +413,7 @@ mod tests {
 
     #[test]
     fn match_labels_requires_all_keys_present_with_correct_values() {
-        let s = LabelSelector::from_label("env", "prod")
-            .with_label("tier", "frontend");
+        let s = LabelSelector::from_label("env", "prod").with_label("tier", "frontend");
         assert!(s.matches(&labels(&[("env", "prod"), ("tier", "frontend")])));
         // Wrong value for env.
         assert!(!s.matches(&labels(&[("env", "dev"), ("tier", "frontend")])));
@@ -470,11 +470,10 @@ mod tests {
 
     #[test]
     fn match_expressions_alone_select_correctly() {
-        let s = LabelSelector::new()
-            .with_expression(LabelSelectorRequirement::r#in(
-                "env",
-                vec!["prod".into(), "staging".into()],
-            ));
+        let s = LabelSelector::new().with_expression(LabelSelectorRequirement::r#in(
+            "env",
+            vec!["prod".into(), "staging".into()],
+        ));
 
         assert!(s.matches(&labels(&[("env", "prod")])));
         assert!(s.matches(&labels(&[("env", "staging")])));
@@ -514,11 +513,9 @@ mod tests {
 
     #[test]
     fn selector_serde_camel_case_matches_k8s() {
-        let s = LabelSelector::from_label("env", "prod")
-            .with_expression(LabelSelectorRequirement::r#in(
-                "tier",
-                vec!["frontend".into()],
-            ));
+        let s = LabelSelector::from_label("env", "prod").with_expression(
+            LabelSelectorRequirement::r#in("tier", vec!["frontend".into()]),
+        );
 
         let json = serde_json::to_string(&s).unwrap();
         // K8s wire format keys.
@@ -595,11 +592,9 @@ mod tests {
 
     #[test]
     fn matches_is_deterministic() {
-        let s = LabelSelector::from_label("env", "prod")
-            .with_expression(LabelSelectorRequirement::not_in(
-                "version",
-                vec!["v0".into()],
-            ));
+        let s = LabelSelector::from_label("env", "prod").with_expression(
+            LabelSelectorRequirement::not_in("version", vec!["v0".into()]),
+        );
 
         let cases = [
             labels(&[]),

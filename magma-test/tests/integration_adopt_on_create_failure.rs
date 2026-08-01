@@ -130,8 +130,8 @@ async fn a_create_that_fails_without_saying_already_exists_is_still_adopted() {
     let mut state = empty();
     let ctx = ApplyContext::new(ws.path().to_path_buf()).without_pacer();
 
-    let outcome = run_plan_with_providers(&plan_of(create_of("boom-adoptable")), &mut state, &ctx)
-        .await;
+    let outcome =
+        run_plan_with_providers(&plan_of(create_of("boom-adoptable")), &mut state, &ctx).await;
 
     assert!(
         outcome.failed.is_empty(),
@@ -205,9 +205,7 @@ async fn an_adopted_resource_is_never_identity_less() {
         "adopted state must carry identity: {attrs:?}"
     );
     assert!(
-        attrs
-            .get("imported_by")
-            .is_some_and(|v| !v.is_null()),
+        attrs.get("imported_by").is_some_and(|v| !v.is_null()),
         "the confirming ReadResource must have run — a bare import stub \
          leaves every computed attribute null: {attrs:?}"
     );
@@ -370,7 +368,8 @@ async fn an_import_that_returns_a_different_resource_is_refused() {
     let mut state = empty();
     let ctx = ApplyContext::new(ws.path().to_path_buf()).without_pacer();
 
-    let outcome = run_plan_with_providers(&plan_of(create_of("boom-wrong")), &mut state, &ctx).await;
+    let outcome =
+        run_plan_with_providers(&plan_of(create_of("boom-wrong")), &mut state, &ctx).await;
 
     assert!(
         state.resources.is_empty(),

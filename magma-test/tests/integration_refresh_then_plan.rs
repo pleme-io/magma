@@ -140,10 +140,19 @@ async fn resource_is_recreated_after_refresh_detects_out_of_band_deletion() {
         .expect("refresh_then_plan");
     let report = report.expect("refresh ran (ctx = Some)");
 
-    assert_eq!(report.dropped_instances, 1, "the phantom instance was dropped");
-    assert_eq!(report.dropped_resources, 1, "its whole resource was dropped");
+    assert_eq!(
+        report.dropped_instances, 1,
+        "the phantom instance was dropped"
+    );
+    assert_eq!(
+        report.dropped_resources, 1,
+        "its whole resource was dropped"
+    );
     assert_eq!(report.refreshed, 0);
-    assert!(state.resources.is_empty(), "state no longer records the deleted resource");
+    assert!(
+        state.resources.is_empty(),
+        "state no longer records the deleted resource"
+    );
     assert_eq!(
         plan.resource_changes[0].action,
         Action::Create,
@@ -175,7 +184,10 @@ async fn refresh_leaves_a_still_present_resource_as_noop() {
 
     assert_eq!(report.dropped_instances, 0);
     assert_eq!(report.dropped_resources, 0);
-    assert_eq!(report.refreshed, 1, "the real ReadResource RPC ran and confirmed it");
+    assert_eq!(
+        report.refreshed, 1,
+        "the real ReadResource RPC ran and confirmed it"
+    );
     assert_eq!(state.resources.len(), 1);
     assert_eq!(
         plan.resource_changes[0].action,

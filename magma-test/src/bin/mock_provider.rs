@@ -140,8 +140,7 @@ impl Provider for MockProvider {
         fn string_attr(name: &str) -> tfplugin6::schema::Attribute {
             tfplugin6::schema::Attribute {
                 name: name.to_string(),
-                r#type: serde_json::to_vec(&serde_json::json!("string"))
-                    .unwrap_or_default(),
+                r#type: serde_json::to_vec(&serde_json::json!("string")).unwrap_or_default(),
                 nested_type: None,
                 description: String::new(),
                 required: false,
@@ -562,9 +561,10 @@ impl Provider for MockProvider {
         //     keeps exercising its own (JSON-only) decode path unchanged.
         // A real provider populates only `.msgpack`; the mock populates
         // both so ONE handler proves both magma-side decoders.
-        let msgpack = magma_cty::DynamicValue::from_json(&state_json, &mock_resource_implied_type())
-            .map(|dv| dv.msgpack)
-            .unwrap_or_default();
+        let msgpack =
+            magma_cty::DynamicValue::from_json(&state_json, &mock_resource_implied_type())
+                .map(|dv| dv.msgpack)
+                .unwrap_or_default();
         Ok(Response::new(tfplugin6::import_resource_state::Response {
             imported_resources: vec![tfplugin6::import_resource_state::ImportedResource {
                 type_name: r.type_name,

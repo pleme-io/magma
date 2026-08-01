@@ -168,16 +168,8 @@ impl Inventory {
     /// removed-from-self) — i.e. `other.diff_from(self)` is the
     /// transition `self → other`.
     pub fn diff_to(&self, other: &Inventory) -> InventoryDiff {
-        let added: Vec<_> = other
-            .entries
-            .difference(&self.entries)
-            .cloned()
-            .collect();
-        let removed: Vec<_> = self
-            .entries
-            .difference(&other.entries)
-            .cloned()
-            .collect();
+        let added: Vec<_> = other.entries.difference(&self.entries).cloned().collect();
+        let removed: Vec<_> = self.entries.difference(&other.entries).cloned().collect();
         InventoryDiff { added, removed }
     }
 }
@@ -225,7 +217,12 @@ mod tests {
     }
 
     fn crd(name: &str) -> ResourceRef {
-        ResourceRef::cluster_scoped("apiextensions.k8s.io", "v1", "CustomResourceDefinition", name)
+        ResourceRef::cluster_scoped(
+            "apiextensions.k8s.io",
+            "v1",
+            "CustomResourceDefinition",
+            name,
+        )
     }
 
     fn pod(ns: &str, name: &str) -> ResourceRef {
@@ -321,7 +318,10 @@ mod tests {
     fn insert_deduplicates() {
         let mut inv = Inventory::new();
         assert!(inv.insert(deployment("default", "nginx")));
-        assert!(!inv.insert(deployment("default", "nginx")), "duplicate insert returns false");
+        assert!(
+            !inv.insert(deployment("default", "nginx")),
+            "duplicate insert returns false"
+        );
         assert_eq!(inv.len(), 1);
     }
 
@@ -392,7 +392,8 @@ mod tests {
     #[test]
     fn diff_to_addition_only() {
         let prev = Inventory::from_iter(vec![deployment("default", "a")]);
-        let curr = Inventory::from_iter(vec![deployment("default", "a"), deployment("default", "b")]);
+        let curr =
+            Inventory::from_iter(vec![deployment("default", "a"), deployment("default", "b")]);
 
         let diff = prev.diff_to(&curr);
         assert_eq!(diff.added, vec![deployment("default", "b")]);
@@ -401,7 +402,8 @@ mod tests {
 
     #[test]
     fn diff_to_removal_only() {
-        let prev = Inventory::from_iter(vec![deployment("default", "a"), deployment("default", "b")]);
+        let prev =
+            Inventory::from_iter(vec![deployment("default", "a"), deployment("default", "b")]);
         let curr = Inventory::from_iter(vec![deployment("default", "a")]);
 
         let diff = prev.diff_to(&curr);
@@ -411,14 +413,10 @@ mod tests {
 
     #[test]
     fn diff_to_both_added_and_removed() {
-        let prev = Inventory::from_iter(vec![
-            deployment("default", "a"),
-            deployment("default", "b"),
-        ]);
-        let curr = Inventory::from_iter(vec![
-            deployment("default", "a"),
-            deployment("default", "c"),
-        ]);
+        let prev =
+            Inventory::from_iter(vec![deployment("default", "a"), deployment("default", "b")]);
+        let curr =
+            Inventory::from_iter(vec![deployment("default", "a"), deployment("default", "c")]);
 
         let diff = prev.diff_to(&curr);
         assert_eq!(diff.added, vec![deployment("default", "c")]);
@@ -457,7 +455,10 @@ mod tests {
 
         let diff1 = prev_v1.diff_to(&curr);
         let diff2 = prev_v2.diff_to(&curr);
-        assert_eq!(diff1, diff2, "diff must be deterministic across insert order");
+        assert_eq!(
+            diff1, diff2,
+            "diff must be deterministic across insert order"
+        );
     }
 
     #[test]

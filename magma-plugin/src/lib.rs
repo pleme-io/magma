@@ -36,6 +36,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use hyper_util::rt::TokioIo;
 use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
 };
@@ -45,7 +46,6 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use hyper_util::rt::TokioIo;
 use tracing::{debug, warn};
 
 use magma_protocol::PluginProtocol;
@@ -308,7 +308,11 @@ impl tower::Service<http::Request<tonic::body::BoxBody>> for H2Channel {
             // bytes but never the stream-end, so the unary handler blocks
             // forever and the RPC hangs. One self-terminating frame removes
             // that failure mode.
-            let bytes = body.collect().await.map_err(Into::<BoxErr>::into)?.to_bytes();
+            let bytes = body
+                .collect()
+                .await
+                .map_err(Into::<BoxErr>::into)?
+                .to_bytes();
             let full: tonic::body::BoxBody = Full::new(bytes)
                 .map_err(|never: std::convert::Infallible| match never {})
                 .boxed_unsync();
@@ -860,9 +864,9 @@ impl Plugin {
         // already cached). `ok_or_else` keeps this unwrap-free and honest:
         // the `None` arm is logically unreachable but yields a typed error
         // rather than a panic if that invariant is ever broken.
-        self.channel.as_ref().ok_or_else(|| {
-            PluginError::Transport("internal: channel vanished after dial".into())
-        })
+        self.channel
+            .as_ref()
+            .ok_or_else(|| PluginError::Transport("internal: channel vanished after dial".into()))
     }
 
     /// Dial a fresh [`H2Channel`] to the provider (no caching — `dial`
@@ -977,10 +981,7 @@ impl Plugin {
     /// subprocess crash surfaces as a precise typed error.
     #[must_use]
     pub fn crash_lines(&self) -> Vec<String> {
-        self.crash
-            .lock()
-            .map(|g| g.snapshot())
-            .unwrap_or_default()
+        self.crash.lock().map(|g| g.snapshot()).unwrap_or_default()
     }
 
     /// A typed [`ProviderCrash`] summary, `Some` iff any crash-signal line
@@ -1118,7 +1119,9 @@ mod tests {
         assert!(!is_crash_line(
             "2026-06-12T00:00:00Z [INFO] provider: configuring client: host=api.cloudflare.com"
         ));
-        assert!(!is_crash_line("[DEBUG] ReadDataSource: cloudflare_accounts"));
+        assert!(!is_crash_line(
+            "[DEBUG] ReadDataSource: cloudflare_accounts"
+        ));
         assert!(!is_crash_line(""));
         // The word "panic" only as a substring of an unrelated word must
         // not trip — we anchor on "panic:" (with the colon Go emits).
@@ -1132,7 +1135,10 @@ mod tests {
         ring.push("second".to_string());
         ring.push("third".to_string());
         // Oldest ("first") evicted; the two most-recent survive in order.
-        assert_eq!(ring.snapshot(), vec!["second".to_string(), "third".to_string()]);
+        assert_eq!(
+            ring.snapshot(),
+            vec!["second".to_string(), "third".to_string()]
+        );
     }
 
     #[test]
@@ -1189,7 +1195,9 @@ mod tests {
         // SITE (`list_data_source.go:103`) carries no marker, yet must be
         // captured via the backtrace window — it was dropped at trace! before.
         assert!(
-            captured.iter().any(|l| l.contains("list_data_source.go:103")),
+            captured
+                .iter()
+                .any(|l| l.contains("list_data_source.go:103")),
             "the .go:NNN crash-site frame must be captured: {captured:?}"
         );
         assert!(
@@ -1198,7 +1206,10 @@ mod tests {
         );
 
         // And the typed summary distills that frame into the crash SITE.
-        let pc = ProviderCrash { lines: captured, signal: Some(11) };
+        let pc = ProviderCrash {
+            lines: captured,
+            signal: Some(11),
+        };
         let site = pc.crash_site().expect("crash_site from the .go: frame");
         assert!(site.contains("list_data_source.go:103"), "site: {site}");
         assert!(!site.contains("+0x"), "PC offset trimmed from site: {site}");
@@ -1217,7 +1228,10 @@ mod tests {
         // (advances but isn't captured) and the following frame is captured.
         assert!(classify_crash_capture("panic: boom", &mut budget));
         assert!(!classify_crash_capture("", &mut budget)); // blank: not kept
-        assert!(classify_crash_capture("\t/some/file.go:42 +0x0", &mut budget));
+        assert!(classify_crash_capture(
+            "\t/some/file.go:42 +0x0",
+            &mut budget
+        ));
     }
 
     #[test]

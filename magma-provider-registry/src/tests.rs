@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 use crate::{
-    blake3_hex, ChainRegistry, DirRegistry, ProviderHandle, ProviderInfo, ProviderRegistry,
-    RegistryError,
+    ChainRegistry, DirRegistry, ProviderHandle, ProviderInfo, ProviderRegistry, RegistryError,
+    blake3_hex,
 };
 
 /// A registry whose every `resolve` returns a pre-programmed outcome —
@@ -146,7 +146,10 @@ async fn dir_registry_miss_when_absent() {
         .resolve("cloudflare/cloudflare", "5.12.0", "linux", "amd64")
         .await
         .unwrap();
-    assert!(got.is_none(), "absent provider is a clean miss, not an error");
+    assert!(
+        got.is_none(),
+        "absent provider is a clean miss, not an error"
+    );
 }
 
 #[tokio::test]
@@ -154,7 +157,10 @@ async fn dir_registry_no_root_is_clean_miss() {
     // A DirRegistry whose root dir does not exist returns Ok(None) so it
     // can sit at the tail of a chain on a node with no baked mirror.
     let reg = DirRegistry::new("/nonexistent/magma/provider/dir");
-    let got = reg.resolve("random", "3.0.0", "linux", "amd64").await.unwrap();
+    let got = reg
+        .resolve("random", "3.0.0", "linux", "amd64")
+        .await
+        .unwrap();
     assert!(got.is_none());
 }
 
@@ -254,7 +260,10 @@ fn content_hash_mismatch_is_a_typed_error() {
     let err = result.expect_err("mismatch");
     match err {
         RegistryError::ContentHashMismatch {
-            provider, expected, actual, ..
+            provider,
+            expected,
+            actual,
+            ..
         } => {
             assert_eq!(provider, "cloudflare/cloudflare");
             assert_ne!(expected, actual);

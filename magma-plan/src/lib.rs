@@ -78,8 +78,8 @@ use magma_types::{
 
 mod compliance;
 pub use compliance::{
-    check_cache_encryption, check_database_public_accessibility, check_security_group_compliance,
-    run_compliance_checks, ComplianceBaseline, ComplianceViolation,
+    ComplianceBaseline, ComplianceViolation, check_cache_encryption,
+    check_database_public_accessibility, check_security_group_compliance, run_compliance_checks,
 };
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -207,9 +207,9 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         // resolve against) falls back to the raw, unresolved value — the
         // pre-existing, safe-by-erring-toward-drift behavior. It never
         // silently degrades to NoOp on a resolution failure.
-        let after_resolved = after.as_ref().map(|v| {
-            magma_config::resolve_config(v, &state_map).unwrap_or_else(|_| v.clone())
-        });
+        let after_resolved = after
+            .as_ref()
+            .map(|v| magma_config::resolve_config(v, &state_map).unwrap_or_else(|_| v.clone()));
         let drifted =
             declared_attributes_drifted(&addr.type_id.0, &addr.name, &before, &after_resolved);
         // Same rule as the Create arm: a data source is never UPDATED either.
@@ -667,10 +667,16 @@ const EXTERNALLY_MANAGED_ATTRIBUTES: &[(&str, &str, &str)] = &[(
     "scaling_config",
 )];
 
-fn is_externally_managed_attribute(resource_type: &str, resource_name: &str, attribute: &str) -> bool {
+fn is_externally_managed_attribute(
+    resource_type: &str,
+    resource_name: &str,
+    attribute: &str,
+) -> bool {
     EXTERNALLY_MANAGED_ATTRIBUTES
         .iter()
-        .any(|(rt, name, attr)| *rt == resource_type && *name == resource_name && *attr == attribute)
+        .any(|(rt, name, attr)| {
+            *rt == resource_type && *name == resource_name && *attr == attribute
+        })
 }
 
 /// `aws_iam_openid_connect_provider.url` — a config-resolved reference
@@ -1100,15 +1106,23 @@ mod tests {
             "vpc_id": "vpc-090f93f4590e59ebc",
             "id": "subnet-abc123",
         });
-        st.resources
-            .push(mk_state_resource("aws_subnet", "priv", subnet_before.clone()));
+        st.resources.push(mk_state_resource(
+            "aws_subnet",
+            "priv",
+            subnet_before.clone(),
+        ));
 
         // Prove the OLD (pre-fix) bug shape directly: comparing the RAW,
         // unresolved config value against state's concrete value reports
         // drift even though nothing changed.
         let subnet_after_raw = Some(json!({ "vpc_id": "${aws_vpc.main.id}" }));
         assert!(
-            declared_attributes_drifted("aws_subnet", "priv", &Some(subnet_before), &subnet_after_raw),
+            declared_attributes_drifted(
+                "aws_subnet",
+                "priv",
+                &Some(subnet_before),
+                &subnet_after_raw
+            ),
             "old code path (raw, unresolved comparison) must reproduce the spurious-drift bug shape"
         );
 
@@ -1178,10 +1192,7 @@ mod tests {
             Action::Update,
             "a config reference that resolves to a DIFFERENT value than what's stored must still report drift"
         );
-        assert_eq!(
-            subnet_change.reasons,
-            vec![ChangeReason::AttributeDrift]
-        );
+        assert_eq!(subnet_change.reasons, vec![ChangeReason::AttributeDrift]);
     }
 
     // ── BUG 2 regression: nested object attributes, whole-value compare ──

@@ -127,7 +127,10 @@ pub const CATALOG: &[NaturalIdRule] = &[
     },
     NaturalIdRule {
         resource_type: "github_repository_environment",
-        parts: &[IdPart::ParentName("repository"), IdPart::Attr("environment")],
+        parts: &[
+            IdPart::ParentName("repository"),
+            IdPart::Attr("environment"),
+        ],
         sep: ':',
     },
     NaturalIdRule {
@@ -368,9 +371,7 @@ pub fn verify_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magma_types::{
-        Action, ModulePath, ResourceAddress, ResourceKind, ResourceTypeId,
-    };
+    use magma_types::{Action, ModulePath, ResourceAddress, ResourceKind, ResourceTypeId};
 
     fn mk(ty: &str, name: &str, after: Value) -> ResourceChange {
         ResourceChange {
@@ -499,9 +500,7 @@ mod tests {
             },
             Row {
                 ty: "github_repository_collaborators",
-                after: || {
-                    serde_json::json!({ "repository": "${github_repository.tag_forge.name}" })
-                },
+                after: || serde_json::json!({ "repository": "${github_repository.tag_forge.name}" }),
                 expect: "tag-forge",
             },
             Row {
@@ -570,7 +569,10 @@ mod tests {
         .expect("derivable");
         assert_eq!(got.id, "cse-lint:main");
         assert!(!got.id.contains("R_kgDO"), "node id leaked into import id");
-        assert!(!got.id.contains("${"), "raw reference leaked into import id");
+        assert!(
+            !got.id.contains("${"),
+            "raw reference leaked into import id"
+        );
     }
 
     /// Underscore-sanitized resource names are NOT repo names. Resolving the
@@ -595,12 +597,8 @@ mod tests {
             "repository": "${github_repository.tag_forge.name}",
             "name": "bug"
         });
-        let got = derive(
-            &mk("github_issue_label", "l", after),
-            None,
-            &HashMap::new(),
-        )
-        .expect("derivable");
+        let got = derive(&mk("github_issue_label", "l", after), None, &HashMap::new())
+            .expect("derivable");
         assert_eq!(got.id, "tag_forge:bug");
         assert_eq!(got.confidence, Confidence::CatalogWithGuessedParent);
         assert!(!got.confidence.is_exact());
@@ -610,8 +608,12 @@ mod tests {
     #[test]
     fn a_literal_parent_value_is_used_verbatim() {
         let after = serde_json::json!({ "repository": "breathe", "name": "bug" });
-        let got = derive(&mk("github_issue_label", "l", after.clone()), Some(&after), &HashMap::new())
-            .expect("derivable");
+        let got = derive(
+            &mk("github_issue_label", "l", after.clone()),
+            Some(&after),
+            &HashMap::new(),
+        )
+        .expect("derivable");
         assert_eq!(got.id, "breathe:bug");
         assert_eq!(got.confidence, Confidence::Catalog);
     }
@@ -635,8 +637,12 @@ mod tests {
     #[test]
     fn name_keyed_types_are_unchanged() {
         let after = serde_json::json!({ "name": "breathe" });
-        let got = derive(&mk("github_repository", "breathe", after.clone()), Some(&after), &HashMap::new())
-            .expect("derivable");
+        let got = derive(
+            &mk("github_repository", "breathe", after.clone()),
+            Some(&after),
+            &HashMap::new(),
+        )
+        .expect("derivable");
         assert_eq!(got.id, "breathe");
         assert_eq!(got.confidence, Confidence::NameAttribute);
 
@@ -733,7 +739,11 @@ mod tests {
         let after = serde_json::json!({ "name": "breathe" });
         let change = mk("github_repository", "breathe", after.clone());
         assert_eq!(
-            verify_identity(&change, Some(&after), &serde_json::json!({ "id": "breathe" })),
+            verify_identity(
+                &change,
+                Some(&after),
+                &serde_json::json!({ "id": "breathe" })
+            ),
             Ok(())
         );
         assert_eq!(

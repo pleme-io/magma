@@ -56,9 +56,9 @@
 //! (cost, latency, security, KPI per Viggy) impl Outcome once and
 //! get the entire aggregator stack for free.
 
+use crate::apply::ApplyStatus;
 use crate::condition::ConditionStatus;
 use crate::health::ReadyState;
-use crate::apply::ApplyStatus;
 
 /// The canonical typed-outcome lattice trait. Every outcome enum in
 /// the substrate impls this so they share one algebra.
@@ -129,8 +129,7 @@ pub trait OutcomeLattice: Clone + PartialEq {
 /// `*Report::overall_*()` method in the substrate is one call to
 /// this helper.
 pub fn worst_of<O: OutcomeLattice>(iter: impl IntoIterator<Item = O>) -> O {
-    iter.into_iter()
-        .fold(O::baseline(), |acc, o| acc.worst(&o))
+    iter.into_iter().fold(O::baseline(), |acc, o| acc.worst(&o))
 }
 
 /// Fold an iterator of outcomes to their best case. Returns `None`
@@ -185,11 +184,16 @@ mod tests {
 
     #[test]
     fn apply_status_severity_ordering() {
-        assert!(ApplyStatus::AllSucceeded.severity() < ApplyStatus::SucceededWithSkipped.severity());
+        assert!(
+            ApplyStatus::AllSucceeded.severity() < ApplyStatus::SucceededWithSkipped.severity()
+        );
         assert!(ApplyStatus::SucceededWithSkipped.severity() < ApplyStatus::Failed.severity());
         assert!(ApplyStatus::Failed.severity() < ApplyStatus::Conflict.severity());
         // Empty and AllSucceeded both severity 0 — both are "no escalation".
-        assert_eq!(ApplyStatus::Empty.severity(), ApplyStatus::AllSucceeded.severity());
+        assert_eq!(
+            ApplyStatus::Empty.severity(),
+            ApplyStatus::AllSucceeded.severity()
+        );
     }
 
     #[test]
@@ -204,28 +208,52 @@ mod tests {
     fn baselines_are_severity_zero() {
         assert_eq!(<ReadyState as OutcomeLattice>::baseline().severity(), 0);
         assert_eq!(<ApplyStatus as OutcomeLattice>::baseline().severity(), 0);
-        assert_eq!(<ConditionStatus as OutcomeLattice>::baseline().severity(), 0);
+        assert_eq!(
+            <ConditionStatus as OutcomeLattice>::baseline().severity(),
+            0
+        );
     }
 
     #[test]
     fn baselines_identify_best_state() {
-        assert!(matches!(<ReadyState as OutcomeLattice>::baseline(), ReadyState::Ready));
-        assert!(matches!(<ApplyStatus as OutcomeLattice>::baseline(), ApplyStatus::Empty));
-        assert!(matches!(<ConditionStatus as OutcomeLattice>::baseline(), ConditionStatus::True));
+        assert!(matches!(
+            <ReadyState as OutcomeLattice>::baseline(),
+            ReadyState::Ready
+        ));
+        assert!(matches!(
+            <ApplyStatus as OutcomeLattice>::baseline(),
+            ApplyStatus::Empty
+        ));
+        assert!(matches!(
+            <ConditionStatus as OutcomeLattice>::baseline(),
+            ConditionStatus::True
+        ));
     }
 
     #[test]
     fn is_baseline_classifies_correctly() {
-        assert!(<ReadyState as OutcomeLattice>::is_baseline(&ReadyState::Ready));
+        assert!(<ReadyState as OutcomeLattice>::is_baseline(
+            &ReadyState::Ready
+        ));
         assert!(!<ReadyState as OutcomeLattice>::is_baseline(&fl("x")));
 
-        assert!(<ApplyStatus as OutcomeLattice>::is_baseline(&ApplyStatus::Empty));
+        assert!(<ApplyStatus as OutcomeLattice>::is_baseline(
+            &ApplyStatus::Empty
+        ));
         // AllSucceeded also has severity 0 → is_baseline returns true.
-        assert!(<ApplyStatus as OutcomeLattice>::is_baseline(&ApplyStatus::AllSucceeded));
-        assert!(!<ApplyStatus as OutcomeLattice>::is_baseline(&ApplyStatus::Failed));
+        assert!(<ApplyStatus as OutcomeLattice>::is_baseline(
+            &ApplyStatus::AllSucceeded
+        ));
+        assert!(!<ApplyStatus as OutcomeLattice>::is_baseline(
+            &ApplyStatus::Failed
+        ));
 
-        assert!(<ConditionStatus as OutcomeLattice>::is_baseline(&ConditionStatus::True));
-        assert!(!<ConditionStatus as OutcomeLattice>::is_baseline(&ConditionStatus::False));
+        assert!(<ConditionStatus as OutcomeLattice>::is_baseline(
+            &ConditionStatus::True
+        ));
+        assert!(!<ConditionStatus as OutcomeLattice>::is_baseline(
+            &ConditionStatus::False
+        ));
     }
 
     // ── worst / best — operator-facing semantics ───────────────────

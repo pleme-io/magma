@@ -207,8 +207,7 @@ fn plan_from_ordered(
 /// unspecified — [`dependency_order`] re-sorts it. Edges into gems not
 /// present in `gems` (default/stdlib gems) are simply not followed.
 fn transitive_closure(gems: &[ResolvedGem], roots: &[String]) -> Vec<ResolvedGem> {
-    let by_name: BTreeMap<&str, &ResolvedGem> =
-        gems.iter().map(|g| (g.name.as_str(), g)).collect();
+    let by_name: BTreeMap<&str, &ResolvedGem> = gems.iter().map(|g| (g.name.as_str(), g)).collect();
     let mut keep: BTreeSet<&str> = BTreeSet::new();
     let mut stack: Vec<&str> = roots
         .iter()
@@ -235,8 +234,7 @@ fn dependency_order(gems: &[ResolvedGem]) -> Vec<ResolvedGem> {
     // Index by name; the lockfile can in principle list a name twice
     // (different platforms) — last wins for ordering purposes, which
     // is deterministic given a fixed lockfile.
-    let by_name: BTreeMap<&str, &ResolvedGem> =
-        gems.iter().map(|g| (g.name.as_str(), g)).collect();
+    let by_name: BTreeMap<&str, &ResolvedGem> = gems.iter().map(|g| (g.name.as_str(), g)).collect();
 
     // Remaining unplaced gem names, alphabetical for determinism.
     let mut remaining: BTreeSet<&str> = by_name.keys().copied().collect();
@@ -384,7 +382,10 @@ impl ManifestLocator {
         let raw: BTreeMap<String, String> = serde_json::from_str(s)
             .map_err(|e| crate::RubygemsError::LockfileParse(format!("gem manifest: {e}")))?;
         Ok(Self {
-            map: raw.into_iter().map(|(k, v)| (k, PathBuf::from(v))).collect(),
+            map: raw
+                .into_iter()
+                .map(|(k, v)| (k, PathBuf::from(v)))
+                .collect(),
         })
     }
 
@@ -476,11 +477,7 @@ mod tests {
     #[test]
     fn resolves_in_dependency_order_deps_before_dependents() {
         // c depends on b depends on a.
-        let lock = lock_of(vec![
-            gem("c", &["b"]),
-            gem("a", &[]),
-            gem("b", &["a"]),
-        ]);
+        let lock = lock_of(vec![gem("c", &["b"]), gem("a", &[]), gem("b", &["a"])]);
         let loc = MapLocator::hosting(&[("a", "/g/a/lib"), ("b", "/g/b/lib"), ("c", "/g/c/lib")]);
         let plan = resolve_load_path(&lock, &loc).expect("all gems hosted");
         let names: Vec<_> = plan
@@ -500,7 +497,11 @@ mod tests {
             ("mid", "/g/mid/lib"),
         ]);
         let plan = resolve_load_path(&lock, &loc).unwrap();
-        let names: Vec<_> = plan.load_path.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let names: Vec<_> = plan
+            .load_path
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(names, vec!["/g/alpha/lib", "/g/mid/lib", "/g/zebra/lib"]);
     }
 
@@ -547,7 +548,11 @@ mod tests {
         let lock = lock_of(vec![gem("a", &[]), gem("b", &[])]);
         let loc = MapLocator::hosting(&[("a", "/shared/lib"), ("b", "/shared/lib")]);
         let plan = resolve_load_path(&lock, &loc).unwrap();
-        assert_eq!(plan.load_path, vec![PathBuf::from("/shared/lib")], "shared lib listed once");
+        assert_eq!(
+            plan.load_path,
+            vec![PathBuf::from("/shared/lib")],
+            "shared lib listed once"
+        );
     }
 
     #[test]
@@ -556,8 +561,16 @@ mod tests {
         let lock = lock_of(vec![gem("b", &["a"]), gem("a", &["b"])]);
         let loc = MapLocator::hosting(&[("a", "/g/a/lib"), ("b", "/g/b/lib")]);
         let plan = resolve_load_path(&lock, &loc).unwrap();
-        let names: Vec<_> = plan.load_path.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        assert_eq!(names, vec!["/g/a/lib", "/g/b/lib"], "cycle → alphabetical, no panic");
+        let names: Vec<_> = plan
+            .load_path
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["/g/a/lib", "/g/b/lib"],
+            "cycle → alphabetical, no panic"
+        );
     }
 
     #[test]
@@ -575,7 +588,10 @@ mod tests {
         let lock = lock_of(vec![gem("a", &[])]);
         let p1 = resolve_load_path(&lock, &MapLocator::hosting(&[("a", "/g/a1/lib")])).unwrap();
         let p2 = resolve_load_path(&lock, &MapLocator::hosting(&[("a", "/g/a2/lib")])).unwrap();
-        assert_ne!(p1.attestation, p2.attestation, "different lib path → different attestation");
+        assert_ne!(
+            p1.attestation, p2.attestation,
+            "different lib path → different attestation"
+        );
     }
 
     // ── GemRootsLocator (filesystem) ──
@@ -636,8 +652,14 @@ mod tests {
         // Mirrors the Nix RUBYLIB shape: store-hash dir basenames that a
         // path-scan could never reverse-map to a gem name.
         let loc = ManifestLocator::new([
-            ("pangea-core".into(), PathBuf::from("/nix/store/abc123-pangea-core-src/lib")),
-            ("dry-struct".into(), PathBuf::from("/nix/store/def-env/gems/dry-struct-1.6.0/lib")),
+            (
+                "pangea-core".into(),
+                PathBuf::from("/nix/store/abc123-pangea-core-src/lib"),
+            ),
+            (
+                "dry-struct".into(),
+                PathBuf::from("/nix/store/def-env/gems/dry-struct-1.6.0/lib"),
+            ),
         ]);
         assert_eq!(
             loc.locate(&gem("pangea-core", &[])),
@@ -651,7 +673,10 @@ mod tests {
         let json = r#"{"pangea-core":"/g/core/lib","pangea-gcp":"/g/gcp/lib"}"#;
         let loc = ManifestLocator::from_json(json).expect("valid manifest json");
         assert_eq!(loc.len(), 2);
-        assert_eq!(loc.locate(&gem("pangea-gcp", &[])), Some(PathBuf::from("/g/gcp/lib")));
+        assert_eq!(
+            loc.locate(&gem("pangea-gcp", &[])),
+            Some(PathBuf::from("/g/gcp/lib"))
+        );
     }
 
     #[test]
@@ -713,9 +738,17 @@ mod tests {
         // as the operator flake would emit (name -> store lib dir).
         let baked = ManifestLocator::new(
             [
-                "pangea-core", "pangea-gcp", "pangea-aws", "pangea-azure",
-                "pangea-cloudflare", "pangea-datadog", "pangea-akeyless",
-                "dry-struct", "dry-types", "terraform-synthesizer", "base64",
+                "pangea-core",
+                "pangea-gcp",
+                "pangea-aws",
+                "pangea-azure",
+                "pangea-cloudflare",
+                "pangea-datadog",
+                "pangea-akeyless",
+                "dry-struct",
+                "dry-types",
+                "terraform-synthesizer",
+                "base64",
             ]
             .into_iter()
             .map(|n| (n.to_string(), PathBuf::from(format!("/baked/{n}/lib")))),
@@ -727,7 +760,10 @@ mod tests {
 
         // architectures depends on the providers, providers depend on core.
         let lock = lock_of(vec![
-            gem("pangea-architectures", &["pangea-core", "pangea-gcp", "pangea-aws"]),
+            gem(
+                "pangea-architectures",
+                &["pangea-core", "pangea-gcp", "pangea-aws"],
+            ),
             gem("pangea-core", &["dry-struct", "terraform-synthesizer"]),
             gem("pangea-gcp", &["pangea-core"]),
             gem("pangea-aws", &["pangea-core"]),
@@ -738,9 +774,10 @@ mod tests {
         let plan = resolve_load_path(&lock, &loc).expect("complete closure");
         assert_eq!(plan.load_path.len(), 7, "all 7 gems located");
         // architectures (the composer) resolves to the gem-cache clone.
-        assert!(plan
-            .load_path
-            .contains(&cache.join("pangea-architectures-main").join("lib")));
+        assert!(
+            plan.load_path
+                .contains(&cache.join("pangea-architectures-main").join("lib"))
+        );
         // dependency order: core's deps precede core precede the providers
         // precede architectures.
         let pos = |needle: &str| {
@@ -783,13 +820,24 @@ mod tests {
 
         // Whole-lock resolution FAILS on the unbundled test gems.
         let whole = resolve_load_path(&lock, &loc);
-        assert!(matches!(whole, Err(LoadPathError::MissingGems(_))), "whole-lock hits test gems");
+        assert!(
+            matches!(whole, Err(LoadPathError::MissingGems(_))),
+            "whole-lock hits test gems"
+        );
 
         // Root-restricted resolution succeeds — test gems never visited.
         let roots = vec!["pangea-architectures".to_string()];
         let plan = resolve_load_path_for_roots(&lock, &loc, &roots).expect("closure resolves");
-        let names: Vec<_> = plan.load_path.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        assert_eq!(names, vec!["/g/dry/lib", "/g/core/lib", "/g/arch/lib"], "closure, dep-ordered");
+        let names: Vec<_> = plan
+            .load_path
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["/g/dry/lib", "/g/core/lib", "/g/arch/lib"],
+            "closure, dep-ordered"
+        );
     }
 
     #[test]
@@ -798,7 +846,8 @@ mod tests {
         let loc = MapLocator::hosting(&[("present", "/g/p/lib")]);
         // "ghost" isn't in the lock → skipped, not an error; "present"
         // also isn't reachable from "ghost", so the closure is empty.
-        let plan = resolve_load_path_for_roots(&lock, &loc, &["ghost".into()]).expect("empty closure ok");
+        let plan =
+            resolve_load_path_for_roots(&lock, &loc, &["ghost".into()]).expect("empty closure ok");
         assert!(plan.load_path.is_empty());
     }
 
@@ -810,8 +859,12 @@ mod tests {
             gem("pangea-core", &[]),
         ]);
         let loc = MapLocator::hosting(&[("pangea-architectures", "/g/arch/lib")]); // core absent
-        let err = resolve_load_path_for_roots(&lock, &loc, &["pangea-architectures".into()]).unwrap_err();
+        let err =
+            resolve_load_path_for_roots(&lock, &loc, &["pangea-architectures".into()]).unwrap_err();
         let LoadPathError::MissingGems(m) = err;
-        assert_eq!(m.iter().map(|x| x.name.clone()).collect::<Vec<_>>(), vec!["pangea-core"]);
+        assert_eq!(
+            m.iter().map(|x| x.name.clone()).collect::<Vec<_>>(),
+            vec!["pangea-core"]
+        );
     }
 }

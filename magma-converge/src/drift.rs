@@ -90,12 +90,9 @@ impl DriftPolicy {
         match self {
             DriftPolicy::Disabled => true,
             DriftPolicy::Warn => false,
-            DriftPolicy::Enabled { ignore_paths } => {
-                ignore_paths.iter().any(|p| p == path)
-            }
+            DriftPolicy::Enabled { ignore_paths } => ignore_paths.iter().any(|p| p == path),
         }
     }
-
 }
 
 #[cfg(test)]
@@ -119,7 +116,9 @@ mod tests {
 
     #[test]
     fn enabled_detects_and_corrects() {
-        let p = DriftPolicy::Enabled { ignore_paths: vec![] };
+        let p = DriftPolicy::Enabled {
+            ignore_paths: vec![],
+        };
         assert!(p.detects());
         assert!(p.corrects());
     }
@@ -137,10 +136,15 @@ mod tests {
         for p in [
             DriftPolicy::Disabled,
             DriftPolicy::Warn,
-            DriftPolicy::Enabled { ignore_paths: vec![] },
+            DriftPolicy::Enabled {
+                ignore_paths: vec![],
+            },
         ] {
             if p.corrects() {
-                assert!(p.detects(), "{p:?} corrects but doesn't detect — invariant broken");
+                assert!(
+                    p.detects(),
+                    "{p:?} corrects but doesn't detect — invariant broken"
+                );
             }
         }
     }
@@ -176,7 +180,9 @@ mod tests {
 
     #[test]
     fn enabled_with_empty_ignore_corrects_everything() {
-        let p = DriftPolicy::Enabled { ignore_paths: vec![] };
+        let p = DriftPolicy::Enabled {
+            ignore_paths: vec![],
+        };
         assert!(p.corrects());
         assert!(!p.should_ignore_path("/spec/replicas"));
     }
@@ -186,7 +192,10 @@ mod tests {
         assert_eq!(DriftPolicy::Disabled.mode(), "disabled");
         assert_eq!(DriftPolicy::Warn.mode(), "warn");
         assert_eq!(
-            DriftPolicy::Enabled { ignore_paths: vec![] }.mode(),
+            DriftPolicy::Enabled {
+                ignore_paths: vec![]
+            }
+            .mode(),
             "enabled"
         );
     }

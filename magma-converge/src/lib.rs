@@ -15,8 +15,6 @@
 
 #![deny(unsafe_code)]
 
-pub mod dns;
-pub mod engine;
 pub mod aggregator;
 pub mod apply;
 pub mod artifact;
@@ -24,7 +22,9 @@ pub mod backend_error;
 pub mod blobstore;
 pub mod condition;
 pub mod decision;
+pub mod dns;
 pub mod drift;
+pub mod engine;
 pub mod github;
 pub mod health;
 pub mod helm;
@@ -43,7 +43,6 @@ pub mod webhook;
 
 pub use aggregator::Aggregator;
 pub use apply::{ApplyCounts, ApplyDiff, ApplyOutcome, ApplyReport, ApplyStatus};
-pub use outcome::{best_of, worst_of, OutcomeLattice};
 pub use artifact::{Artifact, ArtifactDigest, DigestAlgo, DigestError, Provenance};
 pub use backend_error::BackendError;
 pub use blobstore::{BlobMetadata, BlobStoreBackend, BlobStoreError, InMemoryBlobStore};
@@ -58,13 +57,14 @@ pub use health::{
 pub use inventory::{Inventory, InventoryDiff, ResourceRef};
 pub use manifest::{Manifest, TypeMeta};
 pub use meta::{ObjectMeta, OwnerReference};
+pub use outcome::{OutcomeLattice, best_of, worst_of};
 pub use policy::CascadePolicy;
 pub use refspec::{RefSpec, RefSpecParseError};
 pub use selector::{LabelSelector, LabelSelectorOperator, LabelSelectorRequirement};
 pub use validate::{Validate, Violation};
 pub use webhook::{
-    HeaderTokenValidator, NoOpValidator, WebhookError, WebhookEvent, WebhookKind,
-    WebhookRequest, WebhookValidator,
+    HeaderTokenValidator, NoOpValidator, WebhookError, WebhookEvent, WebhookKind, WebhookRequest,
+    WebhookValidator,
 };
 
 // == Convergence trait + typed border: RE-HOMED to shigoto-types ======
@@ -80,7 +80,7 @@ pub use webhook::{
 // vault/helm/inmemory impls are byte-for-byte untouched -- identical shim shape to
 // the sibling decision.rs / policy.rs re-exports.
 pub use shigoto_types::converge::{
-    Action, AppliedChange, ApplyMetrics, Change, ChangeSeverity, FailedChange,
-    NoMetrics, Outcome, Plan, PlanId, Reconciler, ReconcilerError, SharedReconciler,
-    build_outcome, change, change_with_severity,
+    Action, AppliedChange, ApplyMetrics, Change, ChangeSeverity, FailedChange, NoMetrics, Outcome,
+    Plan, PlanId, Reconciler, ReconcilerError, SharedReconciler, build_outcome, change,
+    change_with_severity,
 };

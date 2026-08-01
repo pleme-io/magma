@@ -188,7 +188,10 @@ pub fn check_database_public_accessibility(config: &Config) -> Vec<ComplianceVio
 pub fn check_cache_encryption(config: &Config) -> Vec<ComplianceViolation> {
     let mut violations = Vec::new();
 
-    for type_id in ["aws_elasticache_cluster", "aws_elasticache_replication_group"] {
+    for type_id in [
+        "aws_elasticache_cluster",
+        "aws_elasticache_replication_group",
+    ] {
         let Some(by_name) = config.resources.get(type_id) else {
             continue;
         };
@@ -634,6 +637,9 @@ mod tests {
             "aws_db_instance": { "main": { "publicly_accessible": true } },
             "aws_elasticache_cluster": { "sessions": {} }
         }));
-        assert_eq!(run_compliance_checks(&cfg, ComplianceBaseline::High).len(), 3);
+        assert_eq!(
+            run_compliance_checks(&cfg, ComplianceBaseline::High).len(),
+            3
+        );
     }
 }

@@ -250,7 +250,9 @@ impl ObjectMeta {
 
     /// `true` when this object is controlled by the given owner UID.
     pub fn is_controlled_by(&self, owner_uid: &str) -> bool {
-        self.controller().map(|c| c.uid == owner_uid).unwrap_or(false)
+        self.controller()
+            .map(|c| c.uid == owner_uid)
+            .unwrap_or(false)
     }
 
     /// Build a [`ResourceRef`] from this metadata + the given GVK.
@@ -296,8 +298,7 @@ mod tests {
 
     #[test]
     fn owner_reference_with_controller_emits_flag() {
-        let o = OwnerReference::new("apps/v1", "Deployment", "owner", "uid-1")
-            .with_controller();
+        let o = OwnerReference::new("apps/v1", "Deployment", "owner", "uid-1").with_controller();
         assert!(o.is_controller());
         let json = serde_json::to_string(&o).unwrap();
         assert!(json.contains("\"controller\":true"));
@@ -377,8 +378,7 @@ mod tests {
             .with_annotation("kubectl.kubernetes.io/last-applied-configuration", "{}")
             .with_finalizer("foreground-cascading-deletion")
             .with_owner_reference(
-                OwnerReference::new("apps/v1", "ReplicaSet", "rs-1", "uid-rs1")
-                    .with_controller(),
+                OwnerReference::new("apps/v1", "ReplicaSet", "rs-1", "uid-rs1").with_controller(),
             );
 
         assert_eq!(m.labels.len(), 2);
@@ -515,12 +515,7 @@ mod tests {
     #[test]
     fn controller_returns_singular_controller_owner() {
         let m = ObjectMeta::new("x")
-            .with_owner_reference(OwnerReference::new(
-                "v1",
-                "ConfigMap",
-                "non-ctrl",
-                "uid-cm",
-            ))
+            .with_owner_reference(OwnerReference::new("v1", "ConfigMap", "non-ctrl", "uid-cm"))
             .with_owner_reference(
                 OwnerReference::new("apps/v1", "RS", "rs-1", "uid-rs1").with_controller(),
             );

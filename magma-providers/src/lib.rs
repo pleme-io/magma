@@ -130,7 +130,10 @@ mod tests {
         // (no `v`), under libexec/.../<os>_<arch>/. Must locate it too.
         let td = TempDir::new().unwrap();
         let ws = td.path();
-        let bin = ws.join(".terraform/providers/registry.terraform.io/integrations/github/6.8.3/linux_amd64")
+        let bin = ws
+            .join(
+                ".terraform/providers/registry.terraform.io/integrations/github/6.8.3/linux_amd64",
+            )
             .join("terraform-provider-github_6.8.3");
         touch(&bin);
         assert_eq!(locate_provider(ws, "github").unwrap(), bin);

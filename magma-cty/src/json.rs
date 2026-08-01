@@ -147,8 +147,8 @@ pub fn to_json(v: &CtyValue) -> J {
 mod block_coercion_tests {
     use super::*;
     use crate::types::CtyType;
-    use std::collections::BTreeMap;
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     fn obj_elem() -> CtyType {
         let mut a = BTreeMap::new();

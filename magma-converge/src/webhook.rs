@@ -61,7 +61,9 @@ use serde::{Deserialize, Serialize};
 /// `Generic*` variants are wire-format generics (the substrate's own
 /// validators); the named variants (`Github`, `Gitlab`, etc) carry
 /// vendor-specific signature schemes that adapter crates implement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, gen_platform::Discriminant)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, gen_platform::Discriminant,
+)]
 #[discriminant(method = "name", case = "kebab")]
 #[serde(rename_all = "kebab-case")]
 pub enum WebhookKind {
@@ -281,11 +283,11 @@ impl WebhookValidator for HeaderTokenValidator {
     }
 
     fn validate(&self, req: &WebhookRequest) -> Result<WebhookEvent, WebhookError> {
-        let got = req.header(&self.header).ok_or_else(|| {
-            WebhookError::MissingHeader {
+        let got = req
+            .header(&self.header)
+            .ok_or_else(|| WebhookError::MissingHeader {
                 header: self.header.clone(),
-            }
-        })?;
+            })?;
         if got != self.expected {
             return Err(WebhookError::InvalidSignature {
                 detail: format!("token mismatch on header {:?}", self.header),
@@ -342,8 +344,7 @@ mod tests {
 
     #[test]
     fn header_lookup_is_case_insensitive() {
-        let r = WebhookRequest::new("POST", "/")
-            .with_header("X-Github-Event", "push");
+        let r = WebhookRequest::new("POST", "/").with_header("X-Github-Event", "push");
         assert_eq!(r.header("X-Github-Event"), Some("push"));
         assert_eq!(r.header("x-github-event"), Some("push"));
         assert_eq!(r.header("X-GITHUB-EVENT"), Some("push"));
@@ -380,53 +381,24 @@ mod tests {
 
     #[test]
     fn error_auth_failures_classified() {
-        assert!(
-            WebhookError::MissingHeader {
-                header: "x".into()
-            }
-            .is_auth_failure()
-        );
-        assert!(
-            WebhookError::InvalidSignature {
-                detail: "x".into()
-            }
-            .is_auth_failure()
-        );
-        assert!(
-            !WebhookError::PayloadDecode {
-                detail: "x".into()
-            }
-            .is_auth_failure()
-        );
-        assert!(
-            !WebhookError::Transient {
-                detail: "x".into()
-            }
-            .is_auth_failure()
-        );
+        assert!(WebhookError::MissingHeader { header: "x".into() }.is_auth_failure());
+        assert!(WebhookError::InvalidSignature { detail: "x".into() }.is_auth_failure());
+        assert!(!WebhookError::PayloadDecode { detail: "x".into() }.is_auth_failure());
+        assert!(!WebhookError::Transient { detail: "x".into() }.is_auth_failure());
     }
 
     #[test]
     fn error_kind_discriminant() {
         assert_eq!(
-            WebhookError::MissingHeader {
-                header: "x".into()
-            }
-            .kind(),
+            WebhookError::MissingHeader { header: "x".into() }.kind(),
             "missing_header"
         );
         assert_eq!(
-            WebhookError::InvalidSignature {
-                detail: "x".into()
-            }
-            .kind(),
+            WebhookError::InvalidSignature { detail: "x".into() }.kind(),
             "invalid_signature"
         );
         assert_eq!(
-            WebhookError::Transient {
-                detail: "x".into()
-            }
-            .kind(),
+            WebhookError::Transient { detail: "x".into() }.kind(),
             "transient"
         );
     }
@@ -460,10 +432,12 @@ mod tests {
     #[test]
     fn noop_preserves_headers_in_event() {
         let v = NoOpValidator;
-        let req = WebhookRequest::new("POST", "/")
-            .with_header("X-Github-Event", "push");
+        let req = WebhookRequest::new("POST", "/").with_header("X-Github-Event", "push");
         let event = v.validate(&req).unwrap();
-        assert_eq!(event.headers.get("X-Github-Event").map(|s| s.as_str()), Some("push"));
+        assert_eq!(
+            event.headers.get("X-Github-Event").map(|s| s.as_str()),
+            Some("push")
+        );
     }
 
     // ── HeaderTokenValidator ───────────────────────────────────────

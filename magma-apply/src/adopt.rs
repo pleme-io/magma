@@ -97,10 +97,16 @@ fn whole_placeholder(s: &str) -> Option<&str> {
 /// absent in `config` becomes JSON `null` (an unset filter). Non-placeholder
 /// leaves pass through unchanged; nested objects/arrays recurse.
 #[must_use]
-pub fn render_filter(template: &serde_json::Value, config: &serde_json::Value) -> serde_json::Value {
+pub fn render_filter(
+    template: &serde_json::Value,
+    config: &serde_json::Value,
+) -> serde_json::Value {
     match template {
         serde_json::Value::String(s) => match whole_placeholder(s) {
-            Some(field) => config.get(field).cloned().unwrap_or(serde_json::Value::Null),
+            Some(field) => config
+                .get(field)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
             None => template.clone(),
         },
         serde_json::Value::Array(xs) => {
@@ -120,7 +126,11 @@ pub fn render_filter(template: &serde_json::Value, config: &serde_json::Value) -
 /// key). String values compare by `as_str` (tolerating value-type differences);
 /// otherwise by JSON equality.
 #[must_use]
-pub fn row_matches(row: &serde_json::Value, config: &serde_json::Value, match_keys: &[String]) -> bool {
+pub fn row_matches(
+    row: &serde_json::Value,
+    config: &serde_json::Value,
+    match_keys: &[String],
+) -> bool {
     match_keys.iter().all(|k| {
         let (Some(cv), Some(rv)) = (config.get(k), row.get(k)) else {
             return false;
@@ -209,7 +219,11 @@ mod tests {
         assert!(!row_matches(&wrong_type, &config, &keys));
         assert!(!row_matches(&wrong_name, &config, &keys));
         // A key missing on the row is a non-match (never adopt unverifiably).
-        assert!(!row_matches(&json!({ "name": "grafana.quero.cloud" }), &config, &keys));
+        assert!(!row_matches(
+            &json!({ "name": "grafana.quero.cloud" }),
+            &config,
+            &keys
+        ));
     }
 
     #[test]

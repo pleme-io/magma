@@ -601,7 +601,12 @@ mod tests {
         ]);
 
         let outcome = run_plan(&p, &mut state).unwrap();
-        assert_eq!(outcome.failed.len(), 0, "apply must not fail: {:?}", outcome.failed);
+        assert_eq!(
+            outcome.failed.len(),
+            0,
+            "apply must not fail: {:?}",
+            outcome.failed
+        );
         let subnet = state
             .resources
             .iter()

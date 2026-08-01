@@ -96,7 +96,10 @@ impl TypeMeta {
     /// Parse the group from `api_version`. Returns `""` for the
     /// core group (when `api_version` has no `/` separator).
     pub fn group(&self) -> &str {
-        self.api_version.split_once('/').map(|(g, _)| g).unwrap_or("")
+        self.api_version
+            .split_once('/')
+            .map(|(g, _)| g)
+            .unwrap_or("")
     }
 
     /// Parse the version from `api_version`. Always returns the
@@ -455,8 +458,7 @@ mod tests {
         });
 
         let json = serde_json::to_string(&m).unwrap();
-        let back: Manifest<DeploymentSpec, DeploymentStatus> =
-            serde_json::from_str(&json).unwrap();
+        let back: Manifest<DeploymentSpec, DeploymentStatus> = serde_json::from_str(&json).unwrap();
         assert_eq!(m, back);
     }
 
@@ -515,8 +517,7 @@ mod tests {
             "status": {"readyReplicas": 2, "observedGeneration": 7}
         }"#;
 
-        let m: Manifest<DeploymentSpec, DeploymentStatus> =
-            serde_json::from_str(payload).unwrap();
+        let m: Manifest<DeploymentSpec, DeploymentStatus> = serde_json::from_str(payload).unwrap();
         let status = m.status.as_ref().unwrap();
         assert_eq!(status.ready_replicas, 2);
         assert_eq!(status.observed_generation, 7);

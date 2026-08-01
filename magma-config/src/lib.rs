@@ -277,7 +277,9 @@ pub fn resolve_reference(
 fn parse_segment(seg: &str) -> (&str, Option<usize>) {
     match seg.split_once('[') {
         Some((ident, rest)) => {
-            let idx = rest.strip_suffix(']').and_then(|n| n.trim().parse::<usize>().ok());
+            let idx = rest
+                .strip_suffix(']')
+                .and_then(|n| n.trim().parse::<usize>().ok());
             (ident, idx)
         }
         None => (seg, None),
@@ -450,7 +452,11 @@ fn unescape_only(s: &str) -> String {
     let mut last_push = 0usize;
     let mut i = 0usize;
     while i < bytes.len() {
-        if i + 2 < bytes.len() && (bytes[i] == b'$' || bytes[i] == b'%') && bytes[i + 1] == bytes[i] && bytes[i + 2] == b'{' {
+        if i + 2 < bytes.len()
+            && (bytes[i] == b'$' || bytes[i] == b'%')
+            && bytes[i + 1] == bytes[i]
+            && bytes[i + 2] == b'{'
+        {
             out.push_str(&s[last_push..i]);
             out.push(bytes[i] as char);
             out.push('{');
@@ -544,11 +550,19 @@ mod tests {
             }),
         );
         assert_eq!(
-            resolve_reference("${data.cloudflare_zones.rio_drive_zone.result[0].id}", &state).unwrap(),
+            resolve_reference(
+                "${data.cloudflare_zones.rio_drive_zone.result[0].id}",
+                &state
+            )
+            .unwrap(),
             json!("zone-abc"),
         );
         assert_eq!(
-            resolve_reference("${data.cloudflare_accounts.rio_drive_account.result[0].id}", &state).unwrap(),
+            resolve_reference(
+                "${data.cloudflare_accounts.rio_drive_account.result[0].id}",
+                &state
+            )
+            .unwrap(),
             json!("acct-xyz"),
         );
     }
@@ -556,7 +570,10 @@ mod tests {
     #[test]
     fn resolve_index_out_of_bounds_errs() {
         let mut state = HashMap::new();
-        state.insert("data".to_string(), json!({ "x": { "y": { "result": [] } } }));
+        state.insert(
+            "data".to_string(),
+            json!({ "x": { "y": { "result": [] } } }),
+        );
         let err = resolve_reference("${data.x.y.result[0].id}", &state).unwrap_err();
         assert!(matches!(err, ConfigError::UnknownReference(_)));
     }
@@ -571,7 +588,8 @@ mod tests {
             json!({ "rio": { "id": "tunnel-123" } }),
         );
         assert_eq!(
-            resolve_reference("${cloudflare_zero_trust_tunnel_cloudflared.rio.id}", &state).unwrap(),
+            resolve_reference("${cloudflare_zero_trust_tunnel_cloudflared.rio.id}", &state)
+                .unwrap(),
             json!("tunnel-123"),
         );
     }
@@ -674,7 +692,10 @@ mod tests {
         assert_eq!(resolved["zone_id"], json!("zone-abc"));
         assert_eq!(resolved["tunnel_id"], json!("tun-1"));
         assert_eq!(resolved["name"], json!("tunnel-tun-1-cfg")); // embedded substitution
-        assert_eq!(resolved["ingress"][0]["hostname"], json!("drive.bristol.quero.cloud"));
+        assert_eq!(
+            resolved["ingress"][0]["hostname"],
+            json!("drive.bristol.quero.cloud")
+        );
         // No interpolation must survive anywhere.
         assert!(!resolved.to_string().contains("${"));
     }
@@ -736,7 +757,9 @@ mod tests {
         let resolved = resolve_config(&cfg, &state).unwrap();
         assert_eq!(
             resolved["content"],
-            json!("name: auto-bump\njobs:\n  bump:\n    secrets:\n      BOT_PAT: ${{ secrets.BOT_PAT }}\n")
+            json!(
+                "name: auto-bump\njobs:\n  bump:\n    secrets:\n      BOT_PAT: ${{ secrets.BOT_PAT }}\n"
+            )
         );
     }
 
@@ -745,6 +768,9 @@ mod tests {
         let sm: HashMap<String, serde_json::Value> = HashMap::new();
         let resolved =
             resolve_string("caf\u{e9} $${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}", &sm).unwrap();
-        assert_eq!(resolved, json!("caf\u{e9} ${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}"));
+        assert_eq!(
+            resolved,
+            json!("caf\u{e9} ${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}")
+        );
     }
 }

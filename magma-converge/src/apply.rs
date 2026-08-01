@@ -110,7 +110,10 @@ pub enum ApplyOutcome<T> {
     /// the conflicting field-manager name(s) per K8s SSA semantics.
     /// Operator must reconcile via takeover, narrowing scope, or
     /// coordination.
-    Conflict { conflict_with: String, fields: Vec<String> },
+    Conflict {
+        conflict_with: String,
+        fields: Vec<String>,
+    },
 }
 
 impl<T> ApplyOutcome<T> {
@@ -200,7 +203,13 @@ impl ApplyCounts {
 /// `HealthReport::overall` shape (worst-severity-wins) for apply
 /// outcomes.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
     gen_platform::Discriminant,
     gen_platform::OutcomeLattice,
 )]
@@ -363,7 +372,10 @@ mod tests {
     #[test]
     fn outcome_kinds_stable_discriminant() {
         assert_eq!(
-            ApplyOutcome::Created { payload: dep_ref("a") }.kind(),
+            ApplyOutcome::Created {
+                payload: dep_ref("a")
+            }
+            .kind(),
             "created"
         );
         assert_eq!(
@@ -375,7 +387,10 @@ mod tests {
             "updated"
         );
         assert_eq!(
-            ApplyOutcome::Unchanged { payload: dep_ref("a") }.kind(),
+            ApplyOutcome::Unchanged {
+                payload: dep_ref("a")
+            }
+            .kind(),
             "unchanged"
         );
         assert_eq!(
@@ -406,7 +421,12 @@ mod tests {
 
     #[test]
     fn outcome_is_success_classification() {
-        assert!(ApplyOutcome::Created { payload: dep_ref("a") }.is_success());
+        assert!(
+            ApplyOutcome::Created {
+                payload: dep_ref("a")
+            }
+            .is_success()
+        );
         assert!(
             ApplyOutcome::Updated {
                 payload: dep_ref("a"),
@@ -414,7 +434,12 @@ mod tests {
             }
             .is_success()
         );
-        assert!(ApplyOutcome::Unchanged { payload: dep_ref("a") }.is_success());
+        assert!(
+            ApplyOutcome::Unchanged {
+                payload: dep_ref("a")
+            }
+            .is_success()
+        );
         assert!(ApplyOutcome::<ResourceRef>::Deleted { ref_: dep_ref("a") }.is_success());
 
         assert!(!ApplyOutcome::<ResourceRef>::Skipped { reason: "x".into() }.is_success());
@@ -450,14 +475,24 @@ mod tests {
             }
             .is_failed()
         );
-        assert!(!ApplyOutcome::Created { payload: dep_ref("a") }.is_failed());
+        assert!(
+            !ApplyOutcome::Created {
+                payload: dep_ref("a")
+            }
+            .is_failed()
+        );
         assert!(!ApplyOutcome::<ResourceRef>::Skipped { reason: "x".into() }.is_failed());
     }
 
     #[test]
     fn outcome_is_skipped_only_for_skipped() {
         assert!(ApplyOutcome::<ResourceRef>::Skipped { reason: "x".into() }.is_skipped());
-        assert!(!ApplyOutcome::Created { payload: dep_ref("a") }.is_skipped());
+        assert!(
+            !ApplyOutcome::Created {
+                payload: dep_ref("a")
+            }
+            .is_skipped()
+        );
         assert!(
             !ApplyOutcome::<ResourceRef>::Failed {
                 reason: "x".into(),
@@ -469,7 +504,12 @@ mod tests {
 
     #[test]
     fn outcome_changed_state_distinguishes_unchanged_from_writes() {
-        assert!(ApplyOutcome::Created { payload: dep_ref("a") }.changed_state());
+        assert!(
+            ApplyOutcome::Created {
+                payload: dep_ref("a")
+            }
+            .changed_state()
+        );
         assert!(
             ApplyOutcome::Updated {
                 payload: dep_ref("a"),
@@ -480,7 +520,10 @@ mod tests {
         assert!(ApplyOutcome::<ResourceRef>::Deleted { ref_: dep_ref("a") }.changed_state());
 
         assert!(
-            !ApplyOutcome::Unchanged { payload: dep_ref("a") }.changed_state(),
+            !ApplyOutcome::Unchanged {
+                payload: dep_ref("a")
+            }
+            .changed_state(),
             "Unchanged is the idempotent fast-path; no state change"
         );
         assert!(!ApplyOutcome::<ResourceRef>::Skipped { reason: "x".into() }.changed_state());
@@ -497,7 +540,9 @@ mod tests {
 
     #[test]
     fn outcome_serde_kebab_case_tags() {
-        let o = ApplyOutcome::Created { payload: dep_ref("a") };
+        let o = ApplyOutcome::Created {
+            payload: dep_ref("a"),
+        };
         let json = serde_json::to_string(&o).unwrap();
         // tag = "kind", value = "created" (kebab-case).
         assert!(json.contains("\"kind\":\"created\""), "got {json:?}");
@@ -508,14 +553,20 @@ mod tests {
     #[test]
     fn outcome_serde_round_trip_each_variant() {
         let cases: Vec<ApplyOutcome<ResourceRef>> = vec![
-            ApplyOutcome::Created { payload: dep_ref("a") },
+            ApplyOutcome::Created {
+                payload: dep_ref("a"),
+            },
             ApplyOutcome::Updated {
                 payload: dep_ref("b"),
                 diff: ApplyDiff::new(2, "delta"),
             },
-            ApplyOutcome::Unchanged { payload: dep_ref("c") },
+            ApplyOutcome::Unchanged {
+                payload: dep_ref("c"),
+            },
             ApplyOutcome::Deleted { ref_: dep_ref("d") },
-            ApplyOutcome::Skipped { reason: "dep-not-ready".into() },
+            ApplyOutcome::Skipped {
+                reason: "dep-not-ready".into(),
+            },
             ApplyOutcome::Failed {
                 reason: "ApplyFailed".into(),
                 error: "stderr".into(),
@@ -548,8 +599,8 @@ mod tests {
         };
         assert_eq!(c.total(), 28);
         assert_eq!(c.success(), 10); // 1+2+3+4
-        assert_eq!(c.errors(), 13);  // 6+7
-        assert_eq!(c.changes(), 7);  // 1+2+4 (Created+Updated+Deleted)
+        assert_eq!(c.errors(), 13); // 6+7
+        assert_eq!(c.changes(), 7); // 1+2+4 (Created+Updated+Deleted)
     }
 
     // ── ApplyStatus + ApplyReport aggregation ──────────────────────
@@ -564,12 +615,16 @@ mod tests {
     #[test]
     fn report_all_success_is_all_succeeded() {
         let mut r: ApplyReport = ApplyReport::new();
-        r.push(ApplyOutcome::Created { payload: dep_ref("a") });
+        r.push(ApplyOutcome::Created {
+            payload: dep_ref("a"),
+        });
         r.push(ApplyOutcome::Updated {
             payload: dep_ref("b"),
             diff: ApplyDiff::default(),
         });
-        r.push(ApplyOutcome::Unchanged { payload: dep_ref("c") });
+        r.push(ApplyOutcome::Unchanged {
+            payload: dep_ref("c"),
+        });
         assert_eq!(r.overall_status(), ApplyStatus::AllSucceeded);
         assert!(!r.overall_status().is_error());
     }
@@ -577,16 +632,24 @@ mod tests {
     #[test]
     fn report_with_one_skipped_is_succeeded_with_skipped() {
         let mut r: ApplyReport = ApplyReport::new();
-        r.push(ApplyOutcome::Created { payload: dep_ref("a") });
-        r.push(ApplyOutcome::Skipped { reason: "dep-not-ready".into() });
+        r.push(ApplyOutcome::Created {
+            payload: dep_ref("a"),
+        });
+        r.push(ApplyOutcome::Skipped {
+            reason: "dep-not-ready".into(),
+        });
         assert_eq!(r.overall_status(), ApplyStatus::SucceededWithSkipped);
     }
 
     #[test]
     fn report_with_only_skipped_treated_as_empty() {
         let mut r: ApplyReport = ApplyReport::new();
-        r.push(ApplyOutcome::Skipped { reason: "all-deps-not-ready".into() });
-        r.push(ApplyOutcome::Skipped { reason: "still-not-ready".into() });
+        r.push(ApplyOutcome::Skipped {
+            reason: "all-deps-not-ready".into(),
+        });
+        r.push(ApplyOutcome::Skipped {
+            reason: "still-not-ready".into(),
+        });
         assert_eq!(
             r.overall_status(),
             ApplyStatus::Empty,
@@ -597,7 +660,9 @@ mod tests {
     #[test]
     fn report_with_failed_is_failed_status() {
         let mut r: ApplyReport = ApplyReport::new();
-        r.push(ApplyOutcome::Created { payload: dep_ref("a") });
+        r.push(ApplyOutcome::Created {
+            payload: dep_ref("a"),
+        });
         r.push(ApplyOutcome::Failed {
             reason: "ApplyFailed".into(),
             error: "boom".into(),
@@ -612,7 +677,9 @@ mod tests {
         // intervention (takeover, scope narrowing) — never a simple
         // retry. Even with mixed Failed + Conflict, Conflict wins.
         let mut r: ApplyReport = ApplyReport::new();
-        r.push(ApplyOutcome::Created { payload: dep_ref("a") });
+        r.push(ApplyOutcome::Created {
+            payload: dep_ref("a"),
+        });
         r.push(ApplyOutcome::Failed {
             reason: "x".into(),
             error: "y".into(),
@@ -628,13 +695,19 @@ mod tests {
     #[test]
     fn report_counts_partition_total() {
         let mut r: ApplyReport = ApplyReport::new();
-        r.push(ApplyOutcome::Created { payload: dep_ref("a") });
-        r.push(ApplyOutcome::Created { payload: dep_ref("b") });
+        r.push(ApplyOutcome::Created {
+            payload: dep_ref("a"),
+        });
+        r.push(ApplyOutcome::Created {
+            payload: dep_ref("b"),
+        });
         r.push(ApplyOutcome::Updated {
             payload: dep_ref("c"),
             diff: ApplyDiff::default(),
         });
-        r.push(ApplyOutcome::Unchanged { payload: dep_ref("d") });
+        r.push(ApplyOutcome::Unchanged {
+            payload: dep_ref("d"),
+        });
         r.push(ApplyOutcome::Deleted { ref_: dep_ref("e") });
         r.push(ApplyOutcome::Skipped { reason: "x".into() });
         r.push(ApplyOutcome::Failed {
@@ -663,7 +736,9 @@ mod tests {
         let mut r: ApplyReport = ApplyReport::new();
         let names = ["x", "a", "z", "m"];
         for n in &names {
-            r.push(ApplyOutcome::Created { payload: dep_ref(n) });
+            r.push(ApplyOutcome::Created {
+                payload: dep_ref(n),
+            });
         }
         let iter_order: Vec<&str> = r
             .iter()
@@ -678,7 +753,9 @@ mod tests {
     #[test]
     fn report_serde_round_trip() {
         let mut r: ApplyReport = ApplyReport::new();
-        r.push(ApplyOutcome::Created { payload: dep_ref("a") });
+        r.push(ApplyOutcome::Created {
+            payload: dep_ref("a"),
+        });
         r.push(ApplyOutcome::Failed {
             reason: "x".into(),
             error: "y".into(),

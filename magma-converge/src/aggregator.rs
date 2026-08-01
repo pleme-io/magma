@@ -48,7 +48,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::outcome::{worst_of, OutcomeLattice};
+use crate::outcome::{OutcomeLattice, worst_of};
 
 /// Typed sorted per-key aggregator. Entries are kept sorted by `K`
 /// so iteration + serialization are canonical.
@@ -67,7 +67,9 @@ pub struct Aggregator<K: Ord + Clone, V: Clone> {
 
 impl<K: Ord + Clone, V: Clone> Default for Aggregator<K, V> {
     fn default() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 }
 
@@ -196,10 +198,7 @@ mod tests {
         let ordered_a: Vec<_> = a.iter().collect();
         let ordered_b: Vec<_> = b.iter().collect();
         assert_eq!(ordered_a, ordered_b);
-        assert_eq!(
-            ordered_a,
-            vec![(&1, &"a"), (&2, &"b"), (&3, &"c")],
-        );
+        assert_eq!(ordered_a, vec![(&1, &"a"), (&2, &"b"), (&3, &"c")],);
     }
 
     #[test]
@@ -256,8 +255,18 @@ mod tests {
     fn overall_returns_worst() {
         let mut agg = Aggregator::<u32, ReadyState>::new();
         agg.set(1, ReadyState::Ready);
-        agg.set(2, ReadyState::InProgress { reason: "deploying".into() });
-        agg.set(3, ReadyState::Failed { reason: "crash".into() });
+        agg.set(
+            2,
+            ReadyState::InProgress {
+                reason: "deploying".into(),
+            },
+        );
+        agg.set(
+            3,
+            ReadyState::Failed {
+                reason: "crash".into(),
+            },
+        );
         assert!(matches!(agg.overall(), ReadyState::Failed { .. }));
     }
 
@@ -273,16 +282,14 @@ mod tests {
 
     #[test]
     fn from_iter_builds_aggregator() {
-        let agg: Aggregator<u32, &str> =
-            vec![(2, "b"), (1, "a"), (3, "c")].into_iter().collect();
+        let agg: Aggregator<u32, &str> = vec![(2, "b"), (1, "a"), (3, "c")].into_iter().collect();
         let canon: Vec<_> = agg.iter().collect();
         assert_eq!(canon, vec![(&1, &"a"), (&2, &"b"), (&3, &"c")]);
     }
 
     #[test]
     fn from_iter_duplicate_keys_last_wins() {
-        let agg: Aggregator<u32, &str> =
-            vec![(1, "a"), (1, "b"), (1, "c")].into_iter().collect();
+        let agg: Aggregator<u32, &str> = vec![(1, "a"), (1, "b"), (1, "c")].into_iter().collect();
         assert_eq!(agg.len(), 1);
         assert_eq!(agg.get(&1), Some(&"c"));
     }
@@ -298,7 +305,12 @@ mod tests {
         let d1 = ResourceRef::namespaced("apps", "v1", "Deployment", "ns", "a");
         let d2 = ResourceRef::namespaced("apps", "v1", "Deployment", "ns", "b");
         agg.set(d1.clone(), ReadyState::Ready);
-        agg.set(d2.clone(), ReadyState::InProgress { reason: "rollout".into() });
+        agg.set(
+            d2.clone(),
+            ReadyState::InProgress {
+                reason: "rollout".into(),
+            },
+        );
         assert_eq!(agg.len(), 2);
         assert!(matches!(agg.overall(), ReadyState::InProgress { .. }));
     }
