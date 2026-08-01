@@ -506,34 +506,17 @@ fn parse_address_string(s: &str) -> Result<ResourceAddress, StateError> {
     })
 }
 
+/// Delegates to `ResourceAddress`'s `Display` — the single canonical
+/// rendering, now living beside the type in `magma-types`.
+///
+/// It moved because this copy was PRIVATE to this module while every other
+/// consumer needed the same answer, so they hand-rolled
+/// `format!("{}.{}", type_id.0, name)` and silently dropped `kind`/`module`/
+/// `key`. Keeping a thin wrapper (rather than deleting it) preserves this
+/// module's `parse_address_string` ⇄ format round-trip tests, which are exactly
+/// the proof that the moved `Display` still agrees with the parser.
 fn format_address_string(a: &ResourceAddress) -> String {
-    let mut s = String::new();
-    for part in &a.module.0 {
-        s.push_str("module.");
-        s.push_str(part);
-        s.push('.');
-    }
-    if matches!(a.kind, ResourceKind::Data) {
-        s.push_str("data.");
-    }
-    s.push_str(&a.type_id.0);
-    s.push('.');
-    s.push_str(&a.name);
-    if let Some(key) = &a.key {
-        match key {
-            InstanceKey::Index(i) => {
-                s.push('[');
-                s.push_str(&i.to_string());
-                s.push(']');
-            }
-            InstanceKey::Key(k) => {
-                s.push_str("[\"");
-                s.push_str(&escape_key(k));
-                s.push_str("\"]");
-            }
-        }
-    }
-    s
+    a.to_string()
 }
 
 fn parse_instance_key_literal(inner: &str, whole: &str) -> Result<InstanceKey, StateError> {

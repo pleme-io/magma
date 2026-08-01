@@ -92,6 +92,58 @@ pub struct ResourceAddress {
     pub key: Option<InstanceKey>,
 }
 
+/// The ONE canonical rendering of an address — `module.…` prefix, the
+/// `data.` marker, `type.name`, and the instance key.
+///
+/// This exists because there was no typed surface for it, so every consumer
+/// hand-rolled `format!("{}.{}", type_id.0, name)` — which silently discards
+/// `kind`, `module` and `key`. Six such call sites lived in pangea-operator
+/// alone, and the one feeding `InfrastructureTemplate.status` rendered a data
+/// source as `aws_security_group.shaar_concentrator`, indistinguishable in an
+/// approval review from a managed resource of the same type and name. Losing
+/// the `data.` prefix is not cosmetic there: it is what let a *read* read as a
+/// *create* on the surface a human approves. (magma-state had the correct
+/// renderer all along, private and unexported.)
+///
+/// Per ★★ TYPED EMISSION, a `Display`-family `write!()` is one of the three
+/// sanctioned emission surfaces — so making this the type's `Display` both
+/// gives every consumer the right answer for free and makes the hand-rolled
+/// `format!` obviously wrong at a glance.
+///
+/// Round-trips with `magma_state`'s `parse_address_string` — that crate's
+/// existing round-trip tests (base / counted / keyed / data / module-prefixed /
+/// nested-module) are the proof, since `format_address_string` now delegates
+/// here rather than keeping a second copy of the logic.
+impl std::fmt::Display for ResourceAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _; // for `write_char` below
+        for part in &self.module.0 {
+            write!(f, "module.{part}.")?;
+        }
+        if matches!(self.kind, ResourceKind::Data) {
+            f.write_str("data.")?;
+        }
+        write!(f, "{}.{}", self.type_id.0, self.name)?;
+        match &self.key {
+            Some(InstanceKey::Index(i)) => write!(f, "[{i}]"),
+            Some(InstanceKey::Key(k)) => {
+                // Escape `"` and `\` so a key containing either cannot break
+                // out of the bracket literal and change what a re-parse sees.
+                f.write_str("[\"")?;
+                for c in k.chars() {
+                    match c {
+                        '"' => f.write_str("\\\"")?,
+                        '\\' => f.write_str("\\\\")?,
+                        other => f.write_char(other)?,
+                    }
+                }
+                f.write_str("\"]")
+            }
+            None => Ok(()),
+        }
+    }
+}
+
 /// Reference to a provider — namespace + name + alias.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProviderReference {
