@@ -226,7 +226,36 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         // is the documented crash trigger). Data reads are Read; data ORPHANS
         // stay Delete.
         let (action, reasons) = match (addr.kind, drifted) {
-            (ResourceKind::Data, _) => (Action::Read, vec![]),
+            // A data source ALREADY IN STATE and unchanged stays NoOp — it must
+            // NOT be re-read at apply.
+            //
+            // This arm said `Read` unconditionally for one commit (2026-08-01)
+            // and that was a REGRESSION, caught live on
+            // camelot-eks-shaar-concentrator. `Read` bypasses the apply loop's
+            // deliberate carry-forward fast path, whose comment predicts the
+            // exact failure in advance: "the plan's `after` for a NoOp data
+            // source is null, so a re-read would hand the provider a
+            // null/empty config". Measured consequences, all from that one
+            // word:
+            //     reading SSM Parameter (): …      <- empty name
+            //     multiple EC2 VPCs matched        <- empty filter matched all
+            //     multiple EC2 Subnets matched
+            // and, on a provider that nil-derefs instead of erroring, the
+            // documented cloudflare SIGSEGV that once needed a manual Postgres
+            // purge to recover.
+            //
+            // The original defect this whole change set fixes is narrower than
+            // it first looked: a NEW data source (the `difference` loop above)
+            // was labelled `Create`, inflating +N and making a READ of an
+            // existing VPC read as "creating a VPC". That is fixed there, where
+            // there is genuinely a first read to perform. Here there is not —
+            // the value is already in `before`.
+            (ResourceKind::Data, false) => (Action::NoOp, vec![]),
+            // Config genuinely changed, so the cached read is stale and must be
+            // re-taken. `Read` rather than the `Update` this used to emit: an
+            // `Update` on a data source is meaningless (nothing is mutated),
+            // and the apply loop routes on the action.
+            (ResourceKind::Data, true) => (Action::Read, vec![ChangeReason::AttributeDrift]),
             (_, true) => (Action::Update, vec![ChangeReason::AttributeDrift]),
             (_, false) => (Action::NoOp, vec![]),
         };
@@ -828,6 +857,60 @@ mod tests {
             c.action,
             Action::Read,
             "a data source must never plan as {:?} — that inflates +N and trips the approval gate",
+            c.action
+        );
+    }
+
+    /// The REGRESSION guard. An in-state, unchanged data source must plan as
+    /// NoOp, NOT Read — `Read` sends it down the apply-time re-read path,
+    /// which hands the provider the plan's null `after` config. Live
+    /// consequences on camelot 2026-08-01: `reading SSM Parameter ()` (empty
+    /// name), `multiple EC2 VPCs matched` (empty filter matched everything),
+    /// 20/20 nodes failed. Fixing the NEW-data-source label (Create -> Read)
+    /// must not drag the already-read case along with it.
+    #[test]
+    fn an_unchanged_in_state_data_source_stays_noop_and_is_never_re_read() {
+        let cfg = serde_json::from_value(serde_json::json!({
+            "data": { "aws_vpc": { "main": { "id": "vpc-123" } } }
+        }))
+        .unwrap();
+
+        // Same value in state as in config => not drifted.
+        let mut st = empty_state();
+        st.resources.push(magma_types::StateResource {
+            address: ResourceAddress {
+                module: magma_types::ModulePath::root(),
+                kind: ResourceKind::Data,
+                type_id: magma_types::ResourceTypeId("aws_vpc".to_string()),
+                name: "main".to_string(),
+                key: None,
+            },
+            provider: magma_types::ProviderReference {
+                source: "hashicorp/aws".to_string(),
+                name: "aws".to_string(),
+                alias: None,
+            },
+            instances: vec![magma_types::StateInstance {
+                index_key: None,
+                schema_version: 0,
+                attributes: serde_json::json!({ "id": "vpc-123" }),
+                sensitive_attribute_paths: Vec::new(),
+                private: vec![],
+                dependencies: vec![],
+                status: magma_types::InstanceStatus::Ready,
+            }],
+        });
+
+        let p = plan(&cfg, &st).unwrap();
+        let c = p
+            .resource_changes
+            .iter()
+            .find(|c| c.address.kind == ResourceKind::Data)
+            .expect("the data source must appear in the plan");
+        assert_eq!(
+            c.action,
+            Action::NoOp,
+            "an unchanged in-state data source must carry forward, not re-read; got {:?}",
             c.action
         );
     }
