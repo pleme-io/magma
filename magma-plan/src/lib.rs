@@ -72,7 +72,9 @@ use std::collections::HashSet;
 use chrono::Utc;
 use magma_attest::hash_plan_inputs;
 use magma_config::Config;
-use magma_types::{Action, ChangeReason, Plan, ResourceAddress, ResourceChange, State};
+use magma_types::{
+    Action, ChangeReason, Plan, ResourceAddress, ResourceChange, ResourceKind, State,
+};
 
 mod compliance;
 pub use compliance::{
@@ -119,14 +121,39 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     let mut changes: Vec<ResourceChange> = Vec::new();
 
     // Create: in config, not in state.
+    //
+    // A DATA SOURCE IS NEVER CREATED. `config.resource_addresses()` yields
+    // managed resources and data sources into one address set, so a `data`
+    // block with no state row is structurally identical here to a brand-new
+    // managed resource — and until 2026-07-31 both came out as
+    // `Action::Create`. `Action::Read` was declared in `magma_types::Action`
+    // and constructed NOWHERE in this crate; the downstream mapping that
+    // folds it away (`magma-converge::terraform`, `Read => NoOp`) was dead
+    // code waiting for a producer.
+    //
+    // That is not cosmetic. Apply is kind-driven, so it did the right thing
+    // regardless — but the PLAN is what the approval gate reads:
+    // `magma_drift::classify` saw a Create, demanded approval, and counted the
+    // read into `+N`. Measured on camelot-eks-sui-nlb-sg, whose rendered
+    // tf.json holds exactly 3 `resource` entries and 1 `data` entry: the CR
+    // reported `planSummary: +4 ~0 -0` with
+    // `action: create / address: aws_security_group.shaar_concentrator` — a
+    // security group that workspace does not declare. An operator reading that
+    // should refuse to approve, and did. The inverse is worse: once "some of
+    // those creates are really data sources" becomes folklore, a genuine
+    // unexpected create gets waved through.
     for addr in config_addrs.difference(&state_addrs) {
         let after = lookup_config_value(config, addr);
+        let (action, reasons) = match addr.kind {
+            ResourceKind::Data => (Action::Read, vec![ChangeReason::NewResource]),
+            _ => (Action::Create, vec![ChangeReason::NewResource]),
+        };
         changes.push(ResourceChange {
             address: addr.clone(),
-            action: Action::Create,
+            action,
             before: None,
             after,
-            reasons: vec![ChangeReason::NewResource],
+            reasons,
         });
     }
 
@@ -185,10 +212,23 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         });
         let drifted =
             declared_attributes_drifted(&addr.type_id.0, &addr.name, &before, &after_resolved);
-        let (action, reasons) = if drifted {
-            (Action::Update, vec![ChangeReason::AttributeDrift])
-        } else {
-            (Action::NoOp, vec![])
+        // Same rule as the Create arm: a data source is never UPDATED either.
+        // A `data` block whose filter changed needs re-reading, not mutating —
+        // and apply already treats it that way (`partition_changes` routes by
+        // `kind`, never by action). Emitting `Update` only ever inflated the
+        // `~N` column of a summary a human approves against.
+        //
+        // The Delete arm above is deliberately NOT given this treatment: apply
+        // relies on a data source removed from config arriving as
+        // `Delete`/`Forget` so the `datas` loop FORGETS it rather than
+        // re-reading it against config that no longer exists (see REACTION C in
+        // `magma-apply::engine::run_plan_with_providers` — re-reading an orphan
+        // is the documented crash trigger). Data reads are Read; data ORPHANS
+        // stay Delete.
+        let (action, reasons) = match (addr.kind, drifted) {
+            (ResourceKind::Data, _) => (Action::Read, vec![]),
+            (_, true) => (Action::Update, vec![ChangeReason::AttributeDrift]),
+            (_, false) => (Action::NoOp, vec![]),
         };
         changes.push(ResourceChange {
             address: addr.clone(),
@@ -747,6 +787,118 @@ mod tests {
         let st = empty_state();
         let p = plan(&cfg, &st).unwrap();
         assert!(p.resource_changes.is_empty());
+    }
+
+    /// A data source with no state row is a READ, never a CREATE.
+    ///
+    /// Regression for the camelot-eks-sui-nlb-sg mislabel (2026-07-31): that
+    /// workspace declares 3 `resource` entries and 1 `data` entry, and the CR
+    /// reported `planSummary: +4 ~0 -0` with
+    /// `action: create / address: aws_security_group.shaar_concentrator` — a
+    /// security group it does not declare. `plan()` diffed config addresses
+    /// against state addresses without ever inspecting `addr.kind`, so an
+    /// unread `data` block was structurally identical to a new managed
+    /// resource.
+    ///
+    /// This is the approval surface, so the mislabel is load-bearing:
+    /// `magma_drift::classify` reads a Create and demands approval.
+    #[test]
+    fn a_data_source_absent_from_state_plans_as_read_not_create() {
+        let cfg = Config::from_json(json!({
+            "data": {
+                "aws_security_group": {
+                    "shaar_concentrator": {
+                        "filter": { "name": "tag:Name", "values": ["nope"] }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let p = plan(&cfg, &empty_state()).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        let c = &p.resource_changes[0];
+        assert_eq!(c.address.kind, ResourceKind::Data);
+        assert_eq!(
+            c.action,
+            Action::Read,
+            "a data source must never plan as {:?} — that inflates +N and trips the approval gate",
+            c.action
+        );
+    }
+
+    /// The counting consequence, asserted directly: managed resources and data
+    /// sources in one config must not produce one uniform action.
+    ///
+    /// Mirrors camelot-eks-sui-nlb-sg's real shape (N managed + 1 data). The
+    /// bug made this report 2 creates; the truth is 1 create + 1 read.
+    #[test]
+    fn managed_and_data_in_one_config_do_not_share_an_action() {
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_security_group": {
+                    "camelot-eks-sui-nlb-sg": { "name": "camelot-eks-sui-nlb-sg" }
+                }
+            },
+            "data": {
+                "aws_security_group": {
+                    "shaar_concentrator": {
+                        "filter": { "name": "tag:Name", "values": ["shaar-concentrator-camelot-sg"] }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let p = plan(&cfg, &empty_state()).unwrap();
+
+        let creates: Vec<_> = p
+            .resource_changes
+            .iter()
+            .filter(|c| c.action == Action::Create)
+            .collect();
+        let reads: Vec<_> = p
+            .resource_changes
+            .iter()
+            .filter(|c| c.action == Action::Read)
+            .collect();
+
+        assert_eq!(creates.len(), 1, "exactly the one managed resource creates");
+        assert_eq!(creates[0].address.kind, ResourceKind::Managed);
+        assert_eq!(reads.len(), 1, "exactly the one data source reads");
+        assert_eq!(reads[0].address.kind, ResourceKind::Data);
+    }
+
+    /// A data ORPHAN — in state, gone from config — must still plan as
+    /// `Delete`, NOT `Read`.
+    ///
+    /// This is deliberately the opposite assertion from the two above, and it
+    /// guards the fix from over-reaching. `magma-apply::engine` routes every
+    /// Data change into the `datas` partition by KIND, where a `Delete`/`Forget`
+    /// is FORGOTTEN (dropped from state) rather than re-read — because an
+    /// orphan has no config left to read against, and re-reading it is the
+    /// documented orphan-refresh crash trigger (REACTION C in
+    /// `run_plan_with_providers`). Turning this arm into a Read would
+    /// reintroduce that crash.
+    #[test]
+    fn a_data_source_removed_from_config_still_plans_as_delete() {
+        let mut st = empty_state();
+        // Reuse the module's own helper, then retag the address as a DATA
+        // source — the helper builds Managed, which is the whole distinction
+        // under test here.
+        let mut orphan = mk_state_resource(
+            "aws_security_group",
+            "shaar_concentrator",
+            json!({ "id": "sg-dead" }),
+        );
+        orphan.address.kind = ResourceKind::Data;
+        st.resources.push(orphan);
+
+        let p = plan(&Config::default(), &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        assert_eq!(
+            p.resource_changes[0].action,
+            Action::Delete,
+            "a data orphan must stay Delete so apply FORGETS it instead of re-reading it"
+        );
     }
 
     #[test]
