@@ -188,4 +188,52 @@ mod block_coercion_tests {
         let sty = CtyType::List(Box::new(CtyType::String));
         assert!(from_json(&json!({ "x": "y" }), &sty).is_err());
     }
+
+    /// An attribute present in the JSON but ABSENT from the schema is DROPPED,
+    /// never forwarded.
+    ///
+    /// This is the invariant magma's compliance escape hatches depend on.
+    /// `allow_public_ingress` / `allow_public_database` / `allow_unencrypted_cache`
+    /// are written into the committed Terraform JSON of a real resource (that
+    /// visibility is the point — the exception is auditable in git), but no
+    /// provider schema declares them. If `from_json` forwarded unknown keys,
+    /// setting one would encode an attribute the AWS provider has never heard
+    /// of and turn a clean compliance stop into a FAILED APPLY.
+    ///
+    /// The Object arm iterates the SCHEMA's attributes and looks each up in the
+    /// JSON, so extra JSON keys are structurally unreachable. This test pins
+    /// that, because the escape-hatch design is silently broken without it and
+    /// the breakage would only ever show up mid-apply against real cloud
+    /// resources.
+    #[test]
+    fn an_attribute_absent_from_the_schema_is_dropped_not_forwarded() {
+        let ty = CtyType::Object(
+            [
+                ("type".to_string(), CtyType::String),
+                ("from_port".to_string(), CtyType::Number),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let v = from_json(
+            &json!({
+                "type": "ingress",
+                "from_port": 51822,
+                // Not in the schema — a magma-only compliance annotation.
+                "allow_public_ingress": true
+            }),
+            &ty,
+        )
+        .expect("extra keys must not make encoding fail");
+
+        let CtyValue::Object(m) = v else {
+            panic!("expected an object");
+        };
+        assert!(
+            !m.contains_key("allow_public_ingress"),
+            "an unknown attribute must never reach the provider payload"
+        );
+        assert_eq!(m.len(), 2, "exactly the schema's attributes, no more");
+        assert_eq!(m.get("type"), Some(&CtyValue::String("ingress".into())));
+    }
 }
