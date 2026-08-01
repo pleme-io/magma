@@ -69,4 +69,37 @@ permissions:
 jobs:
   check:
     uses: pleme-io/substrate/.github/workflows/cargo-ci.yml@main
+    with:
+      # NARROWED FROM THE DEFAULT, with the reason the reusable asks for.
+      #
+      # cargo-ci's default is `--workspace --all-features --no-fail-fast`, and
+      # its own comment is emphatic that narrowing needs justification: a gate
+      # that silently skips part of the suite is a vacuity inside the thing
+      # meant to close one. So, concretely, why `--all-features` cannot run
+      # here:
+      #
+      #   --all-features enables `magnus`
+      #     -> `dep:pangea-ruby-eval` from pleme-io/pangea-operator, which is
+      #        PRIVATE (every other magma dep -- magma-lava, gen, samba,
+      #        shigoto, shikumi -- is public)
+      #     -> and rb-sys, which needs CRuby headers at build time.
+      #
+      # magma exposes exactly ONE devShell (`default`) and it carries no ruby
+      # toolchain, so the job cannot satisfy that. Measured locally, not
+      # assumed: `cargo test --workspace --all-features` dies with
+      # `wrapper.h:1:10: fatal error: 'ruby.h' file not found`, while
+      # `cargo test --workspace` is 1188 green.
+      #
+      # WHAT THIS COSTS, said out loud: the magnus-gated in-process Ruby
+      # evaluator is NOT exercised by CI. That is a real hole, not a free win.
+      #
+      # DESTINATION (this is the interim, not the answer): magma gains a
+      # `ruby-eval` devShell the way pangea-operator already has one, and this
+      # narrowing is reverted. Until then the alternative is not "test more",
+      # it is "the job fails on every run", which tests nothing at all.
+      #
+      # Bonus property worth keeping: with default features magma builds with
+      # NO private dependency at all, which is what makes open-sourcing it
+      # feasible.
+      test-args: "--workspace --no-fail-fast"
     secrets: inherit
