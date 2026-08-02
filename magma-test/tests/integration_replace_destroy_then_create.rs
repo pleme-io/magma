@@ -88,6 +88,7 @@ fn replace_change(before_field: &str, after_field: &str) -> ResourceChange {
             "immutable_field": after_field,
         })),
         reasons: vec![ChangeReason::AttributeDrift],
+        meta: Default::default(),
     }
 }
 

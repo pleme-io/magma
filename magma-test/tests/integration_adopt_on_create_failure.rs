@@ -87,6 +87,7 @@ fn create_of(name: &str) -> ResourceChange {
         // name — the same relationship `github_repository` has.
         after: Some(serde_json::json!({ "name": name })),
         reasons: vec![ChangeReason::AttributeDrift],
+        meta: Default::default(),
     }
 }
 

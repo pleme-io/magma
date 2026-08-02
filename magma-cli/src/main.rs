@@ -1146,6 +1146,7 @@ async fn cmd_destroy(args: DestroyArgs) -> Result<u8> {
             before: r.instances.first().map(|i| i.attributes.clone()),
             after: None,
             reasons: vec![ChangeReason::DeletedResource],
+            meta: Default::default(),
         })
         .collect();
     let plan = TPlan {

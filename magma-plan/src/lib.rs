@@ -73,7 +73,7 @@ use chrono::Utc;
 use magma_attest::hash_plan_inputs;
 use magma_config::Config;
 use magma_types::{
-    Action, ChangeReason, Plan, ResourceAddress, ResourceChange, ResourceKind, State,
+    Action, ChangeReason, Plan, ResourceAddress, ResourceChange, ResourceKind, ResourceMeta, State,
 };
 
 mod compliance;
@@ -102,6 +102,28 @@ pub enum PlanError {
 /// structural diff plus a config-subset drift heuristic for
 /// in-both resources (see module docs). Full schema-aware diffing
 /// still needs the `PlanResourceChange` provider RPC integration.
+/// Split a resource block's meta-arguments out of its attributes.
+///
+/// Thin adapter over `magma_config::split_resource_body`, kept here so the
+/// three construction sites in `plan` read identically and none of them can
+/// forget the split. `None` (no config body) carries empty meta.
+///
+/// The error is deliberately propagated, not swallowed: an UNIMPLEMENTED
+/// meta-argument (e.g. an aliased `provider`) must stop the plan rather than
+/// be silently dropped into a resource that then applies through the wrong
+/// provider — which is the failure this whole split exists to end.
+fn split_meta(
+    addr: &ResourceAddress,
+    body: Option<serde_json::Value>,
+) -> Result<(ResourceMeta, Option<serde_json::Value>), PlanError> {
+    let Some(body) = body else {
+        return Ok((ResourceMeta::default(), None));
+    };
+    let label = format!("{}.{}", addr.type_id.0, addr.name);
+    let (meta, attrs) = magma_config::split_resource_body(&label, &body)?;
+    Ok((meta, Some(attrs)))
+}
+
 pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     // Compliance gate — default-on, unbypassable (every architecture's
     // Ruby DSL choice converges here). Refuse to compute a plan at all
@@ -143,7 +165,15 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     // those creates are really data sources" becomes folklore, a genuine
     // unexpected create gets waved through.
     for addr in config_addrs.difference(&state_addrs) {
-        let after = lookup_config_value(config, addr);
+        let raw_after = lookup_config_value(config, addr);
+        // Split meta-arguments OUT of the block before anything downstream
+        // sees the attributes. A meta-argument left in `after` is handed to
+        // the cty encoder (which silently drops unknown keys — so
+        // `provider = "aws.x"` evaporated and the resource applied through
+        // the DEFAULT provider) and counted as a declared attribute for
+        // drift, which no provider ever returns — so the resource re-planned
+        // as Update on EVERY cycle, forever.
+        let (meta, after) = split_meta(addr, raw_after)?;
         let (action, reasons) = match addr.kind {
             ResourceKind::Data => (Action::Read, vec![ChangeReason::NewResource]),
             _ => (Action::Create, vec![ChangeReason::NewResource]),
@@ -154,6 +184,7 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
             before: None,
             after,
             reasons,
+            meta,
         });
     }
 
@@ -166,6 +197,8 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
             before,
             after: None,
             reasons: vec![ChangeReason::DeletedResource],
+            // A delete has no config block left to carry meta-arguments.
+            meta: ResourceMeta::default(),
         });
     }
 
@@ -192,7 +225,10 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     // computed-only key present solely in `before` is never inspected.
     for addr in config_addrs.intersection(&state_addrs) {
         let before = lookup_state_value(state, addr);
-        let after = lookup_config_value(config, addr);
+        // Same split as the create loop: a meta-argument must never reach the
+        // attribute comparison, or the resource drifts against a key no
+        // provider returns and re-plans as Update forever.
+        let (meta, after) = split_meta(addr, lookup_config_value(config, addr))?;
         // Resolve interpolations in a THROWAWAY copy used ONLY for the
         // drift comparison below — the `after` stored on the emitted
         // `ResourceChange` stays raw/unresolved. `magma-apply::engine`'s
@@ -265,6 +301,7 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
             before,
             after,
             reasons,
+            meta,
         });
     }
 

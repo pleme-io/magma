@@ -785,6 +785,7 @@ mod tests {
             before: None,
             after: Some(after),
             reasons: vec![],
+            meta: Default::default(),
         }
     }
 

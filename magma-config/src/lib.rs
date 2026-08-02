@@ -20,7 +20,10 @@
 
 use std::collections::HashMap;
 
-use magma_types::{ProviderReference, ResourceAddress, ResourceKind, ResourceTypeId, State};
+use magma_types::{
+    ProviderInstance, ProviderInstanceError, ProviderReference, ResourceAddress, ResourceKind,
+    ResourceMeta, ResourceTypeId, State,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -34,6 +37,37 @@ pub enum ConfigError {
     UnknownReference(String),
     #[error("serialization: {0}")]
     Serde(#[from] serde_json::Error),
+    /// A `provider = …` meta-argument magma cannot honour. See
+    /// [`magma_types::ProviderInstanceError`] — chiefly an alias, which
+    /// magma refuses rather than silently resolving to the default
+    /// provider instance.
+    #[error("resource `{address}`: {source}")]
+    ProviderMeta {
+        address: String,
+        #[source]
+        source: ProviderInstanceError,
+    },
+    /// A meta-argument magma recognises but does not implement.
+    /// Refused, never ignored — see [`split_resource_body`].
+    #[error(
+        "resource `{address}`: the `{key}` meta-argument is not implemented by magma. \
+         {consequence} Refusing rather than applying a configuration whose declared \
+         meaning magma cannot honour."
+    )]
+    UnimplementedMeta {
+        address: String,
+        key: &'static str,
+        consequence: &'static str,
+    },
+    /// A meta-argument was present but not shaped the way Terraform
+    /// defines it (`provider` must be a string, `depends_on` a list of
+    /// address strings).
+    #[error("resource `{address}`: malformed `{key}` meta-argument: {detail}")]
+    MalformedMeta {
+        address: String,
+        key: &'static str,
+        detail: String,
+    },
 }
 
 // ── Top-level config (Pangea-rendered + tiny subset) ──────────────
@@ -139,6 +173,174 @@ impl Config {
             })
             .collect()
     }
+}
+
+// ── Resource meta-arguments ─────────────────────────────────────────
+
+/// The meta-arguments magma implements, with the typed value each
+/// produces.
+const IMPLEMENTED_META: [&str; 2] = ["provider", "depends_on"];
+
+/// The meta-arguments magma recognises but does not implement, paired
+/// with what silently ignoring each one would actually do. The message
+/// is the point: an operator who hits this needs to know the executor
+/// cannot honour what they wrote, not merely that a key was rejected.
+const UNIMPLEMENTED_META: [(&str, &str); 5] = [
+    (
+        "count",
+        "Ignoring it would create ONE resource where N were declared.",
+    ),
+    (
+        "for_each",
+        "Ignoring it would create ONE resource where one per element was declared.",
+    ),
+    (
+        "lifecycle",
+        "Ignoring it would discard `prevent_destroy`, `ignore_changes` and \
+         `create_before_destroy` — a `prevent_destroy` resource could be destroyed.",
+    ),
+    (
+        "provisioner",
+        "Ignoring it would report success for a resource whose provisioning steps never ran.",
+    ),
+    (
+        "connection",
+        "Ignoring it would discard the connection settings its provisioners require.",
+    ),
+];
+
+/// Split a rendered resource block into its typed meta-arguments and the
+/// provider attributes that remain.
+///
+/// **This is the boundary the two silently-wrong defects lived on.** A
+/// resource block is one flat JSON object in which meta-arguments and
+/// provider attributes are indistinguishable by shape. Downstream, both
+/// were treated as attributes — and `magma_cty::from_json` walks the
+/// provider SCHEMA rather than the JSON, so every meta-argument was
+/// dropped on the floor with no error while still counting as
+/// config-declared drift. `provider = "aws.us_east_2"` therefore applied
+/// to the default account, and `depends_on` never became a graph edge.
+///
+/// The meta-argument set is **closed**: every key in it is removed from
+/// the attributes here, so no meta-argument can reach a provider or a
+/// drift comparison, whether or not magma implements its behaviour. The
+/// two magma implements come back typed in [`ResourceMeta`]; the rest
+/// are refused ([`ConfigError::UnimplementedMeta`]) because each is
+/// silently wrong when ignored — "unsupported" and "quietly does
+/// something else" are not the same failure, and only the first is
+/// acceptable.
+///
+/// `address` is used only to name the resource in errors.
+///
+/// A block that is not a JSON object is returned unchanged with empty
+/// meta — that shape is already handled (loudly) downstream and is not
+/// this function's to reinterpret.
+pub fn split_resource_body(
+    address: &str,
+    body: &serde_json::Value,
+) -> Result<(ResourceMeta, serde_json::Value), ConfigError> {
+    let Some(obj) = body.as_object() else {
+        return Ok((ResourceMeta::default(), body.clone()));
+    };
+
+    let mut meta = ResourceMeta::default();
+    let mut attrs = serde_json::Map::new();
+
+    for (key, value) in obj {
+        if let Some((k, consequence)) = UNIMPLEMENTED_META.iter().find(|(k, _)| k == key) {
+            return Err(ConfigError::UnimplementedMeta {
+                address: address.to_string(),
+                key: k,
+                consequence,
+            });
+        }
+        match key.as_str() {
+            "provider" => {
+                let s = value.as_str().ok_or_else(|| ConfigError::MalformedMeta {
+                    address: address.to_string(),
+                    key: "provider",
+                    detail: format!("expected a string, got {value}"),
+                })?;
+                meta.provider = Some(ProviderInstance::try_from(s.to_string()).map_err(
+                    |source| ConfigError::ProviderMeta {
+                        address: address.to_string(),
+                        source,
+                    },
+                )?);
+            }
+            "depends_on" => {
+                let list = value.as_array().ok_or_else(|| ConfigError::MalformedMeta {
+                    address: address.to_string(),
+                    key: "depends_on",
+                    detail: format!("expected a list of address strings, got {value}"),
+                })?;
+                for entry in list {
+                    let s = entry.as_str().ok_or_else(|| ConfigError::MalformedMeta {
+                        address: address.to_string(),
+                        key: "depends_on",
+                        detail: format!("expected an address string, got {entry}"),
+                    })?;
+                    meta.depends_on.push(parse_depends_on_entry(address, s)?);
+                }
+            }
+            _ => {
+                attrs.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    debug_assert!(
+        IMPLEMENTED_META.iter().all(|k| !attrs.contains_key(*k)),
+        "an implemented meta-argument leaked into the attributes",
+    );
+    Ok((meta, serde_json::Value::Object(attrs)))
+}
+
+/// Parse one `depends_on` entry — `aws_iam_role.x`, `data.aws_vpc.y`,
+/// optionally index-suffixed — into a typed [`ResourceAddress`].
+///
+/// `module.<name>` is refused. magma does not expand module blocks
+/// (`magma_config::Config::modules` is untyped JSON kept for graph and
+/// output tracking only), so a module dependency has nothing to order
+/// against; accepting it would drop the edge and reproduce the exact
+/// defect this function exists to fix.
+fn parse_depends_on_entry(address: &str, entry: &str) -> Result<ResourceAddress, ConfigError> {
+    let malformed = |detail: String| ConfigError::MalformedMeta {
+        address: address.to_string(),
+        key: "depends_on",
+        detail,
+    };
+    if entry.starts_with("module.") {
+        return Err(malformed(format!(
+            "`{entry}` depends on a module; magma does not expand module blocks, so this \
+             ordering cannot be honoured — depend on the concrete resources instead"
+        )));
+    }
+    let (kind, rest) = match entry.strip_prefix("data.") {
+        Some(rest) => (ResourceKind::Data, rest),
+        None => (ResourceKind::Managed, entry),
+    };
+    let mut segs = rest.split('.');
+    let (Some(type_id), Some(name), None) = (segs.next(), segs.next(), segs.next()) else {
+        return Err(malformed(format!(
+            "`{entry}` is not a `[data.]<type>.<name>` resource address"
+        )));
+    };
+    // `aws_instance.web[0]` targets the resource, matching how the
+    // interpolation-derived edges in `magma_apply` key on `(type, name)`.
+    let name = name.split('[').next().unwrap_or(name);
+    if type_id.is_empty() || name.is_empty() {
+        return Err(malformed(format!(
+            "`{entry}` is not a `[data.]<type>.<name>` resource address"
+        )));
+    }
+    Ok(ResourceAddress {
+        module: Default::default(),
+        kind,
+        type_id: ResourceTypeId(type_id.to_string()),
+        name: name.to_string(),
+        key: None,
+    })
 }
 
 // ── State resolution map ────────────────────────────────────────────

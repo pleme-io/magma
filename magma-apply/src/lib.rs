@@ -528,6 +528,7 @@ mod tests {
             before: None,
             after: Some(json!({ "cidr_block": "10.0.0.0/16" })),
             reasons: vec![ChangeReason::NewResource],
+            meta: Default::default(),
         }]);
 
         let outcome = run_plan(&p, &mut state).unwrap();
@@ -561,6 +562,7 @@ mod tests {
             before: Some(json!({ "id": "vpc-x" })),
             after: None,
             reasons: vec![ChangeReason::DeletedResource],
+            meta: Default::default(),
         }]);
 
         let outcome = run_plan(&p, &mut state).unwrap();
@@ -590,6 +592,7 @@ mod tests {
                 before: None,
                 after: Some(json!({ "vpc_id": "${aws_vpc.main.id}" })),
                 reasons: vec![ChangeReason::NewResource],
+                meta: Default::default(),
             },
             ResourceChange {
                 address: addr("aws_vpc", "main"),
@@ -597,6 +600,7 @@ mod tests {
                 before: None,
                 after: Some(json!({ "id": "vpc-abc123" })),
                 reasons: vec![ChangeReason::NewResource],
+                meta: Default::default(),
             },
         ]);
 

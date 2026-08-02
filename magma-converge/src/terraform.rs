@@ -137,6 +137,7 @@ impl<B: magma_backend::Backend + 'static> Reconciler for TerraformReconciler<B> 
                     before: c.before.clone(),
                     after: c.after.clone(),
                     reasons: vec![],
+                    meta: Default::default(),
                 })
             })
             .collect();

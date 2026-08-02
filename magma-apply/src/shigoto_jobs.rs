@@ -181,6 +181,7 @@ mod tests {
                 before: None,
                 after: Some(json!({ "cidr_block": "10.0.0.0/16" })),
                 reasons: vec![ChangeReason::NewResource],
+                meta: Default::default(),
             },
             state_snapshot: Arc::new(empty_state()),
         };

@@ -343,6 +343,145 @@ impl Plan {
     }
 }
 
+// ── Resource meta-arguments ────────────────────────────────────────
+//
+// A Terraform resource block mixes two populations of keys that look
+// identical in rendered JSON: PROVIDER ATTRIBUTES (`region`, `tags`, …),
+// which belong to the provider's schema, and META-ARGUMENTS
+// (`provider`, `depends_on`, `count`, …), which belong to the executor
+// and never reach the provider. magma carried the block as one untyped
+// `serde_json::Value` and therefore could not tell them apart. Two
+// silently-wrong consequences followed, and neither produced an error
+// anywhere:
+//
+//   1. A meta-argument was handed to the cty encoder as if it were an
+//      attribute. `magma_cty::from_json` builds a `CtyType::Object` by
+//      iterating the SCHEMA's attributes, so an unknown key is dropped
+//      without complaint — `provider = "aws.us_east_2"` simply evaporated
+//      and the resource was applied through the DEFAULT `aws` provider.
+//      On a multi-account or multi-region estate that is real
+//      infrastructure created in the wrong account, reported as success.
+//   2. The same key still counted as a config-declared attribute for
+//      drift purposes (`magma_plan::declared_attributes_drifted`), and
+//      no provider ever returns it in state — so a resource carrying any
+//      meta-argument re-planned as `Update` on every single cycle,
+//      forever.
+//
+// [`ResourceMeta`] is the fix at that layer: meta-arguments are parsed
+// OUT of the block into a typed value before anything downstream sees
+// the attributes, so the two populations are structurally distinct
+// rather than distinguished by convention.
+
+/// The provider instance a resource is applied through.
+///
+/// **An alias cannot be represented.** This type holds a bare local
+/// provider name and has no field an alias could live in, so no code
+/// path below the config boundary can carry — or mis-handle — a
+/// resource routed to an aliased provider instance. That much is
+/// *truly unrepresentable*.
+///
+/// The boundary itself is weaker and must not be described as more: a
+/// config that *declares* an alias is refused by
+/// [`TryFrom<String>`](#impl-TryFrom<String>-for-ProviderInstance) with
+/// a typed error, which is **only mitigation** — a `Result::Err`, not an
+/// impossibility. Refusal is nonetheless the correct behaviour while
+/// magma cannot instantiate aliased providers: the alternative that
+/// shipped until now was applying to the wrong account in silence.
+///
+/// Supporting aliases for real is a genuinely larger change than this
+/// type — `magma_config::Config::providers` is a `HashMap<String, _>`
+/// and so cannot even hold two blocks for one provider;
+/// `ApplyContext::provider_configs` and the apply `Registry` are both
+/// keyed by bare provider name. When that lands, this struct gains an
+/// `alias` field and every consumer that pattern-matches it becomes a
+/// compile error — which is exactly the migration signal we want.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct ProviderInstance {
+    /// Bare local provider name — `"aws"`, never `"aws.us_east_2"`.
+    /// Private: [`TryFrom<String>`] is the only constructor, so the
+    /// no-alias invariant holds on the deserialize path too. Plans are
+    /// persisted and re-read across reconcile cycles and pod restarts,
+    /// so that path is a real boundary, not a theoretical one.
+    name: String,
+}
+
+impl ProviderInstance {
+    /// The bare local provider name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Why a `provider = …` meta-argument could not become a
+/// [`ProviderInstance`].
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ProviderInstanceError {
+    #[error(
+        "provider reference `{0}` names an alias: magma resolves every resource to the \
+         DEFAULT instance of its provider and cannot instantiate an aliased one. Applying \
+         anyway would route this resource to the default provider — a different account or \
+         region than declared — so it is refused rather than silently ignored."
+    )]
+    Aliased(String),
+    #[error("empty provider reference")]
+    Empty,
+}
+
+impl TryFrom<String> for ProviderInstance {
+    type Error = ProviderInstanceError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        if s.is_empty() {
+            return Err(ProviderInstanceError::Empty);
+        }
+        if s.contains('.') {
+            return Err(ProviderInstanceError::Aliased(s));
+        }
+        Ok(Self { name: s })
+    }
+}
+
+impl From<ProviderInstance> for String {
+    fn from(p: ProviderInstance) -> Self {
+        p.name
+    }
+}
+
+/// The executor-owned meta-arguments of one resource block, parsed out
+/// of the rendered JSON so they can never be mistaken for provider
+/// attributes.
+///
+/// Only the two magma implements live here. The remaining Terraform
+/// meta-arguments (`count`, `for_each`, `lifecycle`, `provisioner`,
+/// `connection`) are recognised at the config boundary and **refused**
+/// there — see `magma_config::split_resource_body` — because each of
+/// them is silently wrong when ignored, not merely unsupported.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceMeta {
+    /// `provider = "aws"` — which provider instance applies this
+    /// resource. `None` means "infer from the resource type's prefix",
+    /// the rule magma has always used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderInstance>,
+    /// `depends_on = ["aws_iam_role.x"]` — ordering the author declared
+    /// explicitly, which by definition is NOT discoverable from
+    /// `${…}` interpolation (that is the entire reason the
+    /// meta-argument exists).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<ResourceAddress>,
+}
+
+impl ResourceMeta {
+    /// True when the block declared no meta-arguments at all — the
+    /// common case, and the one that serializes to nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.provider.is_none() && self.depends_on.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceChange {
     pub address: ResourceAddress,
@@ -350,6 +489,14 @@ pub struct ResourceChange {
     pub before: Option<serde_json::Value>,
     pub after: Option<serde_json::Value>,
     pub reasons: Vec<ChangeReason>,
+    /// Meta-arguments declared on this resource's config block.
+    ///
+    /// `#[serde(default)]` so a plan persisted before this field existed
+    /// still deserializes — an in-flight plan artifact must not become
+    /// unreadable across a magma upgrade. An old plan reads back with
+    /// empty meta, which is exactly the behaviour it was built under.
+    #[serde(default, skip_serializing_if = "ResourceMeta::is_empty")]
+    pub meta: ResourceMeta,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -747,6 +894,7 @@ mod read_is_not_a_change_tests {
             before: None,
             after: None,
             reasons: vec![],
+            meta: ResourceMeta::default(),
         }
     }
 
