@@ -3055,11 +3055,46 @@ fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::V
                                 resolved
                             };
                         }
-                        Err(_) => {
+                        Err(e) => {
                             // Unresolvable: repo-name fallback if applicable,
-                            // else leave the literal untouched (surface the gap).
+                            // else leave the literal untouched.
+                            //
+                            // "Leave the literal to surface the gap" was the
+                            // original intent, and the literal DOES surface it
+                            // — as an opaque provider error that never names
+                            // the reference. Measured 2026-08-01: an
+                            // unresolved `${data.aws_vpc.<n>.id}` reached AWS
+                            // and came back as
+                            //
+                            //   InvalidGroupId.Malformed: Invalid id:
+                            //   "${data.aws_vpc.<n>.id}" (expecting "sg-...")
+                            //
+                            // which reads as a malformed-config problem in the
+                            // SECURITY GROUP, when the actual fault is that a
+                            // DATA SOURCE never folded into the resolution
+                            // map. Hours went into the wrong resource because
+                            // the error pointed at the symptom.
+                            //
+                            // So: still fall through (hardening this to a
+                            // typed error would break workspaces that limp
+                            // along on partially-resolvable refs, and that is
+                            // a separate, bigger decision) — but SAY the
+                            // reference out loud at warn, once, where it
+                            // happens. The provider error stays; it is no
+                            // longer the only clue.
                             if let Some(n) = repo_name_ref_fallback(inner) {
                                 *v = serde_json::Value::String(n);
+                            } else {
+                                tracing::warn!(
+                                    reference = %trimmed,
+                                    error = %e,
+                                    "magma apply: UNRESOLVED reference — sending the \
+                                     literal to the provider, which will reject it as a \
+                                     malformed value on THIS resource. The real fault is \
+                                     upstream: whatever this reference points at is not in \
+                                     the resolution map (a data source that failed to read, \
+                                     or a resource not yet applied)."
+                                );
                             }
                         }
                     }
