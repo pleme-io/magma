@@ -44,7 +44,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT"
@@ -64,50 +64,50 @@ must_use_candidate = "allow"
 # Aliased: the package is `magma-core` on crates.io (the bare name is
 # RustCrypto's), but it stays `magma` to every consumer in this workspace, so
 # no `use magma::…` had to change for the rename.
-magma           = { path = "magma", version = "0.1.10", package = "magma-core" }
-magma-types     = { path = "magma-types", version = "0.1.10" }
-magma-cty       = { path = "magma-cty", version = "0.1.10" }
+magma           = { path = "magma", version = "0.1.11", package = "magma-core" }
+magma-types     = { path = "magma-types", version = "0.1.11" }
+magma-cty       = { path = "magma-cty", version = "0.1.11" }
 
 # Gen-platform — typed-dispatcher catalog integration
 # (theory/UNIFIED-COMPUTING-MODEL.md §VI).
 gen-platform = { git = "https://github.com/pleme-io/gen" }
 gen-types = { git = "https://github.com/pleme-io/gen" }
-magma-config    = { path = "magma-config", version = "0.1.10" }
-magma-pangea    = { path = "magma-pangea", version = "0.1.10" }
-magma-protocol  = { path = "magma-protocol", version = "0.1.10" }
-magma-plugin    = { path = "magma-plugin", version = "0.1.10" }
-magma-providers = { path = "magma-providers", version = "0.1.10" }
-magma-state     = { path = "magma-state", version = "0.1.10" }
-magma-backend   = { path = "magma-backend", version = "0.1.10" }
-magma-graph     = { path = "magma-graph", version = "0.1.10" }
-magma-plan      = { path = "magma-plan", version = "0.1.10" }
-magma-apply     = { path = "magma-apply", version = "0.1.10" }
-magma-attest    = { path = "magma-attest", version = "0.1.10" }
-magma-mcp       = { path = "magma-mcp", version = "0.1.10" }
-magma-arch-test = { path = "magma-arch-test", version = "0.1.10" }
-magma-migrate   = { path = "magma-migrate", version = "0.1.10" }
-magma-flow      = { path = "magma-flow", version = "0.1.10" }
-magma-tatara    = { path = "magma-tatara", version = "0.1.10" }
-magma-fixtures  = { path = "magma-fixtures", version = "0.1.10" }
-magma-operator-backend = { path = "magma-operator-backend", version = "0.1.10" }
-magma-converge  = { path = "magma-converge", version = "0.1.10" }
-magma-drift     = { path = "magma-drift", version = "0.1.10" }
-magma-spec      = { path = "magma-spec", version = "0.1.10" }
-magma-stream    = { path = "magma-stream", version = "0.1.10" }
-magma-fsm       = { path = "magma-fsm", version = "0.1.10" }
-magma-test-laws = { path = "magma-test-laws", version = "0.1.10" }
-magma-discover  = { path = "magma-discover", version = "0.1.10" }
-magma-replay    = { path = "magma-replay", version = "0.1.10" }
-magma-bundle    = { path = "magma-bundle", version = "0.1.10" }
-magma-budget    = { path = "magma-budget", version = "0.1.10" }
-magma-metrics   = { path = "magma-metrics", version = "0.1.10" }
-magma-controller = { path = "magma-controller", version = "0.1.10" }
-magma-test      = { path = "magma-test", version = "0.1.10" }
-magma-rubygems  = { path = "magma-rubygems", version = "0.1.10" }
-magma-nix       = { path = "magma-nix", version = "0.1.10" }
-magma-tfmod     = { path = "magma-tfmod", version = "0.1.10" }
-magma-repo      = { path = "magma-repo", version = "0.1.10" }
-magma-provider-registry = { path = "magma-provider-registry", version = "0.1.10" }
+magma-config    = { path = "magma-config", version = "0.1.11" }
+magma-pangea    = { path = "magma-pangea", version = "0.1.11" }
+magma-protocol  = { path = "magma-protocol", version = "0.1.11" }
+magma-plugin    = { path = "magma-plugin", version = "0.1.11" }
+magma-providers = { path = "magma-providers", version = "0.1.11" }
+magma-state     = { path = "magma-state", version = "0.1.11" }
+magma-backend   = { path = "magma-backend", version = "0.1.11" }
+magma-graph     = { path = "magma-graph", version = "0.1.11" }
+magma-plan      = { path = "magma-plan", version = "0.1.11" }
+magma-apply     = { path = "magma-apply", version = "0.1.11" }
+magma-attest    = { path = "magma-attest", version = "0.1.11" }
+magma-mcp       = { path = "magma-mcp", version = "0.1.11" }
+magma-arch-test = { path = "magma-arch-test", version = "0.1.11" }
+magma-migrate   = { path = "magma-migrate", version = "0.1.11" }
+magma-flow      = { path = "magma-flow", version = "0.1.11" }
+magma-tatara    = { path = "magma-tatara", version = "0.1.11" }
+magma-fixtures  = { path = "magma-fixtures", version = "0.1.11" }
+magma-operator-backend = { path = "magma-operator-backend", version = "0.1.11" }
+magma-converge  = { path = "magma-converge", version = "0.1.11" }
+magma-drift     = { path = "magma-drift", version = "0.1.11" }
+magma-spec      = { path = "magma-spec", version = "0.1.11" }
+magma-stream    = { path = "magma-stream", version = "0.1.11" }
+magma-fsm       = { path = "magma-fsm", version = "0.1.11" }
+magma-test-laws = { path = "magma-test-laws", version = "0.1.11" }
+magma-discover  = { path = "magma-discover", version = "0.1.11" }
+magma-replay    = { path = "magma-replay", version = "0.1.11" }
+magma-bundle    = { path = "magma-bundle", version = "0.1.11" }
+magma-budget    = { path = "magma-budget", version = "0.1.11" }
+magma-metrics   = { path = "magma-metrics", version = "0.1.11" }
+magma-controller = { path = "magma-controller", version = "0.1.11" }
+magma-test      = { path = "magma-test", version = "0.1.11" }
+magma-rubygems  = { path = "magma-rubygems", version = "0.1.11" }
+magma-nix       = { path = "magma-nix", version = "0.1.11" }
+magma-tfmod     = { path = "magma-tfmod", version = "0.1.11" }
+magma-repo      = { path = "magma-repo", version = "0.1.11" }
+magma-provider-registry = { path = "magma-provider-registry", version = "0.1.11" }
 
 # ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──
 shikumi          = { git = "https://github.com/pleme-io/shikumi" }
