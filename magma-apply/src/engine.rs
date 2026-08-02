@@ -823,8 +823,21 @@ pub async fn run_plan_with_providers_resumable(
             // clone, where the reference has already collapsed into a node id
             // or a convention-guessed string — which is exactly why deriving it
             // down there produced un-importable ids for every reference-keyed
-            // type. Computed for creates only; nothing else can conflict.
-            let adoption = if change.action == Action::Create {
+            // type.
+            //
+            // Derived for anything that CAN reach a create — which is not just
+            // `Action::Create`. This read "computed for creates only; nothing
+            // else can conflict" and that was false: the provider, not the
+            // plan, decides replacement (`requires_replace`), so an
+            // `Action::Update` routed to `apply_replace` has a create half
+            // that conflicts exactly like a plain create. Deriving only for
+            // Create left that half with no id to import, so it could not
+            // adopt and looped instead — measured 2026-08-02 on
+            // github_repository.blue.
+            //
+            // Delete and NoOp genuinely cannot create, so they genuinely
+            // cannot conflict; they stay `None` and spend no derivation.
+            let adoption = if has_create_half(change.action) {
                 crate::natural_id::derive(
                     change,
                     resolved.after.as_ref(),
@@ -1907,6 +1920,91 @@ fn natural_import_id(change: &ResourceChange) -> Option<String> {
 /// discovery failure returns `None` so the caller falls through to the genuine
 /// create-conflict failure — never an adoption with a wrong id.
 ///
+/// What an adopt-on-conflict attempt concluded.
+///
+/// Three outcomes, not two: "nothing there" and "something there but it is not
+/// yours" must not collapse, because they demand opposite reactions — the first
+/// falls through to the caller's real error, the second must HARD-FAIL rather
+/// than bind a foreign object to a planned address.
+pub(crate) enum Adoption {
+    /// The object exists and passed the identity gate. Attributes to record.
+    Adopted(serde_json::Value),
+    /// Nothing exists under a resolvable id (or no id resolved). The caller's
+    /// original apply error stands.
+    Absent,
+    /// Something exists under that id but it is NOT the planned resource.
+    Mismatch { attr: String, planned: String, imported: String, id: String },
+}
+
+/// Adopt-on-conflict for a create half that failed — the reaction magma has
+/// for exactly one situation: the object we were told to create already exists
+/// out-of-band.
+///
+/// Extracted so BOTH create halves drive it. It used to be inline on
+/// `apply_one_inner`'s `Action::Create` arm only, which left
+/// [`apply_replace`]'s create half — reached whenever the provider marks any
+/// attribute `ForceNew` on a change with a prior state — with no adoption at
+/// all. That path could not self-heal, and a resource that exists but cannot
+/// be created is a permanent loop: measured 2026-08-02 on
+/// `pleme-io-opensource`, `github_repository.blue` attempted 12 creates in 45
+/// minutes, each answering `422 name already exists`, while the template never
+/// reached Ready and the loop drained the org's GitHub API budget to 0/5000.
+///
+/// THE GATE IS THE PROVIDER'S ANSWER, NOT THE ERROR STRING — `ImportResourceState`
+/// returning a non-null state is the provider stating the resource exists,
+/// where [`is_already_exists`] was only ever a guess in both directions. That
+/// oracle survives as telemetry so "expected conflict" and "surprise adoption"
+/// stay distinguishable in the log.
+///
+/// Records nothing itself: each caller owns how the adoption lands in its
+/// [`NodeRecord`], because the two sites record different actions.
+async fn try_adopt_on_conflict(
+    change: &ResourceChange,
+    type_name: &str,
+    lp: &mut LiveProvider,
+    pacer: Option<&LeakyBucket>,
+    adoption: Option<&crate::natural_id::ImportId>,
+    msg: &str,
+) -> Adoption {
+    // Resolve the import id: the caller-derived natural id (composite, parent
+    // references resolved against the apply loop's resolution map), or a
+    // discovered `<zone_id>/<record_id>` for opaque-id resources via the
+    // per-type resolver.
+    let Some(id) = resolve_import_id(change, type_name, lp, adoption).await else {
+        return Adoption::Absent;
+    };
+    // The SHARED two-step adoption primitive — import, then the
+    // protocol-mandated confirming ReadResource, with identity backfill.
+    let Ok(Some(attrs)) = import_and_confirm(lp, type_name, &id, pacer).await else {
+        return Adoption::Absent;
+    };
+    // THE IDENTITY GATE. A successful import means "something exists under
+    // this id" — never "this is the resource you planned". Nothing else on
+    // this path compares the object that came back with the change that asked
+    // for it, so a derived id that happens to name a real but DIFFERENT
+    // resource would be adopted silently, under the planned address, and the
+    // next cycle would diff config against it. Refuse.
+    if let Err(m) = crate::natural_id::verify_identity(change, change.after.as_ref(), &attrs) {
+        return Adoption::Mismatch {
+            attr: m.attr.to_string(),
+            planned: m.planned,
+            imported: m.imported,
+            id,
+        };
+    }
+    tracing::info!(
+        address = ?change.address,
+        import_id = %id,
+        id_confidence = ?adoption.map(|i| i.confidence),
+        // TELEMETRY, not a gate: `false` here means the create's diagnostic
+        // did NOT look like a conflict and the old string oracle would have
+        // refused this adoption.
+        diagnostic_looked_like_conflict = is_already_exists(msg),
+        "magma apply: adopted pre-existing resource via import-on-conflict + ReadResource refresh"
+    );
+    Adoption::Adopted(attrs)
+}
+
 /// New opaque-id resource types register a discovery arm here; this is the
 /// extension point for the generic ObjectExistsUntracked → adopt reaction.
 async fn resolve_import_id(
@@ -2314,6 +2412,7 @@ async fn apply_one_inner(
                     pacer.as_deref(),
                     rec,
                     current_schema_version,
+                    adoption,
                 )
                 .await;
             }
@@ -2371,68 +2470,27 @@ async fn apply_one_inner(
                     // the pacer bounds them. `is_already_exists` survives as
                     // TELEMETRY (below) so the "expected conflict vs surprise
                     // adoption" split stays visible in the log.
+                    // CREATE ONLY on this path. An in-place `Update` that
+                    // failed must NOT be handed to adoption: the resource is
+                    // already in state, so the import would succeed trivially
+                    // and report the UNCHANGED object as a success — silently
+                    // swallowing the update failure. Only a create can be
+                    // answered by "it already exists". (`apply_replace`'s
+                    // create half is the other legitimate caller; it gates on
+                    // being a create by construction.)
                     if change.action == Action::Create {
-                        // Resolve the import id: the caller-derived natural id
-                        // (composite, parent references resolved against the
-                        // apply loop's resolution map), or a discovered
-                        // `<zone_id>/<record_id>` for opaque-id resources
-                        // (cloudflare_dns_record) via the per-type resolver.
-                        if let Some(id) = resolve_import_id(change, &type_name, lp, adoption).await
+                        match try_adopt_on_conflict(
+                            change,
+                            &type_name,
+                            lp,
+                            pacer.as_deref(),
+                            adoption,
+                            &msg,
+                        )
+                        .await
                         {
-                            // The SHARED two-step adoption primitive — import
-                            // then the protocol-mandated confirming ReadResource,
-                            // with identity backfill. Implemented once in
-                            // `import_and_confirm` so the pre-plan prepass
-                            // (ConfiguredImportEnvironment) cannot drift from this
-                            // path; before that extraction the prepass absorbed
-                            // the raw stub and produced identity-less state.
-                            if let Ok(Some(attrs)) =
-                                import_and_confirm(lp, &type_name, &id, pacer.as_deref()).await
-                            {
-                                // THE IDENTITY GATE. A successful import means
-                                // "something exists under this id" — never
-                                // "this is the resource you planned". Nothing
-                                // else on this path compares the object that
-                                // came back with the change that asked for it,
-                                // so a derived id that happens to name a real
-                                // but DIFFERENT resource is adopted silently,
-                                // under the planned address, and the next
-                                // cycle diffs config against it. Refuse.
-                                if let Err(m) = crate::natural_id::verify_identity(
-                                    change,
-                                    change.after.as_ref(),
-                                    &attrs,
-                                ) {
-                                    tracing::error!(
-                                        address = ?change.address,
-                                        import_id = %id,
-                                        attr = %m.attr,
-                                        planned = %m.planned,
-                                        imported = %m.imported,
-                                        "magma adopt: imported resource is NOT the planned one; \
-                                         refusing the adoption"
-                                    );
-                                    let (crash, close) = provider_failure_signals(lp);
-                                    return Err(rpc_error(
-                                        &provider_name,
-                                        "apply_resource_change",
-                                        crash,
-                                        close,
-                                        &msg,
-                                    ));
-                                }
+                            Adoption::Adopted(attrs) => {
                                 rec.insert(&change.address, attrs.clone(), current_schema_version);
-                                tracing::info!(
-                                    address = ?change.address,
-                                    import_id = %id,
-                                    id_confidence = ?adoption.map(|i| i.confidence),
-                                    // TELEMETRY, not a gate: `false` here means
-                                    // the create's diagnostic did NOT look like
-                                    // a conflict and the old string oracle
-                                    // would have refused this adoption.
-                                    diagnostic_looked_like_conflict = is_already_exists(&msg),
-                                    "magma apply: adopted pre-existing resource via import-on-conflict + ReadResource refresh"
-                                );
                                 return Ok(AppliedChange {
                                     address: change.address.clone(),
                                     action: change.action,
@@ -2440,8 +2498,34 @@ async fn apply_one_inner(
                                     after: Some(attrs),
                                 });
                             }
+                            Adoption::Mismatch {
+                                attr,
+                                planned,
+                                imported,
+                                id,
+                            } => {
+                                tracing::error!(
+                                    address = ?change.address,
+                                    import_id = %id,
+                                    attr = %attr,
+                                    planned = %planned,
+                                    imported = %imported,
+                                    "magma adopt: imported resource is NOT the planned one; \
+                                     refusing the adoption"
+                                );
+                                let (crash, close) = provider_failure_signals(lp);
+                                return Err(rpc_error(
+                                    &provider_name,
+                                    "apply_resource_change",
+                                    crash,
+                                    close,
+                                    &msg,
+                                ));
+                            }
+                            Adoption::Absent => {}
                         }
                     }
+
                     // Not an adoptable conflict → a genuine apply failure.
                     // Read the crash/close signals off `lp` (the import/read
                     // RPCs above have resolved, so the conn borrow is over)
@@ -2468,6 +2552,41 @@ async fn apply_one_inner(
                 after: Some(new_attrs),
             })
         }
+    }
+}
+
+/// Can a change with this action end up issuing a CREATE against the provider,
+/// and therefore collide with an object that already exists?
+///
+/// Pure predicate, extracted for the same reason as [`should_replace`] below: a
+/// branch reachable only through a live provider is a branch no test exercises.
+///
+/// The subtle case is `Update`. The PLAN's action is not the last word —
+/// `plan_resource_change` may come back with `requires_replace` non-empty, and
+/// `apply_replace` then destroys and re-creates. So an `Update` has a create
+/// half, and that half can conflict exactly like a plain create. The code this
+/// replaced assumed otherwise ("computed for creates only; nothing else can
+/// conflict"), so a replace-routed change had no import id to adopt with and
+/// looped on `422 already exists` instead — measured 2026-08-02 on
+/// `github_repository.blue`, 12 attempts in 45 minutes.
+///
+/// `Delete`, `Forget`, `Read` and `NoOp` genuinely never create.
+///
+/// Matched exhaustively on purpose — no `_` arm. A new `Action` variant must be
+/// classified here or the crate does not compile, which is the difference
+/// between this staying correct and it silently mis-answering the next variant
+/// somebody adds. (It earned that immediately: the first draft omitted
+/// `Forget` and E0004 caught it.)
+pub(crate) fn has_create_half(action: Action) -> bool {
+    match action {
+        Action::Create
+        | Action::Update
+        | Action::Replace
+        | Action::CreateThenDelete
+        | Action::DeleteThenCreate => true,
+        // Forget drops the resource from state and leaves the object alone —
+        // no provider mutation at all, so nothing to collide with.
+        Action::NoOp | Action::Delete | Action::Read | Action::Forget => false,
     }
 }
 
@@ -2529,6 +2648,72 @@ mod replace_routing_tests {
     #[test]
     fn an_ordinary_update_with_no_force_new_is_not_a_replace() {
         assert!(!should_replace(true, false, Action::Update));
+    }
+
+    /// THE REGRESSION. An `Update` that the provider resolves to a replace has
+    /// a create half, so it must carry an adoption id. Deriving only for
+    /// `Action::Create` is what left `apply_replace`'s create half unable to
+    /// adopt — `github_repository.blue`, 12 × `422 already exists` in 45
+    /// minutes on pleme-io-opensource, 2026-08-02.
+    #[test]
+    fn an_update_has_a_create_half_because_the_provider_may_force_replace() {
+        assert!(has_create_half(Action::Update));
+        // The two predicates have to agree: anything should_replace() routes
+        // to apply_replace must have been given an adoption id upstream.
+        assert!(should_replace(true, true, Action::Update));
+        assert!(has_create_half(Action::Update));
+    }
+
+    #[test]
+    fn every_replace_shaped_action_has_a_create_half() {
+        for a in [
+            Action::Create,
+            Action::Update,
+            Action::Replace,
+            Action::CreateThenDelete,
+            Action::DeleteThenCreate,
+        ] {
+            assert!(has_create_half(a), "{a:?} can reach a create");
+        }
+    }
+
+    /// Actions that never issue a create can never hit "already exists", so
+    /// they must not spend a derivation — and, more importantly, must never be
+    /// handed to adoption, which would report an unchanged object as success.
+    #[test]
+    fn actions_that_never_create_have_no_create_half() {
+        for a in [
+            Action::NoOp,
+            Action::Delete,
+            Action::Read,
+            Action::Forget,
+        ] {
+            assert!(!has_create_half(a), "{a:?} cannot reach a create");
+        }
+    }
+
+    /// Coverage is total by construction: `has_create_half` matches `Action`
+    /// exhaustively with no `_` arm, so a new variant is a COMPILE error rather
+    /// than a silent default. This row asserts the two lists above enumerate
+    /// every variant, so the tests cannot quietly drift behind the type.
+    #[test]
+    fn the_create_half_matrix_covers_every_action() {
+        let classified = [
+            Action::Create,
+            Action::Update,
+            Action::Replace,
+            Action::CreateThenDelete,
+            Action::DeleteThenCreate,
+            Action::NoOp,
+            Action::Delete,
+            Action::Read,
+            Action::Forget,
+        ];
+        assert_eq!(
+            classified.len(),
+            9,
+            "an Action variant was added/removed without updating the create-half matrix"
+        );
     }
 }
 
@@ -2705,6 +2890,7 @@ async fn apply_replace(
     pacer: Option<&LeakyBucket>,
     rec: &mut NodeRecord,
     current_schema_version: u64,
+    adoption: Option<&crate::natural_id::ImportId>,
 ) -> Result<AppliedChange, EngineError> {
     let null_dv = DynamicValue::from_json(&serde_json::Value::Null, implied)
         .map_err(|e| EngineError::Cty(e.to_string()))?;
@@ -2757,14 +2943,55 @@ async fn apply_replace(
     ) {
         Ok(dv) => dv,
         Err(e) => {
+            let msg = e.to_string();
             record_partial_apply(rec, &change.address, &e, implied, current_schema_version);
+            // ADOPT-ON-CONFLICT, same as the plain create path. This half is a
+            // create, so "it already exists" is answerable by adopting it —
+            // and until this arm existed it was NOT, which is the whole reason
+            // a replace-routed change could loop forever (measured 2026-08-02:
+            // github_repository.blue, 12 creates in 45 minutes, all 422).
+            //
+            // Reaching here means the object survived step 1's destroy — the
+            // provider reported the destroy done, yet the create says the name
+            // is taken. Adoption is then both the unblock and the truthful
+            // outcome: the object exists, so state should track it rather than
+            // keep trying to conjure a duplicate. `rec.remove` above already
+            // recorded the removal; adopting re-inserts, correcting it.
+            match try_adopt_on_conflict(change, type_name, lp, pacer, adoption, &msg).await {
+                Adoption::Adopted(attrs) => {
+                    rec.insert(&change.address, attrs.clone(), current_schema_version);
+                    return Ok(AppliedChange {
+                        address: change.address.clone(),
+                        action: Action::DeleteThenCreate,
+                        before: change.before.clone(),
+                        after: Some(attrs),
+                    });
+                }
+                Adoption::Mismatch {
+                    attr,
+                    planned,
+                    imported,
+                    id,
+                } => {
+                    tracing::error!(
+                        address = ?change.address,
+                        import_id = %id,
+                        attr = %attr,
+                        planned = %planned,
+                        imported = %imported,
+                        "magma adopt: imported resource is NOT the planned one; \
+                         refusing the adoption"
+                    );
+                }
+                Adoption::Absent => {}
+            }
             let (crash, close) = provider_failure_signals(lp);
             return Err(rpc_error(
                 provider_name,
                 "apply_resource_change[replace:create]",
                 crash,
                 close,
-                &e.to_string(),
+                &msg,
             ));
         }
     };
