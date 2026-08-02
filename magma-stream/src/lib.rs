@@ -342,14 +342,36 @@ impl EventSink for JsonLinesSink {
     }
 
     async fn handle(&self, event: &Event) -> Result<(), StreamError> {
-        let line = serde_json::to_string(event)?;
+        // ONE write_all, record + newline together. This was two calls —
+        // the JSON, then a separate b"\n" — and that is a real corruption
+        // bug, not a style point.
+        //
+        // An O_APPEND write is atomic with respect to the file offset, but
+        // only PER CALL. Two concurrent emits could therefore interleave as
+        //
+        //     <json A><json B>\n\n
+        //
+        // producing a first line holding two records, which the reader
+        // rejects with `trailing characters` — and the whole audit file
+        // after that point is unparseable.
+        //
+        // Found by magma-replay's `replay_from_jsonl_returns_trusted_report`
+        // proptest (seed pinned in its .proptest-regressions). It matters
+        // more than a flaky test: this sink IS the replay/attestation
+        // chain, so the failure mode is an audit log that silently cannot
+        // be replayed.
+        //
+        // Building the line with the newline included makes the interleaving
+        // unrepresentable rather than unlikely — there is no longer a window
+        // between the two writes, because there is only one write.
+        let mut line = serde_json::to_string(event)?;
+        line.push('\n');
         let mut f = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)
             .await?;
         f.write_all(line.as_bytes()).await?;
-        f.write_all(b"\n").await?;
         Ok(())
     }
 }
