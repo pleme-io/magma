@@ -376,45 +376,151 @@ impl Plan {
 // the attributes, so the two populations are structurally distinct
 // rather than distinguished by convention.
 
-/// The provider instance a resource is applied through.
+/// The provider instance a resource is applied through — one
+/// `provider "<name>" {}` block, and the `alias` (if any) that
+/// distinguishes it from its siblings.
 ///
-/// **An alias cannot be represented.** This type holds a bare local
-/// provider name and has no field an alias could live in, so no code
-/// path below the config boundary can carry — or mis-handle — a
-/// resource routed to an aliased provider instance. That much is
-/// *truly unrepresentable*.
+/// **This is the identity, and therefore the KEY.** A provider instance
+/// is `(name, alias)` — two structured components, never one flattened
+/// `"aws.us_east_2"` string. `magma_config::Config::providers`,
+/// `ApplyContext::provider_configs` and the apply `Registry` are all
+/// keyed by this value, so "which provider instance" is looked up, never
+/// re-parsed. A string key would put the `name`/`alias` split back into
+/// every consumer, which is exactly the parsing this arc has been
+/// removing: `5b159e3` made references typed for that reason, and
+/// `AttrStep` was chosen over `Vec<String>` because a path spelled as a
+/// string carries brackets.
 ///
-/// The boundary itself is weaker and must not be described as more: a
-/// config that *declares* an alias is refused by
-/// [`TryFrom<String>`](#impl-TryFrom<String>-for-ProviderInstance) with
-/// a typed error, which is **only mitigation** — a `Result::Err`, not an
-/// impossibility. Refusal is nonetheless the correct behaviour while
-/// magma cannot instantiate aliased providers: the alternative that
-/// shipped until now was applying to the wrong account in silence.
+/// The string form exists only at the two text boundaries — the
+/// `provider = "aws.us_east_2"` meta-argument in rendered Terraform JSON
+/// and the serde wire — and both go through exactly one parser
+/// ([`TryFrom<String>`](#impl-TryFrom<String>-for-ProviderInstance)) and
+/// one renderer ([`Display`](#impl-Display-for-ProviderInstance)).
 ///
-/// Supporting aliases for real is a genuinely larger change than this
-/// type — `magma_config::Config::providers` is a `HashMap<String, _>`
-/// and so cannot even hold two blocks for one provider;
-/// `ApplyContext::provider_configs` and the apply `Registry` are both
-/// keyed by bare provider name. When that lands, this struct gains an
-/// `alias` field and every consumer that pattern-matches it becomes a
-/// compile error — which is exactly the migration signal we want.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// **What is and is not proven.** The grammar is enforced at
+/// construction *and* deserialization: a name or alias containing a `.`,
+/// or more than two segments, has no representation, because the fields
+/// are private and every constructor rejects them. A *declared* instance
+/// that no `provider` block configures is a different matter — that is a
+/// `Result::Err` at the config boundary
+/// (`magma_config::ConfigError::UndeclaredProviderInstance`) and at dial
+/// time (`magma_apply::engine::EngineError::UnconfiguredProviderAlias`),
+/// i.e. **only mitigation**, not impossibility.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub struct ProviderInstance {
-    /// Bare local provider name — `"aws"`, never `"aws.us_east_2"`.
-    /// Private: [`TryFrom<String>`] is the only constructor, so the
-    /// no-alias invariant holds on the deserialize path too. Plans are
-    /// persisted and re-read across reconcile cycles and pod restarts,
-    /// so that path is a real boundary, not a theoretical one.
+    /// Bare local provider name — `"aws"`. Never contains a `.`.
+    /// Private: every constructor validates, so the grammar holds on the
+    /// deserialize path too. Plans are persisted and re-read across
+    /// reconcile cycles and pod restarts, so that path is a real
+    /// boundary, not a theoretical one.
     name: String,
+    /// The `alias = "…"` of the `provider` block this instance names.
+    /// `None` is the DEFAULT instance — the one a resource declaring no
+    /// `provider` meta-argument resolves to. Never contains a `.`.
+    ///
+    /// Ordered after `name` by the derived `Ord`, so the default
+    /// instance sorts before its aliased siblings (`None < Some(_)`).
+    alias: Option<String>,
 }
 
 impl ProviderInstance {
-    /// The bare local provider name.
+    /// The bare local provider name — `"aws"` for both `aws` and
+    /// `aws.us_east_2`. This is what selects the provider BINARY: every
+    /// instance of one provider is served by the same plugin, configured
+    /// separately.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The alias, or `None` for the default instance.
+    #[must_use]
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
+    /// Is this the DEFAULT instance of its provider — the one an
+    /// unqualified resource resolves to, and the one that may legitimately
+    /// be dialed with no configuration block (the provider then falls back
+    /// to its own environment credentials, exactly as terraform does for an
+    /// absent `provider` block)?
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self.alias.is_none()
+    }
+
+    /// The default instance of a provider named by a bare local name.
+    pub fn default_instance(name: impl Into<String>) -> Result<Self, ProviderInstanceError> {
+        let name = name.into();
+        Self::check_segment(&name, Segment::Name)?;
+        Ok(Self { name, alias: None })
+    }
+
+    /// A named alias of a provider — `aws` + `us_east_2`.
+    pub fn aliased(
+        name: impl Into<String>,
+        alias: impl Into<String>,
+    ) -> Result<Self, ProviderInstanceError> {
+        let name = name.into();
+        let alias = alias.into();
+        Self::check_segment(&name, Segment::Name)?;
+        Self::check_segment(&alias, Segment::Alias)?;
+        Ok(Self {
+            name,
+            alias: Some(alias),
+        })
+    }
+
+    /// The default instance of the provider a resource TYPE implies —
+    /// `"github_repository"` → the default `github` instance.
+    ///
+    /// **Infallible by construction, and that is deliberate.** The split
+    /// includes `.` as a terminator, so no dot can reach `name` however
+    /// malformed the type id is — the grammar invariant is upheld here
+    /// without a `Result` for a caller that structurally cannot supply an
+    /// alias. The type-prefix rule itself remains a guess: `google_*`
+    /// resources are served by the `google` provider, but the mapping is
+    /// convention, not contract.
+    #[must_use]
+    pub fn implied_by_type(type_id: &str) -> Self {
+        let name = type_id.split(['_', '.']).next().unwrap_or(type_id);
+        Self {
+            name: name.to_string(),
+            alias: None,
+        }
+    }
+
+    fn check_segment(s: &str, which: Segment) -> Result<(), ProviderInstanceError> {
+        if s.is_empty() {
+            return Err(match which {
+                Segment::Name => ProviderInstanceError::Empty,
+                Segment::Alias => ProviderInstanceError::EmptyAlias,
+            });
+        }
+        if s.contains('.') {
+            return Err(ProviderInstanceError::DottedSegment {
+                which: which.label(),
+                value: s.to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Which half of a `<name>.<alias>` reference a validation concerns.
+#[derive(Debug, Clone, Copy)]
+enum Segment {
+    Name,
+    Alias,
+}
+
+impl Segment {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "provider name",
+            Self::Alias => "alias",
+        }
     }
 }
 
@@ -422,34 +528,56 @@ impl ProviderInstance {
 /// [`ProviderInstance`].
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ProviderInstanceError {
-    #[error(
-        "provider reference `{0}` names an alias: magma resolves every resource to the \
-         DEFAULT instance of its provider and cannot instantiate an aliased one. Applying \
-         anyway would route this resource to the default provider — a different account or \
-         region than declared — so it is refused rather than silently ignored."
-    )]
-    Aliased(String),
     #[error("empty provider reference")]
     Empty,
+    #[error("empty provider alias: `<name>.` names no provider instance")]
+    EmptyAlias,
+    #[error(
+        "provider reference `{0}` has more than two segments: the grammar is `<name>` for a \
+         provider's default instance or `<name>.<alias>` for a declared alias, and nothing else"
+    )]
+    TooManySegments(String),
+    #[error("{which} `{value}` contains a `.`, which separates a provider name from its alias")]
+    DottedSegment { which: &'static str, value: String },
 }
 
 impl TryFrom<String> for ProviderInstance {
     type Error = ProviderInstanceError;
 
+    /// The ONE parser for the `<name>[.<alias>]` text form. Every other
+    /// constructor takes the components already split, so this is the only
+    /// place the grammar is read.
     fn try_from(s: String) -> Result<Self, Self::Error> {
         if s.is_empty() {
             return Err(ProviderInstanceError::Empty);
         }
-        if s.contains('.') {
-            return Err(ProviderInstanceError::Aliased(s));
+        let mut segments = s.split('.');
+        // `split` on a non-empty string always yields at least one item.
+        let name = segments.next().unwrap_or(&s);
+        match (segments.next(), segments.next()) {
+            (None, _) => Self::default_instance(name),
+            (Some(alias), None) => Self::aliased(name, alias),
+            (Some(_), Some(_)) => Err(ProviderInstanceError::TooManySegments(s.clone())),
         }
-        Ok(Self { name: s })
+    }
+}
+
+/// The ONE renderer of the text form — a `Display`-family `write!`, so no
+/// syntax is `format!`ed (★★ TYPED EMISSION).
+impl std::fmt::Display for ProviderInstance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)?;
+        if let Some(alias) = &self.alias {
+            f.write_str(".")?;
+            f.write_str(alias)?;
+        }
+        Ok(())
     }
 }
 
 impl From<ProviderInstance> for String {
     fn from(p: ProviderInstance) -> Self {
-        p.name
+        p.to_string()
     }
 }
 
@@ -464,9 +592,10 @@ impl From<ProviderInstance> for String {
 /// them is silently wrong when ignored, not merely unsupported.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceMeta {
-    /// `provider = "aws"` — which provider instance applies this
-    /// resource. `None` means "infer from the resource type's prefix",
-    /// the rule magma has always used.
+    /// `provider = "aws"` / `provider = "aws.us_east_2"` — which provider
+    /// instance applies this resource. `None` means "infer from the
+    /// resource type's prefix", the rule magma has always used, which
+    /// always yields a DEFAULT instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<ProviderInstance>,
     /// `depends_on = ["aws_iam_role.x"]` — ordering the author declared
@@ -588,8 +717,8 @@ pub enum ResourceError {
 /// provider's, as typed values:
 ///
 /// * `address` — [`ResourceAddress`], not `"aws_vpc" → "main"` map keys.
-/// * `meta.provider` — [`ProviderInstance`], which structurally cannot
-///   hold an alias.
+/// * `meta.provider` — [`ProviderInstance`], the typed `(name, alias)`
+///   identity, not a `"aws.us_east_2"` string every consumer re-splits.
 /// * `meta.depends_on` — `Vec<ResourceAddress>`, not a list of strings
 ///   that has to be re-parsed to become a graph edge.
 ///
@@ -1242,25 +1371,25 @@ mod tests {
     // `type_id.split('_').next()` and nothing else. A resource declaring
     // `provider = "aws.us_east_2"` was therefore applied through the
     // DEFAULT `aws` provider — real infrastructure in the wrong account,
-    // reported as success.
+    // reported as success. `2e418ca` made that a refusal; this type now
+    // carries the alias as a typed component so the declaration can
+    // actually be honoured.
 
     #[test]
-    fn an_aliased_provider_reference_is_refused_rather_than_resolved_to_the_default() {
-        let err = ProviderInstance::try_from("aws.us_east_2".to_string())
-            .expect_err("an aliased provider reference must not resolve");
-        assert_eq!(err, ProviderInstanceError::Aliased("aws.us_east_2".into()));
-        // The message has to say WHY, because the operator's next move
-        // depends on knowing magma silently used a different account.
-        assert!(
-            err.to_string().contains("account or region"),
-            "the refusal must name the consequence it prevents, got: {err}"
-        );
+    fn an_aliased_provider_reference_parses_into_its_two_components() {
+        let p = ProviderInstance::try_from("aws.us_east_2".to_string())
+            .expect("an aliased reference is a valid provider instance");
+        assert_eq!(p.name(), "aws");
+        assert_eq!(p.alias(), Some("us_east_2"));
+        assert!(!p.is_default());
     }
 
     #[test]
     fn a_bare_provider_reference_resolves_to_that_provider() {
         let p = ProviderInstance::try_from("aws".to_string()).expect("a bare name is valid");
         assert_eq!(p.name(), "aws");
+        assert_eq!(p.alias(), None);
+        assert!(p.is_default());
     }
 
     #[test]
@@ -1271,26 +1400,97 @@ mod tests {
         );
     }
 
-    /// A plan is persisted and re-read across reconcile cycles and pod
-    /// restarts, so deserialization is a real boundary, not a
-    /// theoretical one — an alias must not be able to sneak in through
-    /// it either.
+    /// The grammar is `<name>` or `<name>.<alias>`. A third segment is
+    /// not a deeper qualification magma is ignoring — it is not a
+    /// provider reference at all, and accepting it would silently bind
+    /// the resource to `aws.us_east_2` while the author wrote something
+    /// else.
     #[test]
-    fn an_aliased_provider_cannot_be_deserialized_into_a_change() {
-        let err = serde_json::from_str::<ProviderInstance>("\"aws.us_east_2\"")
-            .expect_err("deserialization must enforce the same invariant as construction");
-        assert!(
-            err.to_string().contains("account or region"),
-            "the typed refusal must survive the serde boundary, got: {err}"
+    fn a_three_segment_provider_reference_is_refused() {
+        assert_eq!(
+            ProviderInstance::try_from("aws.us_east_2.extra".to_string()),
+            Err(ProviderInstanceError::TooManySegments(
+                "aws.us_east_2.extra".into()
+            ))
         );
     }
 
+    #[test]
+    fn a_trailing_dot_is_refused_rather_than_read_as_the_default_instance() {
+        assert_eq!(
+            ProviderInstance::try_from("aws.".to_string()),
+            Err(ProviderInstanceError::EmptyAlias)
+        );
+    }
+
+    /// The components are private and every constructor validates, so a
+    /// dot cannot enter either half by the back door — which is what
+    /// keeps `Display` ⇄ `TryFrom` a bijection.
+    #[test]
+    fn a_dot_cannot_be_smuggled_into_either_component() {
+        assert!(matches!(
+            ProviderInstance::aliased("aws", "us.east.2"),
+            Err(ProviderInstanceError::DottedSegment { .. })
+        ));
+        assert!(matches!(
+            ProviderInstance::default_instance("aws.us_east_2"),
+            Err(ProviderInstanceError::DottedSegment { .. })
+        ));
+        // …and the type-implied constructor, which takes no `Result`,
+        // terminates on `.` for exactly this reason.
+        assert_eq!(ProviderInstance::implied_by_type("aws.weird").name(), "aws");
+    }
+
+    #[test]
+    fn the_type_prefix_rule_yields_the_default_instance() {
+        let p = ProviderInstance::implied_by_type("github_repository");
+        assert_eq!(p.name(), "github");
+        assert!(p.is_default());
+        assert_eq!(
+            ProviderInstance::implied_by_type("noprefix").name(),
+            "noprefix"
+        );
+    }
+
+    /// A plan is persisted and re-read across reconcile cycles and pod
+    /// restarts, so deserialization is a real boundary, not a
+    /// theoretical one — the grammar must hold through it too.
+    #[test]
+    fn an_aliased_provider_survives_the_serde_boundary_intact() {
+        let p: ProviderInstance = serde_json::from_str("\"aws.us_east_2\"")
+            .expect("deserialization uses the same parser as construction");
+        assert_eq!(p, ProviderInstance::aliased("aws", "us_east_2").unwrap());
+        assert_eq!(serde_json::to_string(&p).unwrap(), "\"aws.us_east_2\"");
+        // …and the malformed forms are refused there too.
+        assert!(serde_json::from_str::<ProviderInstance>("\"a.b.c\"").is_err());
+    }
+
+    /// **Byte-identity for the unaliased case.** Every provider instance
+    /// magma has ever written to a persisted plan is unaliased; its wire
+    /// form must be exactly the bare name it was before `alias` existed.
     #[test]
     fn a_provider_instance_round_trips_as_a_plain_string() {
         let p = ProviderInstance::try_from("cloudflare".to_string()).unwrap();
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(json, "\"cloudflare\"");
         assert_eq!(serde_json::from_str::<ProviderInstance>(&json).unwrap(), p);
+    }
+
+    /// The default instance sorts before its aliased siblings, so a
+    /// `BTreeMap` keyed by instance iterates default-first per provider —
+    /// the order every diagnostic and serialization reads.
+    #[test]
+    fn the_default_instance_orders_before_its_aliases() {
+        let mut v = vec![
+            ProviderInstance::aliased("aws", "us_east_2").unwrap(),
+            ProviderInstance::default_instance("aws").unwrap(),
+            ProviderInstance::aliased("aws", "eu_west_1").unwrap(),
+        ];
+        v.sort();
+        assert_eq!(
+            v.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["aws", "aws.eu_west_1", "aws.us_east_2"]
+        );
     }
 
     /// An in-flight plan written before `meta` existed must still be

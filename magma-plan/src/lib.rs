@@ -145,10 +145,13 @@ pub fn resource_graph(resources: &[magma_types::Resource]) -> magma_graph::Resou
 /// forget the split. `None` (no config body) carries empty meta.
 ///
 /// The error is deliberately propagated, not swallowed: an UNIMPLEMENTED
-/// meta-argument (e.g. an aliased `provider`) must stop the plan rather than
-/// be silently dropped into a resource that then applies through the wrong
-/// provider — which is the failure this whole split exists to end.
+/// meta-argument (`count`, `lifecycle`, …), or a `provider` naming an
+/// aliased instance the workspace does not declare, must stop the plan
+/// rather than be silently dropped into a resource that then applies
+/// through the wrong provider — which is the failure this whole split
+/// exists to end.
 fn split_meta(
+    config: &Config,
     addr: &ResourceAddress,
     body: Option<serde_json::Value>,
 ) -> Result<(ResourceMeta, Option<serde_json::Value>), PlanError> {
@@ -163,6 +166,13 @@ fn split_meta(
     // comes from.
     let label = addr.to_string();
     let (meta, attrs) = magma_config::split_resource_body(&label, &body)?;
+    // A declared ALIASED provider instance must be one this workspace
+    // configures. `split_resource_body` sees one block and cannot know;
+    // the config does. Gated here as well as in `Config::resources_typed`
+    // because these are the two doors a declared provider takes to reach
+    // a `ResourceChange`, and a gate on only one of them is a gate the
+    // other walks around.
+    config.check_provider_instance(&label, &meta)?;
     Ok((meta, Some(attrs)))
 }
 
@@ -215,7 +225,7 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         // the DEFAULT provider) and counted as a declared attribute for
         // drift, which no provider ever returns — so the resource re-planned
         // as Update on EVERY cycle, forever.
-        let (meta, after) = split_meta(addr, raw_after)?;
+        let (meta, after) = split_meta(config, addr, raw_after)?;
         let (action, reasons) = match addr.kind {
             ResourceKind::Data => (Action::Read, vec![ChangeReason::NewResource]),
             _ => (Action::Create, vec![ChangeReason::NewResource]),
@@ -270,7 +280,7 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         // Same split as the create loop: a meta-argument must never reach the
         // attribute comparison, or the resource drifts against a key no
         // provider returns and re-plans as Update forever.
-        let (meta, after) = split_meta(addr, lookup_config_value(config, addr))?;
+        let (meta, after) = split_meta(config, addr, lookup_config_value(config, addr))?;
         // Resolve interpolations in a THROWAWAY copy used ONLY for the
         // drift comparison below — the `after` stored on the emitted
         // `ResourceChange` stays raw/unresolved. `magma-apply::engine`'s
@@ -944,9 +954,11 @@ mod tests {
     }
 
     /// A config magma cannot honour must fail the PLAN, not reach an
-    /// apply that quietly does something else.
+    /// apply that quietly does something else. Here the workspace
+    /// declares no `provider` block at all, so `aws.us_east_2` names an
+    /// instance that does not exist.
     #[test]
-    fn a_resource_pinned_to_an_aliased_provider_fails_the_plan() {
+    fn a_resource_pinned_to_an_undeclared_aliased_provider_fails_the_plan() {
         let cfg = Config::from_json(json!({
             "resource": {
                 "aws_instance": {
@@ -2389,5 +2401,57 @@ mod tests {
         assert_eq!(handler.meta.depends_on[0].name, "exec");
         // The meta never reached the attributes handed to the provider.
         assert_eq!(handler.after, Some(json!({ "memory": 512 })));
+    }
+
+    // ── Aliased provider instances at the plan door ────────────────
+    //
+    // `Config::resources_typed` is not the only way a declared provider
+    // reaches a `ResourceChange`: `plan` reads the raw JSON container and
+    // splits the meta itself. A gate on only one of those doors is a gate
+    // the other walks around, so both are pinned.
+
+    #[test]
+    fn a_declared_aliased_instance_reaches_the_plan_as_a_typed_instance() {
+        let cfg = Config::from_json(json!({
+            "provider": {
+                "aws": [
+                    { "region": "us-east-1" },
+                    { "alias": "us_east_2", "region": "us-east-2" }
+                ]
+            },
+            "resource": {
+                "aws_instance": {
+                    "web": { "provider": "aws.us_east_2", "ami": "ami-1" }
+                }
+            }
+        }))
+        .expect("parses");
+        let p = plan(&cfg, &empty_state()).expect("plans");
+        let web = &p.resource_changes[0];
+        let instance = web.meta.provider.as_ref().expect("declared");
+        assert_eq!(instance.name(), "aws");
+        assert_eq!(instance.alias(), Some("us_east_2"));
+        // …and it never reached the attributes handed to the provider.
+        assert_eq!(web.after, Some(json!({ "ami": "ami-1" })));
+    }
+
+    #[test]
+    fn the_plan_door_refuses_an_undeclared_aliased_instance() {
+        let cfg = Config::from_json(json!({
+            "provider": { "aws": { "region": "us-east-1" } },
+            "resource": {
+                "aws_instance": {
+                    "web": { "provider": "aws.us_east_2", "ami": "ami-1" }
+                }
+            }
+        }))
+        .expect("parses");
+        let err = plan(&cfg, &empty_state())
+            .expect_err("planning must stop rather than route this to the default account");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("aws.us_east_2") && msg.contains("account or region"),
+            "must name the instance and the consequence: {msg}"
+        );
     }
 }

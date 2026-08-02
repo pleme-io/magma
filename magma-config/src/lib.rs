@@ -18,7 +18,7 @@
 //!    map, resolves to a concrete value. The state map is built by
 //!    `magma-state`; the resolver is called during plan/apply.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use magma_types::{
     DependencyNode, ProviderInstance, ProviderInstanceError, ProviderReference, Ref, Resource,
@@ -38,16 +38,61 @@ pub enum ConfigError {
     UnknownReference(String),
     #[error("serialization: {0}")]
     Serde(#[from] serde_json::Error),
-    /// A `provider = …` meta-argument magma cannot honour. See
-    /// [`magma_types::ProviderInstanceError`] — chiefly an alias, which
-    /// magma refuses rather than silently resolving to the default
-    /// provider instance.
+    /// A `provider = …` meta-argument magma cannot read. See
+    /// [`magma_types::ProviderInstanceError`] — a malformed reference,
+    /// not a valid one magma declines to honour.
     #[error("resource `{address}`: {source}")]
     ProviderMeta {
         address: String,
         #[source]
         source: ProviderInstanceError,
     },
+    /// A resource names a provider instance this configuration declares
+    /// no block for.
+    ///
+    /// **This replaces the blanket refusal of every alias, and it is the
+    /// gate that lets the rest be honoured.** An alias exists precisely
+    /// to name a NON-default account or region; resolving an undeclared
+    /// one to the default instance is the original defect — real
+    /// infrastructure in the wrong account, reported as success. The
+    /// default instance is exempt: a resource declaring `provider =
+    /// "aws"` with no `provider "aws" {}` block is what almost every
+    /// config in the field looks like, and terraform reads it as "the
+    /// default instance, configured from the environment".
+    #[error(
+        "resource `{address}`: `provider = \"{instance}\"` names an aliased provider instance \
+         this configuration does not declare (declared: {declared}). An alias exists to name a \
+         DIFFERENT account or region than the default, so resolving it to the default instance \
+         would apply this resource somewhere other than where it says. Declare \
+         `provider \"{name}\" {{ alias = \"{alias}\" … }}` or drop the alias."
+    )]
+    UndeclaredProviderInstance {
+        address: String,
+        instance: String,
+        name: String,
+        alias: String,
+        declared: String,
+    },
+    /// A `provider` entry in the Terraform JSON container was not shaped
+    /// the way Terraform defines it.
+    #[error("provider `{name}`: {detail}")]
+    MalformedProviderBlock { name: String, detail: String },
+    /// A `provider` container key is not a usable provider local name.
+    #[error("provider block `{name}`: {source}")]
+    ProviderBlockName {
+        name: String,
+        #[source]
+        source: ProviderInstanceError,
+    },
+    /// Two `provider` blocks declare one instance. In a `HashMap`-keyed
+    /// container the second silently replaced the first; here it is
+    /// refused, because which of the two configures the provider would
+    /// otherwise be decided by iteration order.
+    #[error(
+        "duplicate provider instance `{instance}`: two provider blocks declare it, and only \
+         one can configure the provider"
+    )]
+    DuplicateProviderInstance { instance: String },
     /// A meta-argument magma recognises but does not implement.
     /// Refused, never ignored — see [`split_resource_body`].
     #[error(
@@ -116,8 +161,25 @@ pub enum ConfigError {
 pub struct Config {
     #[serde(default)]
     pub terraform: TerraformBlock,
-    #[serde(default, rename = "provider")]
-    pub providers: HashMap<String, ProviderConfig>,
+    /// The declared provider INSTANCES, keyed by typed
+    /// [`ProviderInstance`] — `(name, alias)`, never a flattened
+    /// `"aws.us_east_2"` string.
+    ///
+    /// **This key is the root of alias support.** A `HashMap<String, _>`
+    /// keyed by bare provider name structurally cannot hold two blocks
+    /// for one provider, so a multi-region or multi-account estate could
+    /// not be *expressed*, let alone applied — which is why an aliased
+    /// `provider = …` meta-argument was refused at the boundary rather
+    /// than honoured. The key had to change before anything downstream
+    /// could.
+    ///
+    /// The Terraform JSON container is unchanged in both directions —
+    /// see [`provider_blocks`] for the two shapes (`{aws: {…}}` for a
+    /// provider with one instance, `{aws: [{…}, {alias: …, …}]}` for one
+    /// with several) and for why a config that declares no alias
+    /// serializes byte-identically to what the `HashMap` emitted.
+    #[serde(default, rename = "provider", with = "provider_blocks")]
+    pub providers: BTreeMap<ProviderInstance, ProviderConfig>,
     /// `resource: { aws_vpc: { foo: { ... } } }`
     #[serde(default, rename = "resource")]
     pub resources: HashMap<String, HashMap<String, serde_json::Value>>,
@@ -171,10 +233,189 @@ pub struct RequiredProvider {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderConfig {
     #[serde(flatten)]
     pub fields: HashMap<String, serde_json::Value>,
+}
+
+impl ProviderConfig {
+    /// The provider attributes of one `provider` block — everything
+    /// except [`provider_blocks::ALIAS_KEY`], which names the instance
+    /// rather than configuring it.
+    #[must_use]
+    fn from_fields(fields: serde_json::Map<String, serde_json::Value>) -> Self {
+        Self {
+            fields: fields.into_iter().collect(),
+        }
+    }
+}
+
+/// Terraform JSON's `provider` container ⇄ a map keyed by typed
+/// [`ProviderInstance`].
+///
+/// Terraform writes a provider's instances one of two ways, and which
+/// one is not a semantic difference — it is only whether there is more
+/// than one block to hold:
+///
+/// ```json
+/// "provider": { "aws": { "region": "us-east-1" } }
+/// "provider": { "aws": [ { "region": "us-east-1" },
+///                        { "alias": "us_east_2", "region": "us-east-2" } ] }
+/// ```
+///
+/// **Byte-identity for every current consumer.** Each consumer authors
+/// JSON today, and none of them can declare a second instance — the
+/// `HashMap<String, ProviderConfig>` this replaces had no slot for one.
+/// So every config in the field has exactly one instance per provider,
+/// and this module emits the OBJECT form for exactly that case: the same
+/// bytes, key for key. The list form appears only once a config declares
+/// something the old type could not represent at all.
+///
+/// `alias` is lifted out of the block because it is not a provider
+/// attribute — it is the block's identity. Handing it to
+/// `ConfigureProvider` alongside `region` would make it drift the same
+/// way the `provider` meta-argument did before `2e418ca`. It is written
+/// back on serialize, so the round trip is lossless.
+mod provider_blocks {
+    use std::collections::BTreeMap;
+
+    use magma_types::ProviderInstance;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser};
+
+    use super::{ConfigError, ProviderConfig};
+
+    /// The one key inside a `provider` block that names the instance
+    /// instead of configuring it.
+    pub(super) const ALIAS_KEY: &str = "alias";
+
+    type Blocks = BTreeMap<ProviderInstance, ProviderConfig>;
+
+    pub(super) fn serialize<S: Serializer>(map: &Blocks, s: S) -> Result<S::Ok, S::Error> {
+        // Group by local name. The source map is a `BTreeMap` keyed by
+        // `(name, alias)` with `None` ordering first, so each group is
+        // already default-instance-first.
+        let mut by_name: BTreeMap<&str, Vec<serde_json::Value>> = BTreeMap::new();
+        for (instance, config) in map {
+            by_name
+                .entry(instance.name())
+                .or_default()
+                .push(block_value(instance, config).map_err(ser::Error::custom)?);
+        }
+
+        let mut out = serde_json::Map::with_capacity(by_name.len());
+        for (name, mut blocks) in by_name {
+            // ONE instance ⇒ the object form. This is the branch every
+            // config in the field takes, and it is what makes the
+            // serialized container byte-identical to the pre-alias one.
+            let value = if blocks.len() == 1 {
+                blocks.remove(0)
+            } else {
+                serde_json::Value::Array(blocks)
+            };
+            out.insert(name.to_string(), value);
+        }
+        serde_json::Value::Object(out).serialize(s)
+    }
+
+    /// One `provider` block as JSON: its attributes, plus the `alias` key
+    /// when the instance has one. Every value is constructed, never
+    /// `format!`ed (★★ TYPED EMISSION).
+    fn block_value(
+        instance: &ProviderInstance,
+        config: &ProviderConfig,
+    ) -> Result<serde_json::Value, ConfigError> {
+        let mut block = match serde_json::to_value(config)? {
+            serde_json::Value::Object(o) => o,
+            other => {
+                return Err(ConfigError::Malformed(format!(
+                    "provider `{instance}` config serialized as {}, not an object",
+                    super::kind_of(&other),
+                )));
+            }
+        };
+        if let Some(alias) = instance.alias() {
+            block.insert(
+                ALIAS_KEY.to_string(),
+                serde_json::Value::String(alias.to_string()),
+            );
+        }
+        Ok(serde_json::Value::Object(block))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Blocks, D::Error> {
+        let raw = BTreeMap::<String, serde_json::Value>::deserialize(d)?;
+        let mut out = Blocks::new();
+        for (name, value) in raw {
+            let blocks = match value {
+                serde_json::Value::Object(o) => vec![o],
+                serde_json::Value::Array(items) => items
+                    .into_iter()
+                    .map(|item| match item {
+                        serde_json::Value::Object(o) => Ok(o),
+                        other => Err(ConfigError::MalformedProviderBlock {
+                            name: name.clone(),
+                            detail: {
+                                let mut s =
+                                    String::from("a provider block must be an object, found ");
+                                s.push_str(super::kind_of(&other));
+                                s
+                            },
+                        }),
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(de::Error::custom)?,
+                other => {
+                    return Err(de::Error::custom(ConfigError::MalformedProviderBlock {
+                        name,
+                        detail: {
+                            let mut s = String::from(
+                                "a provider entry must be one block object or a list of them, \
+                                 found ",
+                            );
+                            s.push_str(super::kind_of(&other));
+                            s
+                        },
+                    }));
+                }
+            };
+            for mut block in blocks {
+                let alias = match block.remove(ALIAS_KEY) {
+                    None => None,
+                    Some(serde_json::Value::String(a)) => Some(a),
+                    Some(other) => {
+                        return Err(de::Error::custom(ConfigError::MalformedProviderBlock {
+                            name,
+                            detail: {
+                                let mut s = String::from("`alias` must be a string, found ");
+                                s.push_str(super::kind_of(&other));
+                                s
+                            },
+                        }));
+                    }
+                };
+                let instance = match alias {
+                    Some(a) => ProviderInstance::aliased(&name, a),
+                    None => ProviderInstance::default_instance(&name),
+                }
+                .map_err(|source| {
+                    de::Error::custom(ConfigError::ProviderBlockName {
+                        name: name.clone(),
+                        source,
+                    })
+                })?;
+                if out
+                    .insert(instance.clone(), ProviderConfig::from_fields(block))
+                    .is_some()
+                {
+                    return Err(de::Error::custom(ConfigError::DuplicateProviderInstance {
+                        instance: instance.to_string(),
+                    }));
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,8 +488,10 @@ impl Config {
     /// to arrive at it.
     ///
     /// Meta-arguments are split out per [`split_resource_body`], which
-    /// means the same refusals apply: an aliased `provider`, a `count`,
-    /// a `lifecycle` all stop here rather than being dropped.
+    /// means the same refusals apply: a `count`, a `lifecycle` — and, via
+    /// [`Config::check_provider_instance`], a `provider` naming an aliased
+    /// instance this configuration does not declare — all stop here rather
+    /// than being dropped.
     ///
     /// Order is deterministic — sorted by rendered address — because the
     /// underlying `HashMap` iteration order is not, and a dependency
@@ -263,6 +506,11 @@ impl Config {
                 Some(b) => split_resource_body(&label, &b)?,
                 None => (ResourceMeta::default(), serde_json::Value::Null),
             };
+            // A declared provider instance must be one this config
+            // actually configures. `split_resource_body` cannot check it
+            // — it sees one block, not the workspace — so the check lives
+            // here, where the whole config is in hand.
+            self.check_provider_instance(&label, &meta)?;
             let refs = self.typed_refs.get(&label).cloned().unwrap_or_default();
             out.push(
                 Resource::new(address, attrs)?
@@ -356,7 +604,12 @@ impl Config {
     }
 
     /// Provider references declared by the `terraform.required_providers`
-    /// block, joined with any `providers` configuration blocks.
+    /// block — one per required provider, always the DEFAULT instance.
+    ///
+    /// This answers "which providers must be installed", which is a
+    /// question about sources, not instances: every instance of `aws` is
+    /// served by one `hashicorp/aws` binary. For "which instances must be
+    /// configured", see [`Config::provider_instances`].
     pub fn provider_references(&self) -> Vec<ProviderReference> {
         self.terraform
             .required_providers
@@ -367,6 +620,62 @@ impl Config {
                 alias: None,
             })
             .collect()
+    }
+
+    /// Every provider instance this configuration declares a block for,
+    /// default-instance-first per provider.
+    pub fn provider_instances(&self) -> impl Iterator<Item = &ProviderInstance> + '_ {
+        self.providers.keys()
+    }
+
+    /// Does this configuration declare a `provider` block for `instance`?
+    #[must_use]
+    pub fn declares_provider_instance(&self, instance: &ProviderInstance) -> bool {
+        self.providers.contains_key(instance)
+    }
+
+    /// Refuse a resource whose `provider` meta-argument names an ALIASED
+    /// instance no `provider` block declares — see
+    /// [`ConfigError::UndeclaredProviderInstance`] for why that specific
+    /// case and not the default instance.
+    ///
+    /// Called from [`Config::resources_typed`] (the typed door) and from
+    /// `magma_plan::plan` (the JSON door), because those are the two ways
+    /// a declared provider reaches a `ResourceChange`, and a gate on only
+    /// one of them is a gate the other walks around.
+    pub fn check_provider_instance(
+        &self,
+        address: &str,
+        meta: &ResourceMeta,
+    ) -> Result<(), ConfigError> {
+        let Some(instance) = &meta.provider else {
+            return Ok(());
+        };
+        // The default instance needs no block: an absent `provider "aws"
+        // {}` means "configured from the environment", which is what
+        // terraform does and what every magma config in the field relies
+        // on.
+        let Some(alias) = instance.alias() else {
+            return Ok(());
+        };
+        if self.declares_provider_instance(instance) {
+            return Ok(());
+        }
+        let mut declared = self
+            .providers
+            .keys()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        if declared.is_empty() {
+            declared.push("none".to_string());
+        }
+        Err(ConfigError::UndeclaredProviderInstance {
+            address: address.to_string(),
+            instance: instance.to_string(),
+            name: instance.name().to_string(),
+            alias: alias.to_string(),
+            declared: declared.join(", "),
+        })
     }
 }
 
@@ -390,6 +699,11 @@ use magma_types::ResourceMeta as MetaCatalog;
 /// dropped on the floor with no error while still counting as
 /// config-declared drift. `provider = "aws.us_east_2"` therefore applied
 /// to the default account, and `depends_on` never became a graph edge.
+/// The alias is now carried as a typed component of
+/// [`magma_types::ProviderInstance`] and honoured on the apply path; what
+/// this function still cannot check is whether the workspace DECLARES that
+/// instance, because it sees one block and not the config — see
+/// [`Config::check_provider_instance`].
 ///
 /// The meta-argument set is **closed**: every key in it is removed from
 /// the attributes here, so no meta-argument can reach a provider or a
@@ -574,9 +888,14 @@ fn meta_into_body(r: &Resource) -> Result<serde_json::Value, ConfigError> {
     };
     let mut body = attrs.clone();
     if let Some(p) = &r.meta.provider {
+        // `ProviderInstance`'s own `Display` — the ONE renderer of the
+        // `<name>[.<alias>]` form. Writing `p.name()` here dropped the
+        // alias on the way back out, so the round trip
+        // `from_resources(rs)?.resources_typed()? == rs` silently
+        // downgraded an aliased resource to its default instance.
         body.insert(
             "provider".to_string(),
-            serde_json::Value::String(p.name().to_string()),
+            serde_json::Value::String(p.to_string()),
         );
     }
     if !r.meta.depends_on.is_empty() {
@@ -1077,23 +1396,97 @@ mod tests {
     /// THE wrong-account defect. Until this split existed, this body
     /// produced attributes still containing `provider`, which the cty
     /// encoder dropped — and the resource was applied through the
-    /// default `aws` provider with no error at any layer.
+    /// default `aws` provider with no error at any layer. `2e418ca`
+    /// refused it; the alias is now READ, as its two typed components.
     #[test]
-    fn a_resource_pinned_to_an_aliased_provider_is_refused_not_silently_defaulted() {
-        let err = split_resource_body(
+    fn a_resource_pinned_to_an_aliased_provider_carries_the_alias_as_a_component() {
+        let (meta, attrs) = split_resource_body(
             "aws_instance.web",
             &json!({ "provider": "aws.us_east_2", "ami": "ami-123" }),
         )
-        .expect_err("magma cannot dial an aliased provider, so it must refuse");
+        .expect("an aliased provider reference is now read, not refused");
+        let p = meta.provider.as_ref().expect("a provider is declared");
+        assert_eq!(p.name(), "aws");
+        assert_eq!(p.alias(), Some("us_east_2"));
+        // …and it still never reaches the provider as an attribute.
+        assert_eq!(attrs, json!({ "ami": "ami-123" }));
+    }
+
+    /// The alias being READABLE is not the alias being HONOURABLE. A
+    /// resource pinned to an instance no `provider` block declares must
+    /// still be refused — resolving it to the default instance is the
+    /// original wrong-account defect, and "we parsed it" does not make
+    /// the account right.
+    #[test]
+    fn an_undeclared_aliased_instance_is_refused_rather_than_resolved_to_the_default() {
+        let config = Config::from_json(json!({
+            "provider": { "aws": { "region": "us-east-1" } },
+            "resource": {
+                "aws_instance": {
+                    "web": { "provider": "aws.us_east_2", "ami": "ami-123" }
+                }
+            }
+        }))
+        .expect("parses");
+        let err = config
+            .resources_typed()
+            .expect_err("an undeclared instance must not resolve");
         let msg = err.to_string();
         assert!(
-            msg.contains("aws_instance.web"),
-            "must name the resource: {msg}"
+            matches!(err, ConfigError::UndeclaredProviderInstance { .. }),
+            "must be the typed undeclared-instance refusal, got: {err}"
         );
         assert!(
-            matches!(err, ConfigError::ProviderMeta { .. }),
-            "must be the typed provider-meta refusal, got: {err}"
+            msg.contains("aws_instance.web") && msg.contains("aws.us_east_2"),
+            "must name the resource and the instance: {msg}"
         );
+        // The message has to say WHY, because the operator's next move
+        // depends on knowing magma would otherwise use a different
+        // account.
+        assert!(
+            msg.contains("account or region"),
+            "must name the consequence it prevents: {msg}"
+        );
+    }
+
+    /// The declared case — the whole point. A resource pinned to an
+    /// instance the config DOES declare lowers cleanly.
+    #[test]
+    fn a_declared_aliased_instance_lowers_to_a_typed_resource() {
+        let config = Config::from_json(json!({
+            "provider": {
+                "aws": [
+                    { "region": "us-east-1" },
+                    { "alias": "us_east_2", "region": "us-east-2" }
+                ]
+            },
+            "resource": {
+                "aws_instance": {
+                    "web": { "provider": "aws.us_east_2", "ami": "ami-123" }
+                }
+            }
+        }))
+        .expect("parses");
+        let typed = config.resources_typed().expect("lowers");
+        let p = typed[0].meta.provider.as_ref().expect("declared");
+        assert_eq!(p.to_string(), "aws.us_east_2");
+        assert!(config.declares_provider_instance(p));
+    }
+
+    /// A resource declaring the DEFAULT instance needs no block — that is
+    /// what nearly every config in the field looks like, and terraform
+    /// reads an absent block as "configured from the environment".
+    #[test]
+    fn the_default_instance_needs_no_declared_provider_block() {
+        let config = Config::from_json(json!({
+            "resource": {
+                "aws_instance": { "web": { "provider": "aws", "ami": "ami-123" } }
+            }
+        }))
+        .expect("parses");
+        config
+            .resources_typed()
+            .expect("the default instance is always available");
     }
 
     #[test]
@@ -1202,6 +1595,139 @@ mod tests {
         assert_eq!(addrs.len(), 1);
         assert_eq!(addrs[0].type_id.0, "aws_vpc");
         assert_eq!(addrs[0].name, "main");
+    }
+
+    // ── The provider container: byte-identity + the new capacity ───
+    //
+    // `Config::providers` changed key type from `String` to the typed
+    // `ProviderInstance`, which is a change to the ONE map every current
+    // consumer's rendered JSON flows through. Every consumer authors
+    // JSON, so the proof that matters is the container's own bytes: read
+    // a real-shaped config in, serialize it back, and pin that the
+    // `provider` object is the SAME OBJECT it went in as.
+
+    /// The `provider` slot of a serialized `Config` — the ONE boundary
+    /// every consumer crosses. Serializing the map field on its own
+    /// bypasses the container encoding and is not what any consumer does.
+    fn provider_container(cfg: &Config) -> serde_json::Value {
+        serde_json::to_value(cfg).expect("a Config serializes")["provider"].clone()
+    }
+
+    /// The unaliased case — every config in the field, since the
+    /// `HashMap<String, _>` this replaces could not represent any other.
+    #[test]
+    fn the_provider_container_serializes_byte_identically_for_an_unaliased_config() {
+        let raw = json!({
+            "provider": {
+                "aws":        { "region": "us-east-1", "profile": "default" },
+                "cloudflare": { "api_token": "t" },
+                "github":     {}
+            }
+        });
+        let cfg = Config::from_json(raw.clone()).expect("parses");
+        assert_eq!(cfg.providers.len(), 3);
+        assert_eq!(
+            provider_container(&cfg),
+            raw["provider"],
+            "an unaliased provider container must round-trip to the same object, key for key"
+        );
+    }
+
+    /// …and the whole `Config`, not just the field: a consumer round-trips
+    /// the document, so the `provider` slot inside it must be untouched too.
+    #[test]
+    fn a_whole_config_round_trips_with_its_provider_container_unchanged() {
+        let raw = json!({
+            "provider": { "aws": { "region": "us-east-1" } },
+            "resource": { "aws_vpc": { "main": { "cidr_block": "10.0.0.0/16" } } },
+            "terraform": { "required_providers": { "aws": { "source": "hashicorp/aws" } } }
+        });
+        let cfg = Config::from_json(raw.clone()).expect("parses");
+        let back = serde_json::to_value(&cfg).expect("serializes");
+        assert_eq!(back["provider"], raw["provider"]);
+        assert_eq!(back["resource"], raw["resource"]);
+    }
+
+    /// The commonest shape of all: no `provider` block anywhere. It must
+    /// still serialize to the empty object the `HashMap` emitted, or
+    /// every consumer that round-trips a document sees a changed field.
+    #[test]
+    fn a_config_with_no_provider_block_still_serializes_an_empty_container() {
+        let cfg = Config::from_json(json!({
+            "resource": { "aws_vpc": { "main": { "cidr_block": "10.0.0.0/16" } } }
+        }))
+        .expect("parses");
+        assert!(cfg.providers.is_empty());
+        assert_eq!(provider_container(&cfg), json!({}));
+    }
+
+    /// An `alias` key written into a single block is Terraform's own
+    /// one-aliased-instance shape. It round-trips as the object form —
+    /// still byte-identical, because there is still only one block.
+    #[test]
+    fn one_aliased_block_round_trips_as_the_object_form() {
+        let raw = json!({
+            "provider": { "aws": { "alias": "us_east_2", "region": "us-east-2" } }
+        });
+        let cfg = Config::from_json(raw.clone()).expect("parses");
+        let only = cfg.providers.keys().next().expect("one instance");
+        assert_eq!(only.name(), "aws");
+        assert_eq!(only.alias(), Some("us_east_2"));
+        assert_eq!(provider_container(&cfg), raw["provider"]);
+    }
+
+    /// **The capacity that did not exist.** Two blocks for one provider
+    /// — the shape a `HashMap<String, ProviderConfig>` structurally could
+    /// not hold, and therefore the reason a multi-region estate could not
+    /// be expressed at all.
+    #[test]
+    fn two_instances_of_one_provider_are_held_and_round_trip_as_a_list() {
+        let raw = json!({
+            "provider": {
+                "aws": [
+                    { "region": "us-east-1" },
+                    { "alias": "us_east_2", "region": "us-east-2" }
+                ]
+            }
+        });
+        let cfg = Config::from_json(raw.clone()).expect("parses");
+        assert_eq!(cfg.providers.len(), 2);
+        assert_eq!(
+            cfg.provider_instances()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["aws", "aws.us_east_2"],
+            "the default instance sorts first"
+        );
+        // Each instance keeps its OWN configuration — that is the whole
+        // point, and the thing a single-slot map lost.
+        let default = ProviderInstance::default_instance("aws").unwrap();
+        let east2 = ProviderInstance::aliased("aws", "us_east_2").unwrap();
+        assert_eq!(cfg.providers[&default].fields["region"], json!("us-east-1"));
+        assert_eq!(cfg.providers[&east2].fields["region"], json!("us-east-2"));
+        assert_eq!(provider_container(&cfg), raw["provider"]);
+    }
+
+    /// Two blocks declaring ONE instance is refused. Under the old
+    /// `HashMap<String, _>` the second silently replaced the first, so
+    /// which block configured the provider was decided by nothing.
+    #[test]
+    fn two_blocks_for_one_instance_are_refused_rather_than_one_overwriting_the_other() {
+        let err = Config::from_json(json!({
+            "provider": { "aws": [ { "region": "a" }, { "region": "b" } ] }
+        }))
+        .expect_err("one instance cannot have two configurations");
+        assert!(
+            err.to_string().contains("duplicate provider instance"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_provider_entry_is_refused_with_its_name() {
+        let err = Config::from_json(json!({ "provider": { "aws": "us-east-1" } }))
+            .expect_err("a provider entry is a block, not a string");
+        assert!(err.to_string().contains("aws"), "got: {err}");
     }
 
     #[test]

@@ -255,7 +255,13 @@ fn apply_one(
             // see `insert_resource`'s doc for why 0 here is honest, not a
             // bug. The real value is stamped by `engine::apply_one`, which
             // DOES hold a live provider connection.
-            insert_resource(state, &change.address, attributes.clone(), 0);
+            insert_resource(
+                state,
+                &change.address,
+                attributes.clone(),
+                0,
+                provider_reference_for(&change.address, change.meta.provider.as_ref()),
+            );
             magma_config::insert_into_resolution_map(state_map, &change.address, &attributes);
             Ok(AppliedChange {
                 address: change.address.clone(),
@@ -282,7 +288,13 @@ fn apply_one(
             remove_resource(state, &change.address);
             // 0 — see the Create arm above: no provider is consulted on
             // this structural-only path.
-            insert_resource(state, &change.address, attributes.clone(), 0);
+            insert_resource(
+                state,
+                &change.address,
+                attributes.clone(),
+                0,
+                provider_reference_for(&change.address, change.meta.provider.as_ref()),
+            );
             magma_config::insert_into_resolution_map(state_map, &change.address, &attributes);
             Ok(AppliedChange {
                 address: change.address.clone(),
@@ -301,7 +313,13 @@ fn apply_one(
             let attributes = resolve_for_structural_apply(change.after.as_ref(), state_map);
             // 0 — see the Create arm above: no provider is consulted on
             // this structural-only path.
-            insert_resource(state, &change.address, attributes.clone(), 0);
+            insert_resource(
+                state,
+                &change.address,
+                attributes.clone(),
+                0,
+                provider_reference_for(&change.address, change.meta.provider.as_ref()),
+            );
             magma_config::insert_into_resolution_map(state_map, &change.address, &attributes);
             Ok(AppliedChange {
                 address: change.address.clone(),
@@ -395,12 +413,13 @@ pub(crate) fn insert_resource(
     address: &ResourceAddress,
     attributes: serde_json::Value,
     schema_version: u64,
+    provider: ProviderReference,
 ) {
     // Remove any existing then push the fresh instance.
     state.resources.retain(|r| r.address != *address);
     state.resources.push(StateResource {
         address: address.clone(),
-        provider: default_provider_for(address),
+        provider,
         instances: vec![StateInstance {
             index_key: None,
             schema_version,
@@ -415,6 +434,30 @@ pub(crate) fn insert_resource(
 
 pub(crate) fn remove_resource(state: &mut State, address: &ResourceAddress) {
     state.resources.retain(|r| r.address != *address);
+}
+
+/// The `ProviderReference` to RECORD in state for a resource, given the
+/// provider instance it was actually applied through.
+///
+/// **A state row that lies about its provider is the wrong-account defect
+/// with a delay fuse.** Refresh selects from `StateResource.provider`; a
+/// row written with `alias: None` for a resource that lives in
+/// `us-east-2` sends the next `ReadResource` to the default account,
+/// where the answer "it isn't there" is indistinguishable from real
+/// deletion drift. So the declared instance's `name` + `alias` are
+/// recorded verbatim, and only `source` stays inferred from the type
+/// prefix — that is the one component nothing on the apply path knows any
+/// better.
+pub(crate) fn provider_reference_for(
+    address: &ResourceAddress,
+    declared: Option<&magma_types::ProviderInstance>,
+) -> ProviderReference {
+    let mut reference = default_provider_for(address);
+    if let Some(instance) = declared {
+        reference.name = instance.name().to_string();
+        reference.alias = instance.alias().map(str::to_string);
+    }
+    reference
 }
 
 pub(crate) fn default_provider_for(address: &ResourceAddress) -> ProviderReference {

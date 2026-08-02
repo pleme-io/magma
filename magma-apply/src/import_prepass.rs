@@ -299,12 +299,12 @@ impl ImportEnvironment for PluginImportEnvironment {
 /// `ReadResource`'s confirming refresh.
 pub struct ConfiguredImportEnvironment<'a> {
     ctx: &'a crate::engine::ApplyContext,
-    /// Providers dialed so far, keyed by local name (`"github"`,
-    /// `"cloudflare"`, …). Guarded by a `tokio::sync::Mutex` because
+    /// Providers dialed so far, keyed by provider INSTANCE (the default
+    /// `github`, `cloudflare`, …). Guarded by a `tokio::sync::Mutex` because
     /// `ImportEnvironment::import_resource_state` takes `&self` (the
     /// trait's shared-reference contract) while
     /// `ProviderConn::import_resource_state` needs `&mut`.
-    live: tokio::sync::Mutex<HashMap<String, crate::engine::LiveProvider>>,
+    live: tokio::sync::Mutex<HashMap<magma_types::ProviderInstance, crate::engine::LiveProvider>>,
 }
 
 impl<'a> ConfiguredImportEnvironment<'a> {
@@ -327,17 +327,22 @@ impl ImportEnvironment for ConfiguredImportEnvironment<'_> {
         type_name: &str,
         id: &str,
     ) -> Result<Vec<ImportedInstance>, String> {
-        let provider_name = crate::engine::provider_local_name(type_name);
+        // Import directives address a resource by TYPE and id; nothing in
+        // that channel names a provider instance, so the prepass dials the
+        // DEFAULT one. Importing into an aliased instance is therefore not
+        // reachable from here: `ImportDirectives` has no field for it, so
+        // there is nothing to honour rather than something being dropped.
+        let provider_instance = crate::engine::default_instance_for_type(type_name);
         let mut live = self.live.lock().await;
-        if !live.contains_key(&provider_name) {
-            let lp = crate::engine::dial_configured_provider(self.ctx, &provider_name)
+        if !live.contains_key(&provider_instance) {
+            let lp = crate::engine::dial_configured_provider(self.ctx, &provider_instance)
                 .await
                 .map_err(|e| e.to_string())?;
-            live.insert(provider_name.clone(), lp);
+            live.insert(provider_instance.clone(), lp);
         }
         // Just inserted above (or already present) — infallible get.
         let lp = live
-            .get_mut(&provider_name)
+            .get_mut(&provider_instance)
             .expect("provider just dialed + inserted");
 
         // Drive the SHARED two-step adoption primitive — `ImportResourceState`

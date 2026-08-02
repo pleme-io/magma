@@ -25,8 +25,8 @@ use magma_graph::ResourceGraph;
 use magma_plugin::provider::{ProviderConn, ProviderError, ProviderSchema, is_retryable};
 use magma_plugin::{Plugin, PluginSpec, ProviderCrash};
 use magma_types::{
-    Action, Plan, ResourceAddress, ResourceChange, ResourceKind, State, StateInstance,
-    StateResource,
+    Action, Plan, ProviderInstance, ResourceAddress, ResourceChange, ResourceKind, State,
+    StateInstance, StateResource,
 };
 use samba::LeakyBucket;
 
@@ -115,6 +115,32 @@ pub enum EngineError {
     NoDataSourceSchema(String, String),
     #[error("cty encode/decode: {0}")]
     Cty(String),
+    /// An ALIASED provider instance was selected but nothing configured
+    /// it.
+    ///
+    /// **The empty-config fallback is right for the default instance and
+    /// catastrophic for an alias.** Dialing a provider with an empty
+    /// config object is what terraform does for an absent `provider`
+    /// block: the provider falls back to its own environment
+    /// credentials — the DEFAULT account. An alias exists precisely to
+    /// name a different account or region, so silently taking that
+    /// fallback would resurrect the original wrong-account defect at the
+    /// dial boundary, one layer below where `2e418ca` closed it.
+    ///
+    /// Tier: this is a `Result::Err` at dial time — **only mitigation**,
+    /// not impossibility. The config boundary's
+    /// `UndeclaredProviderInstance` catches the same mistake earlier, but
+    /// nothing structurally prevents an `ApplyContext` built by hand from
+    /// omitting an instance the plan needs, so the dial-time check is the
+    /// one that is always in the path.
+    #[error(
+        "provider instance {instance:?} is ALIASED but no configuration was supplied for it. \
+         Dialing it anyway would hand the provider an empty config, so it would fall back to \
+         its environment credentials — the DEFAULT account or region, which is exactly what \
+         the alias exists to say it is NOT. Supply the instance's configuration \
+         (`ApplyContext::with_provider_instance_config`) or drop the alias."
+    )]
+    UnconfiguredProviderAlias { instance: String },
 }
 
 /// Build a crash-aware [`EngineError`] from a failed provider RPC. ONE
@@ -191,9 +217,15 @@ fn provider_failure_signals(lp: &LiveProvider) -> (Option<ProviderCrash>, Option
 pub struct ApplyContext {
     pub workspace_dir: PathBuf,
     pub terraform_version: String,
-    /// provider local name (e.g. `"github"`) → `ConfigureProvider` config
-    /// as JSON (e.g. `{ "token": "…", "owner": "pleme-io" }`).
-    pub provider_configs: BTreeMap<String, serde_json::Value>,
+    /// Provider INSTANCE (e.g. the default `github`, or `aws.us_east_2`)
+    /// → `ConfigureProvider` config as JSON (e.g.
+    /// `{ "token": "…", "owner": "pleme-io" }`).
+    ///
+    /// Keyed by the typed [`ProviderInstance`], not a bare name: two
+    /// instances of one provider are two `Configure` calls with two
+    /// different credential sets, which is the entire reason an alias
+    /// exists. A `BTreeMap<String, _>` could hold only one of them.
+    pub provider_configs: BTreeMap<ProviderInstance, serde_json::Value>,
     /// Strict-pace governor for provider MUTATION RPCs (samba `LeakyBucket`).
     /// `apply_one` acquires one token before each non-NoOp resource's RPCs so
     /// a bulk apply (e.g. 50 GitHub creates) can't burst past the provider's
@@ -231,12 +263,74 @@ impl ApplyContext {
         }
     }
 
+    /// Configure the DEFAULT instance of a provider by its bare local
+    /// name — what a bare name has always meant, so every existing caller
+    /// keeps its exact behaviour.
+    ///
+    /// A malformed name (empty, or carrying a `.`) is dropped rather than
+    /// silently registered under a key nothing will ever look up; the
+    /// aliased form has its own constructor below precisely so an alias
+    /// is never smuggled through this one.
+    #[must_use]
     pub fn with_provider_config(
         mut self,
         name: impl Into<String>,
         config: serde_json::Value,
     ) -> Self {
-        self.provider_configs.insert(name.into(), config);
+        match ProviderInstance::default_instance(name) {
+            Ok(instance) => {
+                self.provider_configs.insert(instance, config);
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                "magma: ignoring a provider configuration whose name is not a bare local \
+                 provider name — use `with_provider_instance_config` for an aliased instance",
+            ),
+        }
+        self
+    }
+
+    /// Adopt every provider block the CONFIG declares.
+    ///
+    /// **This is what makes an aliased apply reachable from a config
+    /// alone.** Selection now honours `provider = "aws.us_east_2"`, but a
+    /// second instance is only useful if something supplies its
+    /// credentials, and nothing in magma read `Config::providers` on the
+    /// way to an `ApplyContext` — the caller assembled provider configs by
+    /// hand, one bare name at a time, which is a channel that structurally
+    /// could not carry an alias.
+    ///
+    /// Explicit rather than automatic, and later-wins over earlier calls,
+    /// so a caller that supplies credentials out of band (a secret store
+    /// rather than the rendered config) keeps doing exactly that: order
+    /// the calls so the authoritative one is last. An `ApplyContext` that
+    /// never calls this behaves precisely as it did before.
+    #[must_use]
+    pub fn with_config_providers(mut self, config: &magma_config::Config) -> Self {
+        for (instance, block) in &config.providers {
+            self.provider_configs.insert(
+                instance.clone(),
+                serde_json::Value::Object(
+                    block
+                        .fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                ),
+            );
+        }
+        self
+    }
+
+    /// Configure one named provider INSTANCE — the default instance or a
+    /// declared alias.
+    #[must_use]
+    pub fn with_provider_instance_config(
+        mut self,
+        instance: ProviderInstance,
+        config: serde_json::Value,
+    ) -> Self {
+        self.provider_configs.insert(instance, config);
         self
     }
 
@@ -295,8 +389,17 @@ pub struct LiveProvider {
 /// each re-implementing spawn/handshake/dial/configure.
 pub async fn dial_configured_provider(
     ctx: &ApplyContext,
-    name: &str,
+    instance: &ProviderInstance,
 ) -> Result<LiveProvider, EngineError> {
+    // Resolve the `Configure` payload FIRST, before spawning anything.
+    // It is a pure lookup, and doing it up front means an unconfigured
+    // alias reports the real problem instead of whatever the spawn
+    // happens to fail on — and is checkable without a provider binary.
+    let config_json = resolve_provider_config(ctx, instance)?;
+    // The BINARY is selected by the bare local name: every instance of a
+    // provider is served by the same plugin. What differs per instance is
+    // the `Configure` payload — which is exactly what an alias is.
+    let name = instance.name();
     let binary = magma_providers::locate_provider(&ctx.workspace_dir, name)
         .map_err(|e| EngineError::Locate(name.into(), e.to_string()))?;
     let mut plugin = Plugin::spawn(PluginSpec {
@@ -339,16 +442,6 @@ pub async fn dial_configured_provider(
         .await
         .map_err(|e| spawn_err("get_schema", e.to_string()))?;
 
-    // Configure: the provider-config-typed creds, or an empty object
-    // (→ a provider-config object with all attributes null, which is
-    // what terraform sends for an absent provider block; the provider
-    // falls back to its own env credentials). NOT a null object —
-    // providers expect a value of the config type, not nil.
-    let config_json = ctx
-        .provider_configs
-        .get(name)
-        .cloned()
-        .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
     let config_dv = DynamicValue::from_json(&config_json, &schema.provider_config)
         .map_err(|e| EngineError::Cty(e.to_string()))?;
     conn.configure(&config_dv, &ctx.terraform_version)
@@ -362,9 +455,40 @@ pub async fn dial_configured_provider(
     })
 }
 
+/// The `ConfigureProvider` payload for one provider instance.
+///
+/// The provider-config-typed creds, or an empty object (→ a
+/// provider-config object with all attributes null, which is what
+/// terraform sends for an absent provider block; the provider falls back
+/// to its own env credentials). NOT a null object — providers expect a
+/// value of the config type, not nil.
+///
+/// **That fallback is legitimate for the DEFAULT instance and wrong for
+/// an alias.** Falling back to the environment IS falling back to the
+/// default account, which is precisely what the alias exists to say it is
+/// not. See [`EngineError::UnconfiguredProviderAlias`].
+fn resolve_provider_config(
+    ctx: &ApplyContext,
+    instance: &ProviderInstance,
+) -> Result<serde_json::Value, EngineError> {
+    match ctx.provider_configs.get(instance) {
+        Some(c) => Ok(c.clone()),
+        None if instance.is_default() => Ok(serde_json::Value::Object(Default::default())),
+        None => Err(EngineError::UnconfiguredProviderAlias {
+            instance: instance.to_string(),
+        }),
+    }
+}
+
+/// The providers dialed for one apply, one per provider INSTANCE.
+///
+/// Keyed by [`ProviderInstance`], not by bare name: `aws` and
+/// `aws.us_east_2` are the same binary configured twice, and a
+/// name-keyed cache would hand the second resource the first one's
+/// connection — the wrong account, silently.
 struct Registry<'a> {
     ctx: &'a ApplyContext,
-    live: HashMap<String, LiveProvider>,
+    live: HashMap<ProviderInstance, LiveProvider>,
 }
 
 impl<'a> Registry<'a> {
@@ -375,26 +499,26 @@ impl<'a> Registry<'a> {
         }
     }
 
-    async fn get(&mut self, name: &str) -> Result<&mut LiveProvider, EngineError> {
-        if !self.live.contains_key(name) {
-            let lp = self.spawn(name).await?;
-            self.live.insert(name.to_string(), lp);
+    async fn get(&mut self, instance: &ProviderInstance) -> Result<&mut LiveProvider, EngineError> {
+        if !self.live.contains_key(instance) {
+            let lp = self.spawn(instance).await?;
+            self.live.insert(instance.clone(), lp);
         }
         // The provider is in the map (just inserted, or already present).
         // `ok_or_else` keeps this unwrap-free: the `None` arm is logically
         // unreachable but yields a typed error rather than a panic if that
         // invariant is ever broken (a provider on the apply path must never
         // panic magma).
-        self.live.get_mut(name).ok_or_else(|| {
+        self.live.get_mut(instance).ok_or_else(|| {
             EngineError::Spawn(
-                name.to_string(),
+                instance.to_string(),
                 "internal: provider missing from registry after insert".to_string(),
             )
         })
     }
 
-    async fn spawn(&self, name: &str) -> Result<LiveProvider, EngineError> {
-        dial_configured_provider(self.ctx, name).await
+    async fn spawn(&self, instance: &ProviderInstance) -> Result<LiveProvider, EngineError> {
+        dial_configured_provider(self.ctx, instance).await
     }
 }
 
@@ -1333,17 +1457,21 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
 
     for resource in std::mem::take(&mut state.resources) {
         let type_name = resource.address.type_id.0.clone();
-        if let Some(kept_alias) = aliased_state_provider(&resource) {
-            report.kept_on_error += resource.instances.len();
-            kept.push(kept_alias);
-            continue;
-        }
-        let provider_name = provider_local_name(&type_name);
+        // Select from the ROW's own provider reference, so an aliased
+        // resource is read back through the instance that holds it.
+        let provider_instance = match refresh_instance_for(ctx, &resource) {
+            Ok(i) => i,
+            Err(kept_row) => {
+                report.kept_on_error += resource.instances.len();
+                kept.push(kept_row);
+                continue;
+            }
+        };
 
         // Resolve the implied type + current schema version once (clone
         // so the schema borrow ends before the per-instance mutable RPC
         // borrows). Any failure here ⇒ keep the whole resource untouched.
-        let (implied, current_version) = match registry.get(&provider_name).await {
+        let (implied, current_version) = match registry.get(&provider_instance).await {
             Ok(lp) => match lp.schema.resource(&type_name) {
                 Some(t) => (t.clone(), lp.schema.resource_version(&type_name)),
                 None => {
@@ -1399,7 +1527,7 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
                 );
                 continue;
             }
-            let lp = match registry.get(&provider_name).await {
+            let lp = match registry.get(&provider_instance).await {
                 Ok(l) => l,
                 Err(_) => {
                     report.kept_on_error += 1;
@@ -1564,13 +1692,17 @@ pub async fn refresh_named(
         targeted += 1;
 
         let type_name = resource.address.type_id.0.clone();
-        if let Some(kept_alias) = aliased_state_provider(&resource) {
-            report.kept_on_error += resource.instances.len();
-            kept.push(kept_alias);
-            continue;
-        }
-        let provider_name = provider_local_name(&type_name);
-        let (implied, current_version) = match registry.get(&provider_name).await {
+        // Select from the ROW's own provider reference, so an aliased
+        // resource is read back through the instance that holds it.
+        let provider_instance = match refresh_instance_for(ctx, &resource) {
+            Ok(i) => i,
+            Err(kept_row) => {
+                report.kept_on_error += resource.instances.len();
+                kept.push(kept_row);
+                continue;
+            }
+        };
+        let (implied, current_version) = match registry.get(&provider_instance).await {
             Ok(lp) => match lp.schema.resource(&type_name) {
                 Some(t) => (t.clone(), lp.schema.resource_version(&type_name)),
                 None => {
@@ -1592,7 +1724,7 @@ pub async fn refresh_named(
             if let Some(p) = pacer.as_deref() {
                 let _ = p.acquire().await;
             }
-            let lp = match registry.get(&provider_name).await {
+            let lp = match registry.get(&provider_instance).await {
                 Ok(l) => l,
                 Err(_) => {
                     report.kept_on_error += 1;
@@ -2149,6 +2281,10 @@ pub(crate) enum StateOp {
         address: ResourceAddress,
         attrs: serde_json::Value,
         schema_version: u64,
+        /// The provider reference to RECORD — carrying the alias of the
+        /// instance this resource was actually applied through, so the
+        /// next refresh reads it back through the same account.
+        provider: magma_types::ProviderReference,
     },
     Remove {
         address: ResourceAddress,
@@ -2178,11 +2314,19 @@ pub(crate) struct NodeRecord {
 }
 
 impl NodeRecord {
-    fn insert(&mut self, address: &ResourceAddress, attrs: serde_json::Value, schema_version: u64) {
+    /// Record an insert for the node's OWN change.
+    ///
+    /// Takes the whole `ResourceChange`, not just its address, because
+    /// the state row must carry the provider instance the resource was
+    /// applied through — and the change is the only value that knows it.
+    /// Passing an address alone is how the alias got dropped on the way
+    /// into state.
+    fn insert(&mut self, change: &ResourceChange, attrs: serde_json::Value, schema_version: u64) {
         self.ops.push(StateOp::Insert {
-            address: address.clone(),
+            address: change.address.clone(),
             attrs,
             schema_version,
+            provider: crate::provider_reference_for(&change.address, change.meta.provider.as_ref()),
         });
     }
 
@@ -2203,7 +2347,14 @@ impl NodeRecord {
                     address,
                     attrs,
                     schema_version,
-                } => insert_resource(state, address, attrs.clone(), *schema_version),
+                    provider,
+                } => insert_resource(
+                    state,
+                    address,
+                    attrs.clone(),
+                    *schema_version,
+                    provider.clone(),
+                ),
                 StateOp::Remove { address } => remove_resource(state, address),
             }
         }
@@ -2267,8 +2418,13 @@ async fn apply_one_inner(
     }
 
     let type_name = change.address.type_id.0.clone();
-    let provider_name = provider_for_change(change);
-    let lp = reg.get(&provider_name).await?;
+    let provider_instance = provider_for_change(change);
+    // The diagnostic label names WHICH CONNECTION failed, so it renders
+    // the whole instance. For a default instance that is the bare name it
+    // has always been; for an alias it is `aws.us_east_2`, which is the
+    // only form that tells the reader which account the RPC went to.
+    let provider_name = provider_instance.to_string();
+    let lp = reg.get(&provider_instance).await?;
     // Clone the implied type so the immutable schema borrow ends before
     // the mutable conn RPC calls. The provider's CURRENT declared schema
     // version travels alongside it — every `insert_resource` call below
@@ -2301,7 +2457,7 @@ async fn apply_one_inner(
                 // be skipped into silence — a resource dropped from state
                 // while still alive in the cloud is an orphan nobody bills us
                 // for noticing.
-                record_partial_apply(rec, &change.address, &e, &implied, current_schema_version);
+                record_partial_apply(rec, change, &e, &implied, current_schema_version);
                 // RPC future has resolved → the mutable conn borrow is over;
                 // read the crash/close signals off the same `lp` and build a
                 // crash-aware error.
@@ -2428,13 +2584,7 @@ async fn apply_one_inner(
                     // PARTIAL APPLY comes first: the provider already told us
                     // exactly what it committed, so there is nothing to adopt
                     // and no reason to spend an import RPC guessing.
-                    if record_partial_apply(
-                        rec,
-                        &change.address,
-                        &e,
-                        &implied,
-                        current_schema_version,
-                    ) {
+                    if record_partial_apply(rec, change, &e, &implied, current_schema_version) {
                         let (crash, close) = provider_failure_signals(lp);
                         return Err(rpc_error(
                             &provider_name,
@@ -2489,7 +2639,7 @@ async fn apply_one_inner(
                         .await
                         {
                             Adoption::Adopted(attrs) => {
-                                rec.insert(&change.address, attrs.clone(), current_schema_version);
+                                rec.insert(change, attrs.clone(), current_schema_version);
                                 return Ok(AppliedChange {
                                     address: change.address.clone(),
                                     action: change.action,
@@ -2543,7 +2693,7 @@ async fn apply_one_inner(
             let new_attrs = new_dv
                 .to_json(&implied)
                 .map_err(|e| EngineError::Cty(e.to_string()))?;
-            rec.insert(&change.address, new_attrs.clone(), current_schema_version);
+            rec.insert(change, new_attrs.clone(), current_schema_version);
             Ok(AppliedChange {
                 address: change.address.clone(),
                 action: change.action,
@@ -2780,7 +2930,7 @@ pub(crate) fn is_unmanageable_phantom(attrs: &serde_json::Value) -> bool {
 
 fn record_partial_apply(
     rec: &mut NodeRecord,
-    address: &ResourceAddress,
+    change: &ResourceChange,
     err: &ProviderError,
     implied: &CtyType,
     schema_version: u64,
@@ -2788,6 +2938,7 @@ fn record_partial_apply(
     let ProviderError::PartiallyApplied { state, .. } = err else {
         return false;
     };
+    let address = &change.address;
     // A null new_state on a partial DELETE means the resource really is gone;
     // there is nothing to record and the absence is already correct.
     match state.to_json(implied) {
@@ -2827,7 +2978,7 @@ fn record_partial_apply(
                 );
                 return false;
             }
-            rec.insert(address, attrs, schema_version);
+            rec.insert(change, attrs, schema_version);
             tracing::error!(
                 address = %address,
                 "magma apply: provider FAILED but COMMITTED this resource; \
@@ -2943,7 +3094,7 @@ async fn apply_replace(
         Ok(dv) => dv,
         Err(e) => {
             let msg = e.to_string();
-            record_partial_apply(rec, &change.address, &e, implied, current_schema_version);
+            record_partial_apply(rec, change, &e, implied, current_schema_version);
             // ADOPT-ON-CONFLICT, same as the plain create path. This half is a
             // create, so "it already exists" is answerable by adopting it —
             // and until this arm existed it was NOT, which is the whole reason
@@ -2958,7 +3109,7 @@ async fn apply_replace(
             // recorded the removal; adopting re-inserts, correcting it.
             match try_adopt_on_conflict(change, type_name, lp, pacer, adoption, &msg).await {
                 Adoption::Adopted(attrs) => {
-                    rec.insert(&change.address, attrs.clone(), current_schema_version);
+                    rec.insert(change, attrs.clone(), current_schema_version);
                     return Ok(AppliedChange {
                         address: change.address.clone(),
                         action: Action::DeleteThenCreate,
@@ -2998,7 +3149,7 @@ async fn apply_replace(
     let new_attrs = new_dv
         .to_json(implied)
         .map_err(|e| EngineError::Cty(e.to_string()))?;
-    rec.insert(&change.address, new_attrs.clone(), current_schema_version);
+    rec.insert(change, new_attrs.clone(), current_schema_version);
     Ok(AppliedChange {
         address: change.address.clone(),
         // Record what ACTUALLY happened (destroy + create), not
@@ -3011,17 +3162,28 @@ async fn apply_replace(
     })
 }
 
-/// The provider's local name from a resource type id: the prefix before
-/// the first `_` (`github_repository` → `github`, `aws_s3_bucket` →
-/// `aws`). Matches `terraform-provider-<name>`.
 /// The provider's local name (the `provider "<name>" {}` block name a
 /// rendered config would use) inferred from a resource type's prefix —
-/// `"github_repository"` → `"github"`. `pub(crate)` so
-/// [`crate::import_prepass::ConfiguredImportEnvironment`] can select
-/// the SAME provider a plan/apply RPC for this type would dial, without
-/// a second copy of this trivial-but-load-bearing mapping.
+/// the part before the first `_`, matching `terraform-provider-<name>`.
+///
+/// **Labelling only.** Provider SELECTION goes through
+/// [`default_instance_for_type`] / [`provider_for_change`], which yield a
+/// typed [`ProviderInstance`]; this survives for the diagnostics that
+/// want the bare plugin name rather than an instance.
 pub(crate) fn provider_local_name(type_id: &str) -> String {
     type_id.split('_').next().unwrap_or(type_id).to_string()
+}
+
+/// The provider INSTANCE a resource type implies with nothing declared —
+/// always the DEFAULT instance of the type's prefix provider, which is
+/// the only honest inference: nothing about a type name says which
+/// account its resources belong in.
+///
+/// `pub(crate)` so [`crate::import_prepass::ConfiguredImportEnvironment`]
+/// selects the SAME instance a plan/apply RPC for this type would dial,
+/// without a second copy of this trivial-but-load-bearing mapping.
+pub(crate) fn default_instance_for_type(type_id: &str) -> ProviderInstance {
+    ProviderInstance::implied_by_type(type_id)
 }
 
 /// The provider local name to dial for one planned change — the
@@ -3037,52 +3199,76 @@ pub(crate) fn provider_local_name(type_id: &str) -> String {
 /// no error at any layer, because the meta-argument had already been
 /// dropped at the cty boundary before selection ever ran.
 ///
-/// The alias half of that is refused at the config boundary
-/// (`magma_config::split_resource_body`), so a `ResourceChange` reaching
-/// here can only carry a bare provider name — see
-/// [`magma_types::ProviderInstance`] for what that does and does not
-/// prove. What this function adds is the other half: when a resource
-/// names its provider explicitly, that name is USED. The prefix rule
-/// stays as the fallback for the (overwhelmingly common) resource that
-/// declares nothing, and remains a guess — `google_*` resources are
-/// served by the `google` provider, but the mapping is convention, not
-/// contract.
-pub(crate) fn provider_for_change(change: &ResourceChange) -> String {
+/// The alias half is no longer refused at the config boundary: a
+/// `ResourceChange` reaching here carries the full typed
+/// [`ProviderInstance`], alias and all, and this function returns it
+/// unchanged so the registry dials THAT instance. The prefix rule stays
+/// as the fallback for the (overwhelmingly common) resource that declares
+/// nothing, and remains a guess — `google_*` resources are served by the
+/// `google` provider, but the mapping is convention, not contract. It
+/// always yields a DEFAULT instance, which is the only honest inference:
+/// nothing about a type name says which account it belongs in.
+pub(crate) fn provider_for_change(change: &ResourceChange) -> ProviderInstance {
     match &change.meta.provider {
-        Some(p) => p.name().to_string(),
-        None => provider_local_name(&change.address.type_id.0),
+        Some(p) => p.clone(),
+        None => default_instance_for_type(&change.address.type_id.0),
     }
 }
 
-/// A state resource magma must NOT refresh, because the state file says
-/// it belongs to an aliased provider instance that magma cannot dial.
+/// The provider instance to READ a state row through — from the row's
+/// own `StateResource.provider`, not from its type prefix.
 ///
-/// The refresh paths select their provider from the resource TYPE PREFIX,
-/// never from `StateResource.provider` — so a state row adopted from
-/// tofu/terraform reading
+/// The refresh paths used to select from the TYPE PREFIX and nothing
+/// else, so a state row reading
 /// `provider["registry.opentofu.org/hashicorp/aws"].us_east_2` was read
 /// back through the DEFAULT `aws` provider. That queries a different
 /// account or region than the one holding the resource, and the answer
 /// ("it isn't there") is indistinguishable from real deletion drift.
+/// `2e418ca` made that a blanket refusal of every aliased row.
 ///
-/// Refusing is the conservative half: the resource is kept verbatim and
-/// counted into `kept_on_error`, so the cycle's `Observation` reports
-/// the reduced coverage instead of presenting a wrong read as fact.
-/// Selection itself is unchanged for the alias-free case, which is
-/// every row magma writes — `crate::default_provider_for` always emits
-/// `alias: None`.
-fn aliased_state_provider(resource: &StateResource) -> Option<StateResource> {
-    let alias = resource.provider.alias.as_deref()?;
+/// Now the row's declared instance is dialed when the `ApplyContext`
+/// configures it — the whole point of alias support. The refusal
+/// survives for the case that is still genuinely unreadable: an aliased
+/// row with no configuration, where dialing would fall back to the
+/// environment (the default account) and produce exactly the wrong read
+/// the refusal exists to prevent. Such a row is kept verbatim and counted
+/// into `kept_on_error`, so the cycle's `Observation` reports the reduced
+/// coverage instead of presenting a wrong read as fact.
+///
+/// `Err(kept)` carries the row back unchanged for the caller to keep.
+fn refresh_instance_for(
+    ctx: &ApplyContext,
+    resource: &StateResource,
+) -> Result<ProviderInstance, StateResource> {
+    let Some(alias) = resource.provider.alias.as_deref() else {
+        // The alias-free case — every row magma wrote before this landed,
+        // and every row whose resource declares no `provider`. Unchanged:
+        // the type prefix, the default instance.
+        return Ok(default_instance_for_type(&resource.address.type_id.0));
+    };
+    let Ok(instance) = ProviderInstance::aliased(&resource.provider.name, alias) else {
+        tracing::warn!(
+            address = %resource.address,
+            provider = %resource.provider.name,
+            alias,
+            "magma: refusing to refresh a resource whose state row names a malformed provider \
+             instance. Kept verbatim and counted as unrefreshed.",
+        );
+        return Err(resource.clone());
+    };
+    if ctx.provider_configs.contains_key(&instance) {
+        return Ok(instance);
+    }
     tracing::warn!(
         address = %resource.address,
         provider = %resource.provider.name,
         alias,
-        "magma: refusing to refresh a resource bound to an aliased provider instance — \
-         magma dials only the default instance of a provider, so reading this row would \
-         query the wrong account or region and could report a live resource as deleted. \
-         Kept verbatim and counted as unrefreshed.",
+        "magma: refusing to refresh a resource bound to an aliased provider instance nothing \
+         configured — dialing it would fall back to the environment, i.e. the DEFAULT account \
+         or region, so the read would query the wrong place and could report a live resource \
+         as deleted. Kept verbatim and counted as unrefreshed.",
     );
-    Some(resource.clone())
+    Err(resource.clone())
 }
 
 /// Build the apply-ordering graph for a set of planned changes.
@@ -3188,8 +3374,13 @@ async fn read_data_source_one(
         let _ = p.acquire().await;
     }
     let type_name = change.address.type_id.0.clone();
-    let provider_name = provider_for_change(change);
-    let lp = reg.get(&provider_name).await?;
+    let provider_instance = provider_for_change(change);
+    // The diagnostic label names WHICH CONNECTION failed, so it renders
+    // the whole instance. For a default instance that is the bare name it
+    // has always been; for an alias it is `aws.us_east_2`, which is the
+    // only form that tells the reader which account the RPC went to.
+    let provider_name = provider_instance.to_string();
+    let lp = reg.get(&provider_instance).await?;
     let implied = lp
         .schema
         .data_source(&type_name)
@@ -4384,7 +4575,7 @@ mod tests {
         };
         let c = change_with_meta("github_repository", "izumi", meta);
         assert_eq!(
-            provider_for_change(&c),
+            provider_for_change(&c).to_string(),
             "githubenterprise",
             "the DECLARED provider must win over the type-prefix guess",
         );
@@ -4393,7 +4584,254 @@ mod tests {
     #[test]
     fn a_resource_that_names_no_provider_still_falls_back_to_its_type_prefix() {
         let c = change_with_meta("github_repository", "izumi", Default::default());
-        assert_eq!(provider_for_change(&c), "github");
+        let selected = provider_for_change(&c);
+        assert_eq!(selected.name(), "github");
+        assert!(
+            selected.is_default(),
+            "the type-prefix guess can only ever name a DEFAULT instance",
+        );
+    }
+
+    // ── Aliased provider instances ─────────────────────────────────
+    //
+    // Selection used to be `type_id.split('_').next()` and nothing else,
+    // so a resource declaring `provider = "aws.us_east_2"` was applied
+    // through the DEFAULT `aws` provider. `2e418ca` made the declaration
+    // a refusal; these pin that it is now HONOURED — end to end, from the
+    // change through the registry key to the state row refresh reads back.
+
+    fn aliased(name: &str, alias: &str) -> ProviderInstance {
+        ProviderInstance::aliased(name, alias).expect("a well-formed instance")
+    }
+
+    fn aliased_change(ty: &str, name: &str, instance: ProviderInstance) -> ResourceChange {
+        change_with_meta(
+            ty,
+            name,
+            magma_types::ResourceMeta {
+                provider: Some(instance),
+                depends_on: vec![],
+            },
+        )
+    }
+
+    #[test]
+    fn an_aliased_declaration_selects_the_aliased_instance_not_the_default() {
+        let c = aliased_change("aws_instance", "web", aliased("aws", "us_east_2"));
+        let selected = provider_for_change(&c);
+        assert_eq!(selected, aliased("aws", "us_east_2"));
+        assert_ne!(
+            selected,
+            ProviderInstance::default_instance("aws").unwrap(),
+            "the whole defect was that these two were the same value",
+        );
+    }
+
+    /// The registry key. Two instances of one provider must occupy two
+    /// slots — a name-keyed cache would hand the second resource the
+    /// first one's connection, which is the wrong account with no error.
+    #[test]
+    fn two_instances_of_one_provider_are_two_registry_keys() {
+        let default = ProviderInstance::default_instance("aws").unwrap();
+        let east2 = aliased("aws", "us_east_2");
+        let mut keys = std::collections::HashSet::new();
+        keys.insert(default.clone());
+        keys.insert(east2.clone());
+        assert_eq!(keys.len(), 2);
+        assert_eq!(
+            default.name(),
+            east2.name(),
+            "…while still naming the same provider BINARY",
+        );
+    }
+
+    /// **The gate that makes honouring an alias safe.** An empty config
+    /// makes a provider fall back to its environment credentials — the
+    /// default account. For the default instance that is correct and is
+    /// what terraform does; for an alias it is the original wrong-account
+    /// defect one layer down, so it is refused instead.
+    #[test]
+    fn an_unconfigured_aliased_instance_is_refused_rather_than_dialed_with_an_empty_config() {
+        let ctx = ApplyContext::new(PathBuf::from("/ws"));
+        let err = resolve_provider_config(&ctx, &aliased("aws", "us_east_2"))
+            .expect_err("an unconfigured alias must not fall back to the environment");
+        assert!(
+            matches!(err, EngineError::UnconfiguredProviderAlias { .. }),
+            "must be the typed refusal, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("DEFAULT account or region"),
+            "must name the consequence it prevents: {err}"
+        );
+    }
+
+    #[test]
+    fn the_default_instance_still_dials_with_an_empty_config() {
+        let ctx = ApplyContext::new(PathBuf::from("/ws"));
+        let cfg =
+            resolve_provider_config(&ctx, &ProviderInstance::default_instance("aws").unwrap())
+                .expect("an absent provider block means environment credentials, as before");
+        assert_eq!(cfg, serde_json::json!({}));
+    }
+
+    #[test]
+    fn a_configured_aliased_instance_dials_with_its_own_configuration() {
+        let east2 = aliased("aws", "us_east_2");
+        let ctx = ApplyContext::new(PathBuf::from("/ws"))
+            .with_provider_config("aws", serde_json::json!({ "region": "us-east-1" }))
+            .with_provider_instance_config(
+                east2.clone(),
+                serde_json::json!({ "region": "us-east-2" }),
+            );
+        assert_eq!(
+            resolve_provider_config(&ctx, &east2).unwrap(),
+            serde_json::json!({ "region": "us-east-2" }),
+        );
+        // …and the default instance keeps its own, distinct, config. This
+        // is what a single-slot map could not hold.
+        assert_eq!(
+            resolve_provider_config(&ctx, &ProviderInstance::default_instance("aws").unwrap())
+                .unwrap(),
+            serde_json::json!({ "region": "us-east-1" }),
+        );
+    }
+
+    /// **A state row that lies about its provider is the same defect with
+    /// a delay fuse.** Refresh selects from `StateResource.provider`, so a
+    /// row written with `alias: None` for a resource that lives in
+    /// `us-east-2` sends the next `ReadResource` to the default account,
+    /// where "it isn't there" is indistinguishable from deletion drift.
+    #[test]
+    fn an_aliased_apply_records_the_alias_in_the_state_row() {
+        let change = aliased_change("aws_instance", "web", aliased("aws", "us_east_2"));
+        let mut rec = NodeRecord::default();
+        rec.insert(&change, serde_json::json!({ "id": "i-1" }), 0);
+        let mut state = empty_state();
+        rec.commit(&mut state);
+
+        let row = state
+            .resources
+            .iter()
+            .find(|r| r.address == change.address)
+            .expect("recorded");
+        assert_eq!(row.provider.name, "aws");
+        assert_eq!(row.provider.alias.as_deref(), Some("us_east_2"));
+        // `source` stays inferred from the type prefix — the one component
+        // nothing on the apply path knows any better.
+        assert_eq!(row.provider.source, "hashicorp/aws");
+    }
+
+    #[test]
+    fn an_unaliased_apply_records_exactly_the_row_it_always_did() {
+        let change = change_with_meta("aws_instance", "web", Default::default());
+        let mut rec = NodeRecord::default();
+        rec.insert(&change, serde_json::json!({ "id": "i-1" }), 0);
+        let mut state = empty_state();
+        rec.commit(&mut state);
+
+        let row = &state.resources[0];
+        assert_eq!(row.provider, crate::default_provider_for(&change.address));
+        assert_eq!(row.provider.alias, None);
+    }
+
+    /// Refresh reads a row back through the instance the row NAMES, once
+    /// that instance is configured. Before, it read every row through the
+    /// type prefix and refused any aliased row outright.
+    #[test]
+    fn refresh_reads_an_aliased_row_through_its_own_configured_instance() {
+        let east2 = aliased("aws", "us_east_2");
+        let ctx = ApplyContext::new(PathBuf::from("/ws"))
+            .with_provider_instance_config(east2.clone(), serde_json::json!({}));
+        let row = StateResource {
+            address: change_with_meta("aws_instance", "web", Default::default()).address,
+            provider: magma_types::ProviderReference {
+                source: "registry.opentofu.org/hashicorp/aws".into(),
+                name: "aws".into(),
+                alias: Some("us_east_2".into()),
+            },
+            instances: vec![],
+        };
+        assert_eq!(
+            refresh_instance_for(&ctx, &row).ok(),
+            Some(east2),
+            "the row's OWN provider reference selects the instance, not its type prefix",
+        );
+    }
+
+    /// …and an aliased row nothing configures is still kept verbatim,
+    /// because dialing it would fall back to the default account and the
+    /// answer would be a wrong read presented as fact.
+    #[test]
+    fn refresh_still_refuses_an_aliased_row_nothing_configures() {
+        let ctx = ApplyContext::new(PathBuf::from("/ws"));
+        let row = StateResource {
+            address: change_with_meta("aws_instance", "web", Default::default()).address,
+            provider: magma_types::ProviderReference {
+                source: "registry.opentofu.org/hashicorp/aws".into(),
+                name: "aws".into(),
+                alias: Some("us_east_2".into()),
+            },
+            instances: vec![],
+        };
+        assert!(
+            refresh_instance_for(&ctx, &row).is_err(),
+            "an unconfigured aliased row must be kept, not read through the default account",
+        );
+    }
+
+    /// **The end-to-end join.** A config that declares two instances of
+    /// one provider yields an `ApplyContext` that can dial both — which is
+    /// the difference between an alias being expressible and an alias
+    /// being usable.
+    #[test]
+    fn a_config_declaring_two_instances_configures_both_of_them() {
+        let cfg = magma_config::Config::from_json(serde_json::json!({
+            "provider": {
+                "aws": [
+                    { "region": "us-east-1" },
+                    { "alias": "us_east_2", "region": "us-east-2" }
+                ]
+            }
+        }))
+        .expect("parses");
+        let ctx = ApplyContext::new(PathBuf::from("/ws")).with_config_providers(&cfg);
+        assert_eq!(
+            resolve_provider_config(&ctx, &aliased("aws", "us_east_2")).unwrap(),
+            serde_json::json!({ "region": "us-east-2" }),
+        );
+        assert_eq!(
+            resolve_provider_config(&ctx, &ProviderInstance::default_instance("aws").unwrap())
+                .unwrap(),
+            serde_json::json!({ "region": "us-east-1" }),
+        );
+    }
+
+    /// …and an `ApplyContext` that never adopts a config is untouched.
+    #[test]
+    fn an_apply_context_that_adopts_no_config_carries_no_provider_configs() {
+        assert!(
+            ApplyContext::new(PathBuf::from("/ws"))
+                .provider_configs
+                .is_empty()
+        );
+    }
+
+    /// The unaliased row — every row magma wrote before this landed —
+    /// still resolves to the type-prefix default instance, unchanged.
+    #[test]
+    fn refresh_selects_the_type_prefix_default_for_an_unaliased_row() {
+        let ctx = ApplyContext::new(PathBuf::from("/ws"));
+        let row = StateResource {
+            address: change_with_meta("aws_instance", "web", Default::default()).address,
+            provider: crate::default_provider_for(
+                &change_with_meta("aws_instance", "web", Default::default()).address,
+            ),
+            instances: vec![],
+        };
+        assert_eq!(
+            refresh_instance_for(&ctx, &row).ok(),
+            Some(ProviderInstance::default_instance("aws").unwrap()),
+        );
     }
 
     /// THE `depends_on` defect. The graph was built ONLY by scanning
@@ -4493,7 +4931,11 @@ mod tests {
         let ctx = ApplyContext::new(PathBuf::from("/ws"))
             .with_provider_config("github", serde_json::json!({"owner": "pleme-io"}));
         assert_eq!(ctx.workspace_dir, PathBuf::from("/ws"));
-        assert!(ctx.provider_configs.contains_key("github"));
+        assert!(
+            ctx.provider_configs
+                .contains_key(&ProviderInstance::default_instance("github").unwrap()),
+            "a bare name still configures the DEFAULT instance, exactly as before",
+        );
     }
 
     /// The load-bearing safety invariant: refresh must NEVER drop state when
@@ -4883,9 +5325,10 @@ mod tests {
     #[test]
     fn a_node_record_commits_its_writes_in_the_order_they_happened() {
         let addr = repo_addr("r");
+        let change = change_with_meta("github_repository", "r", Default::default());
         let mut rec = NodeRecord::default();
         rec.remove(&addr);
-        rec.insert(&addr, serde_json::json!({ "name": "r" }), 3);
+        rec.insert(&change, serde_json::json!({ "name": "r" }), 3);
 
         let mut state = empty_state();
         rec.commit(&mut state);
@@ -4903,7 +5346,7 @@ mod tests {
         // And the reverse order really would lose it — which is why `commit`
         // replays rather than folding into a set.
         let mut backwards = NodeRecord::default();
-        backwards.insert(&addr, serde_json::json!({ "name": "r" }), 3);
+        backwards.insert(&change, serde_json::json!({ "name": "r" }), 3);
         backwards.remove(&addr);
         let mut state2 = empty_state();
         backwards.commit(&mut state2);
@@ -4931,8 +5374,8 @@ mod tests {
     /// the precondition any future concurrent executor inherits.
     #[test]
     fn two_nodes_in_a_wave_record_disjoint_state_writes() {
-        let a = repo_addr("a");
-        let b = repo_addr("b");
+        let a = change_with_meta("github_repository", "a", Default::default());
+        let b = change_with_meta("github_repository", "b", Default::default());
         let mut ra = NodeRecord::default();
         ra.insert(&a, serde_json::json!({ "name": "a" }), 0);
         let mut rb = NodeRecord::default();
