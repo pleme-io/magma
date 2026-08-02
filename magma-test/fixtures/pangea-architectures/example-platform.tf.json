@@ -1,0 +1,44 @@
+{
+  "terraform": {
+    "required_providers": {
+      "aws": { "source": "hashicorp/aws", "version": "~> 5.0" }
+    }
+  },
+  "provider": { "aws": { "region": "us-east-1" } },
+  "resource": {
+    "aws_route53_zone": {
+      "example_dev": {
+        "name":    "dev.example.com",
+        "comment": "Akeyless development zone — managed by Pangea"
+      }
+    },
+    "aws_acm_certificate": {
+      "example_dev_wildcard": {
+        "domain_name":               "*.dev.example.com",
+        "validation_method":         "DNS",
+        "subject_alternative_names": ["dev.example.com"],
+        "tags": { "ManagedBy": "pangea", "Account": "example-dev" }
+      }
+    },
+    "aws_acm_certificate_validation": {
+      "example_dev_wildcard": {
+        "certificate_arn":         "${aws_acm_certificate.example_dev_wildcard.arn}",
+        "validation_record_fqdns": ["_validation.dev.example.com"]
+      }
+    },
+    "aws_route53_record": {
+      "example_dev_validation": {
+        "zone_id": "${aws_route53_zone.example_dev.id}",
+        "name":    "_validation.dev.example.com",
+        "type":    "CNAME",
+        "ttl":     60,
+        "records": ["pending.validation.aws"]
+      }
+    }
+  },
+  "output": {
+    "example_dev_zone_id":      { "value": "${aws_route53_zone.example_dev.id}",        "sensitive": false },
+    "example_dev_zone_name":    { "value": "${aws_route53_zone.example_dev.name}",      "sensitive": false },
+    "example_dev_cert_arn":     { "value": "${aws_acm_certificate.example_dev_wildcard.arn}", "sensitive": false }
+  }
+}

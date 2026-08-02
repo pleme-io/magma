@@ -1359,9 +1359,9 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
             // recorded from a failed apply. Both together identify a phantom
             // with no plausible innocent reading.
             //
-            // Measured on camelot-eks-shaar-concentrator (2026-08-01): a failed
+            // Measured on example-eks-vpn-concentrator (2026-08-01): a failed
             // SG create recorded the provider's config echo (no id, `vpc_id`
-            // still the literal `${data.aws_vpc.camelot_eks.id}`), and every
+            // still the literal `${data.aws_vpc.example_eks.id}`), and every
             // cycle thereafter failed with "re-plan has 1 non-NoOp changes"
             // while AWS showed no such SG. `record_partial_apply` now refuses
             // to create these; this arm heals the ones already written.
@@ -2261,7 +2261,7 @@ async fn apply_one_inner(
             //      import-on-conflict. So a create that hits
             //      EntityAlreadyExists — the ONE case adoption exists for —
             //      can never self-heal. Measured 2026-08-01 on
-            //      camelot-eks-shaar-concentrator: aws_iam_role failed
+            //      example-eks-vpn-concentrator: aws_iam_role failed
             //      `CreateRole 409` against an orphan for cycle after cycle,
             //      with zero `magma adopt:` lines, because the adoption code
             //      is on a path the change never reached.
@@ -2473,7 +2473,7 @@ mod replace_routing_tests {
     /// `requires_replace` is routinely non-empty with no prior state. Routing
     /// that to `apply_replace` costs the create its import-on-conflict, and
     /// import-on-conflict is the entire mechanism for recovering an orphan —
-    /// which is what camelot-eks-shaar-concentrator needed and never got
+    /// which is what example-eks-vpn-concentrator needed and never got
     /// (CreateRole 409, cycle after cycle, zero `magma adopt:` lines).
     #[test]
     fn a_create_is_never_a_replace_even_when_the_provider_forces_new() {
@@ -2513,7 +2513,7 @@ mod replace_routing_tests {
 /// `AllocateAddress` succeeded before a follow-up call failed is the canonical
 /// shape. Before this existed, the provider border discarded that state and
 /// the engine recorded nothing, so the next reconcile re-planned a CREATE and
-/// allocated a SECOND resource. Measured 2026-08-01 against camelot: two
+/// allocated a SECOND resource. Measured 2026-08-01 against example: two
 /// orphaned EIPs (3.151.179.36, 18.227.192.150), both billable, neither in
 /// state, while the run reported `created: 0`.
 ///
@@ -2591,9 +2591,9 @@ fn record_partial_apply(
             //   * and it re-plans as a pending Update forever, so the workspace
             //     trips `apply didn't converge` on every single cycle.
             //
-            // Measured on camelot-eks-shaar-concentrator (2026-08-01): the SG
+            // Measured on example-eks-vpn-concentrator (2026-08-01): the SG
             // create failed while `vpc_id` was still the unresolved literal
-            // `${data.aws_vpc.camelot_eks.id}`. The provider returned that echo
+            // `${data.aws_vpc.example_eks.id}`. The provider returned that echo
             // with no `id`, magma recorded it, and the workspace then failed
             // with "re-plan has 1 non-NoOp changes" on EVERY cycle — while
             // `describe-security-groups` proved no such SG existed (12 SGs
@@ -3121,7 +3121,7 @@ fn substitute_refs(v: &mut serde_json::Value, sm: &HashMap<String, serde_json::V
 mod tests {
     use super::*;
 
-    /// The shape that wedged camelot-eks-shaar-concentrator: the provider
+    /// The shape that wedged example-eks-vpn-concentrator: the provider
     /// echoed the config back (including an unresolved `${…}`) with no `id`.
     /// Recording that produced a phantom refresh could not read and destroy
     /// could not remove, so every subsequent plan failed `apply didn't
@@ -3129,9 +3129,9 @@ mod tests {
     #[test]
     fn id_less_partial_state_is_not_a_resource() {
         let echoed = serde_json::json!({
-            "name": "shaar-concentrator-camelot-sg",
-            "description": "ShaarConcentrator WireGuard hub for camelot",
-            "vpc_id": "${data.aws_vpc.camelot_eks.id}",
+            "name": "vpn-concentrator-example-sg",
+            "description": "VpnConcentrator WireGuard hub for example",
+            "vpc_id": "${data.aws_vpc.example_eks.id}",
         });
         assert!(
             !has_resource_id(&echoed),
@@ -3146,12 +3146,12 @@ mod tests {
         assert!(!has_resource_id(&serde_json::json!({})));
     }
 
-    /// The camelot phantom: no id AND an unresolved `${…}`. Both halves.
+    /// The example phantom: no id AND an unresolved `${…}`. Both halves.
     #[test]
     fn phantom_needs_both_no_id_and_an_unresolved_interpolation() {
         let phantom = serde_json::json!({
-            "name": "shaar-concentrator-camelot-sg",
-            "vpc_id": "${data.aws_vpc.camelot_eks.id}",
+            "name": "vpn-concentrator-example-sg",
+            "vpc_id": "${data.aws_vpc.example_eks.id}",
         });
         assert!(is_unmanageable_phantom(&phantom));
     }
@@ -3163,7 +3163,7 @@ mod tests {
     fn id_less_but_fully_resolved_state_is_kept() {
         let framework_resource = serde_json::json!({
             "name": "keep_me",
-            "vpc_id": "vpc-090f93f4590e59ebc",
+            "vpc_id": "vpc-0123456789abcdef0",
         });
         assert!(
             !is_unmanageable_phantom(&framework_resource),
@@ -3176,8 +3176,8 @@ mod tests {
     #[test]
     fn an_interpolation_with_a_real_id_is_not_dropped() {
         let odd_but_manageable = serde_json::json!({
-            "id": "sg-0860b967",
-            "vpc_id": "${data.aws_vpc.camelot_eks.id}",
+            "id": "sg-0123456789abcdef0",
+            "vpc_id": "${data.aws_vpc.example_eks.id}",
         });
         assert!(!is_unmanageable_phantom(&odd_but_manageable));
     }
@@ -3194,7 +3194,7 @@ mod tests {
 
     #[test]
     fn a_real_id_still_records() {
-        assert!(has_resource_id(&serde_json::json!({ "id": "sg-0860b967" })));
+        assert!(has_resource_id(&serde_json::json!({ "id": "sg-0123456789abcdef0" })));
         // a provider that chose a non-string identity still chose one
         assert!(has_resource_id(&serde_json::json!({ "id": 42 })));
     }

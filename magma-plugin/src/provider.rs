@@ -895,7 +895,7 @@ mod tests {
 
     /// The row that leaked money: the provider FAILED but COMMITTED. The
     /// committed state must survive the error, or the next plan creates a
-    /// duplicate (two orphaned EIPs, camelot, 2026-08-01).
+    /// duplicate (two orphaned EIPs, example, 2026-08-01).
     #[test]
     fn error_with_new_state_is_partially_applied_and_keeps_the_state() {
         let out = apply_outcome(err_diag("tagging failed"), Some(some_state()));

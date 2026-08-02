@@ -67,7 +67,7 @@ pub fn assert_apply_converges(cfg: &Config) {
     // saw managed-resource actions and "non-NoOp" was a fine proxy for "work
     // remaining". Making data sources honest turned that proxy false.
     //
-    // Measured 2026-08-01 on camelot-eks-shaar-concentrator: the apply failed
+    // Measured 2026-08-01 on example-eks-vpn-concentrator: the apply failed
     // with "re-plan has 4 non-NoOp changes", and all four were
     // `kind: Data, action: Read` — the workspace's aws_vpc / aws_subnet /
     // aws_network_acl / aws_ssm_parameter lookups. Nothing was unconverged;

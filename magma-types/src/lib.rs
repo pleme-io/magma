@@ -99,7 +99,7 @@ pub struct ResourceAddress {
 /// hand-rolled `format!("{}.{}", type_id.0, name)` — which silently discards
 /// `kind`, `module` and `key`. Six such call sites lived in pangea-operator
 /// alone, and the one feeding `InfrastructureTemplate.status` rendered a data
-/// source as `aws_security_group.shaar_concentrator`, indistinguishable in an
+/// source as `aws_security_group.vpn-hub_concentrator`, indistinguishable in an
 /// approval review from a managed resource of the same type and name. Losing
 /// the `data.` prefix is not cosmetic there: it is what let a *read* read as a
 /// *create* on the surface a human approves. (magma-state had the correct
@@ -757,7 +757,7 @@ mod read_is_not_a_change_tests {
     /// came out as `Create`, so "non-NoOp" was an accurate proxy for "intends
     /// to change" everywhere in the codebase. Making data sources honest turned
     /// that proxy false — and the failure was not theoretical: the
-    /// camelot-eks-shaar-concentrator apply died on
+    /// example-eks-vpn-concentrator apply died on
     /// `assert_apply_converges` with "re-plan has 4 non-NoOp changes", all four
     /// being `kind: Data, action: Read`. A workspace with a `data` block could
     /// never converge, because a data source has no state row to settle into

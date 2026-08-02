@@ -604,7 +604,7 @@ pub struct CycleStats {
     /// Without this field the triple `(attempted, completed, remaining)` could
     /// not distinguish "nothing was tried" from "everything was tried and every
     /// one failed" — both render as `completed: 0`. Measured 2026-08-01 on the
-    /// camelot concentrator: a cycle reported `17 attempted / 0 completed` while
+    /// example concentrator: a cycle reported `17 attempted / 0 completed` while
     /// silently failing all 17 and leaking two billable EIPs, and no counter in
     /// the struct disagreed with a healthy-looking run.
     ///

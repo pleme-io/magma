@@ -145,9 +145,9 @@
               name to a provider + credentials reference (cofre path).
 
               Example:
-                accounts."akeyless-development" = {
+                accounts."example-development" = {
                   provider = "aws";
-                  credentials = config.cofre.refs."aws/akeyless-development";
+                  credentials = config.cofre.refs."aws/example-development";
                 };
             '';
           };

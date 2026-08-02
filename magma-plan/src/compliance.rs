@@ -4,7 +4,7 @@
 //! of which Ruby helper authored it (`create_resource`'s typed path,
 //! the raw `resource()` DSL, or `synth.<type>(...)`) — the synthesized
 //! Terraform JSON `Config` is the one universal shape magma consumes.
-//! Confirmed live 2026-07-15: a hand-provisioned Camelot security group
+//! Confirmed live 2026-07-15: a hand-provisioned Example security group
 //! carried an unrestricted `0.0.0.0/0` ingress rule on a NodePort
 //! (unauthenticated Grafana, reachable from the entire internet) with
 //! zero pipeline gate of any kind. A Ruby-side check would have missed

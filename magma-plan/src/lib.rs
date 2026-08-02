@@ -23,7 +23,7 @@
 //! On top of the config-subset heuristic, `subset_matches` /
 //! `attribute_matches` absorb six confirmed, schema-free
 //! false-positive classes plus one narrowly-scoped fix, all found via
-//! direct Postgres inspection of a live production camelot-eks
+//! direct Postgres inspection of a live production example-eks
 //! `InfrastructureTemplate`'s plan output (54 real AWS resources) after
 //! the interpolation-resolution and nested-object-recursion fixes above
 //! had already closed the dominant causes, leaving 27 false-positive-
@@ -61,7 +61,7 @@
 //!   provider API — Terraform's own `lifecycle.ignore_changes`
 //!   semantic, address-scoped (never resource-type-scoped, unlike BUG
 //!   6) via `EXTERNALLY_MANAGED_ATTRIBUTES`. Confirmed case:
-//!   `camelot-eks_controllers_ng`'s `scaling_config`, live-owned by
+//!   `example-eks_controllers_ng`'s `scaling_config`, live-owned by
 //!   `breathe-controller`'s `EksNodegroupProvedor`.
 //!
 //! See the `BUG 3`–`BUG 8` regression tests below for the exact
@@ -134,10 +134,10 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     // That is not cosmetic. Apply is kind-driven, so it did the right thing
     // regardless — but the PLAN is what the approval gate reads:
     // `magma_drift::classify` saw a Create, demanded approval, and counted the
-    // read into `+N`. Measured on camelot-eks-sui-nlb-sg, whose rendered
+    // read into `+N`. Measured on example-eks-cache-nlb-sg, whose rendered
     // tf.json holds exactly 3 `resource` entries and 1 `data` entry: the CR
     // reported `planSummary: +4 ~0 -0` with
-    // `action: create / address: aws_security_group.shaar_concentrator` — a
+    // `action: create / address: aws_security_group.vpn-hub_concentrator` — a
     // security group that workspace does not declare. An operator reading that
     // should refuse to approve, and did. The inverse is worse: once "some of
     // those creates are really data sources" becomes folklore, a genuine
@@ -231,7 +231,7 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
             //
             // This arm said `Read` unconditionally for one commit (2026-08-01)
             // and that was a REGRESSION, caught live on
-            // camelot-eks-shaar-concentrator. `Read` bypasses the apply loop's
+            // example-eks-vpn-concentrator. `Read` bypasses the apply loop's
             // deliberate carry-forward fast path, whose comment predicts the
             // exact failure in advance: "the plan's `after` for a NoOp data
             // source is null, so a re-read would hand the provider a
@@ -317,8 +317,8 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
 /// reading SSM Parameter (): ...                    <- empty name
 /// ```
 ///
-/// Measured 2026-08-01 on camelot-eks-shaar-concentrator, whose
-/// `data.aws_vpc.camelot_eks` is `{"id": "vpc-090f93f4590e59ebc"}` — a fully
+/// Measured 2026-08-01 on example-eks-vpn-concentrator, whose
+/// `data.aws_vpc.example_eks` is `{"id": "vpc-0123456789abcdef0"}` — a fully
 /// constrained, exact id that never reached the provider. The failure reads
 /// like an under-constrained filter in the CONFIG, which is what makes it
 /// expensive: the evidence points away from the defect.
@@ -390,7 +390,7 @@ fn lookup_state_value(state: &State, addr: &ResourceAddress) -> Option<serde_jso
 /// write-only-attribute exemption list, the OIDC-provider URL-scheme
 /// normalization) — none of which are expressible as a pure
 /// `Value × Value → bool` heuristic. Confirmed live against a
-/// production camelot-eks `InfrastructureTemplate`'s plan output (see
+/// production example-eks `InfrastructureTemplate`'s plan output (see
 /// the BUG 3–8 regression tests below): six schema-free false-positive
 /// classes plus one narrowly-scoped OIDC fix, none of which need the
 /// bigger provider-schema (`PlanResourceChange`) M0.x work.
@@ -493,7 +493,7 @@ fn attribute_matches(
 ///
 /// Three schema-free structural/semantic relaxations apply before
 /// falling back to whole-value equality (each confirmed against a real
-/// camelot-eks plan false positive):
+/// example-eks plan false positive):
 ///
 /// - **BUG 3** — a single-element array wrapping an object on one side
 ///   and a bare object on the other (`aws_eks_cluster.access_config`,
@@ -708,18 +708,18 @@ fn is_write_only_attribute(resource_type: &str, attribute: &str) -> bool {
 /// fleet-wide would silently hide real drift on every other resource of
 /// the same type that ISN'T under that sibling controller's ownership.
 ///
-/// Confirmed case: `camelot-eks_controllers_ng`'s `scaling_config` is
+/// Confirmed case: `example-eks_controllers_ng`'s `scaling_config` is
 /// live-mutated by `breathe-controller`'s `EksNodegroupProvedor`
 /// (`update_nodegroup_config` against AWS directly, gated by its own
 /// `BreatheCloudPool` CR) on every breathe reconcile tick — magma's
 /// static `min_size`/`max_size`/`desired_size` declaration would
 /// otherwise fight breathe's live scaling on every plan cycle.
-/// `camelot-eks_system_ng` has no `BreatheCloudPool` targeting it, so
+/// `example-eks_system_ng` has no `BreatheCloudPool` targeting it, so
 /// its `scaling_config` stays fully drift-checked, as does every other
 /// node group in the fleet.
 const EXTERNALLY_MANAGED_ATTRIBUTES: &[(&str, &str, &str)] = &[(
     "aws_eks_node_group",
-    "camelot-eks_controllers_ng",
+    "example-eks_controllers_ng",
     "scaling_config",
 )];
 
@@ -853,10 +853,10 @@ mod tests {
 
     /// A data source with no state row is a READ, never a CREATE.
     ///
-    /// Regression for the camelot-eks-sui-nlb-sg mislabel (2026-07-31): that
+    /// Regression for the example-eks-cache-nlb-sg mislabel (2026-07-31): that
     /// workspace declares 3 `resource` entries and 1 `data` entry, and the CR
     /// reported `planSummary: +4 ~0 -0` with
-    /// `action: create / address: aws_security_group.shaar_concentrator` — a
+    /// `action: create / address: aws_security_group.vpn-hub_concentrator` — a
     /// security group it does not declare. `plan()` diffed config addresses
     /// against state addresses without ever inspecting `addr.kind`, so an
     /// unread `data` block was structurally identical to a new managed
@@ -869,7 +869,7 @@ mod tests {
         let cfg = Config::from_json(json!({
             "data": {
                 "aws_security_group": {
-                    "shaar_concentrator": {
+                    "vpn-hub_concentrator": {
                         "filter": { "name": "tag:Name", "values": ["nope"] }
                     }
                 }
@@ -898,7 +898,7 @@ mod tests {
     #[test]
     fn a_data_sources_config_reaches_the_plan_not_just_a_resources_config() {
         let cfg = serde_json::from_value(serde_json::json!({
-            "data": { "aws_vpc": { "camelot_eks": { "id": "vpc-090f93f4590e59ebc" } } }
+            "data": { "aws_vpc": { "example_eks": { "id": "vpc-0123456789abcdef0" } } }
         }))
         .unwrap();
 
@@ -913,7 +913,7 @@ mod tests {
                      with an empty filter, which matches every VPC in the account",
         );
         assert_eq!(
-            after["id"], "vpc-090f93f4590e59ebc",
+            after["id"], "vpc-0123456789abcdef0",
             "the exact filter must survive into the plan, got {after:?}"
         );
     }
@@ -921,7 +921,7 @@ mod tests {
     /// The REGRESSION guard. An in-state, unchanged data source must plan as
     /// NoOp, NOT Read — `Read` sends it down the apply-time re-read path,
     /// which hands the provider the plan's null `after` config. Live
-    /// consequences on camelot 2026-08-01: `reading SSM Parameter ()` (empty
+    /// consequences on example 2026-08-01: `reading SSM Parameter ()` (empty
     /// name), `multiple EC2 VPCs matched` (empty filter matched everything),
     /// 20/20 nodes failed. Fixing the NEW-data-source label (Create -> Read)
     /// must not drag the already-read case along with it.
@@ -975,20 +975,20 @@ mod tests {
     /// The counting consequence, asserted directly: managed resources and data
     /// sources in one config must not produce one uniform action.
     ///
-    /// Mirrors camelot-eks-sui-nlb-sg's real shape (N managed + 1 data). The
+    /// Mirrors example-eks-cache-nlb-sg's real shape (N managed + 1 data). The
     /// bug made this report 2 creates; the truth is 1 create + 1 read.
     #[test]
     fn managed_and_data_in_one_config_do_not_share_an_action() {
         let cfg = Config::from_json(json!({
             "resource": {
                 "aws_security_group": {
-                    "camelot-eks-sui-nlb-sg": { "name": "camelot-eks-sui-nlb-sg" }
+                    "example-eks-cache-nlb-sg": { "name": "example-eks-cache-nlb-sg" }
                 }
             },
             "data": {
                 "aws_security_group": {
-                    "shaar_concentrator": {
-                        "filter": { "name": "tag:Name", "values": ["shaar-concentrator-camelot-sg"] }
+                    "vpn-hub_concentrator": {
+                        "filter": { "name": "tag:Name", "values": ["vpn-concentrator-example-sg"] }
                     }
                 }
             }
@@ -1032,7 +1032,7 @@ mod tests {
         // under test here.
         let mut orphan = mk_state_resource(
             "aws_security_group",
-            "shaar_concentrator",
+            "vpn-hub_concentrator",
             json!({ "id": "sg-dead" }),
         );
         orphan.address.kind = ResourceKind::Data;
@@ -1208,7 +1208,7 @@ mod tests {
 
     // ── BUG 1 regression: unresolved `${type.name.attr}` references ──
     //
-    // Live incident: a production camelot-eks InfrastructureTemplate's
+    // Live incident: a production example-eks InfrastructureTemplate's
     // plan went from correctly showing 1 real drift to falsely showing
     // 53 of 54 resources as "update" the moment an unrelated
     // plan-diff hardcoded-NoOp bug was fixed earlier the same session —
@@ -1240,10 +1240,10 @@ mod tests {
         st.resources.push(mk_state_resource(
             "aws_vpc",
             "main",
-            json!({ "cidr_block": "10.0.0.0/16", "id": "vpc-090f93f4590e59ebc" }),
+            json!({ "cidr_block": "10.0.0.0/16", "id": "vpc-0123456789abcdef0" }),
         ));
         let subnet_before = json!({
-            "vpc_id": "vpc-090f93f4590e59ebc",
+            "vpc_id": "vpc-0123456789abcdef0",
             "id": "subnet-abc123",
         });
         st.resources.push(mk_state_resource(
@@ -1351,7 +1351,7 @@ mod tests {
                 "aws_vpc": {
                     "main": {
                         "cidr_block": "10.0.0.0/16",
-                        "tags": { "Name": "camelot-eks-vpc" }
+                        "tags": { "Name": "example-eks-vpc" }
                     }
                 }
             }
@@ -1364,10 +1364,10 @@ mod tests {
             "main",
             json!({
                 "cidr_block": "10.0.0.0/16",
-                "id": "vpc-090f93f4590e59ebc",
+                "id": "vpc-0123456789abcdef0",
                 "tags": {
-                    "Name": "camelot-eks-vpc",
-                    "kubernetes.io/cluster/camelot-eks": "owned"
+                    "Name": "example-eks-vpc",
+                    "kubernetes.io/cluster/example-eks": "owned"
                 }
             }),
         ));
@@ -1391,7 +1391,7 @@ mod tests {
                 "aws_vpc": {
                     "main": {
                         "cidr_block": "10.0.0.0/16",
-                        "tags": { "Name": "camelot-eks-vpc" }
+                        "tags": { "Name": "example-eks-vpc" }
                     }
                 }
             }
@@ -1404,10 +1404,10 @@ mod tests {
             "main",
             json!({
                 "cidr_block": "10.0.0.0/16",
-                "id": "vpc-090f93f4590e59ebc",
+                "id": "vpc-0123456789abcdef0",
                 "tags": {
                     "Name": "old-name",
-                    "kubernetes.io/cluster/camelot-eks": "owned"
+                    "kubernetes.io/cluster/example-eks": "owned"
                 }
             }),
         ));
@@ -1433,7 +1433,7 @@ mod tests {
 
     // ── BUG 3 regression: JSON-encoded string attribute, key reorder ──
     //
-    // Live incident: a production camelot-eks `InfrastructureTemplate`'s
+    // Live incident: a production example-eks `InfrastructureTemplate`'s
     // plan carried 27 false-positive-heavy "update" flags after the
     // interpolation-resolution and nested-object-recursion fixes above
     // had already closed the dominant causes. `aws_iam_role.*.assume_role_policy`
@@ -1630,7 +1630,7 @@ mod tests {
         st.resources.push(mk_state_resource(
             "aws_eks_node_group",
             "workers",
-            json!({ "scaling_config": before_scaling, "id": "camelot-eks:workers" }),
+            json!({ "scaling_config": before_scaling, "id": "example-eks:workers" }),
         ));
 
         let p = plan(&cfg, &st).unwrap();
@@ -1659,7 +1659,7 @@ mod tests {
         st.resources.push(mk_state_resource(
             "aws_eks_node_group",
             "workers",
-            json!({ "scaling_config": before_scaling, "id": "camelot-eks:workers" }),
+            json!({ "scaling_config": before_scaling, "id": "example-eks:workers" }),
         ));
 
         let p = plan(&cfg, &st).unwrap();
@@ -1876,7 +1876,7 @@ mod tests {
             "resource": {
                 "aws_eks_addon": {
                     "vpc_cni": {
-                        "cluster_name": "camelot-eks",
+                        "cluster_name": "example-eks",
                         "addon_name": "vpc-cni",
                         "resolve_conflicts_on_create": "OVERWRITE",
                         "resolve_conflicts_on_update": "OVERWRITE"
@@ -1890,11 +1890,11 @@ mod tests {
             "aws_eks_addon",
             "vpc_cni",
             json!({
-                "cluster_name": "camelot-eks",
+                "cluster_name": "example-eks",
                 "addon_name": "vpc-cni",
                 "resolve_conflicts_on_create": null,
                 "resolve_conflicts_on_update": null,
-                "id": "camelot-eks:vpc-cni"
+                "id": "example-eks:vpc-cni"
             }),
         ));
 
@@ -1916,7 +1916,7 @@ mod tests {
             "resource": {
                 "aws_eks_addon": {
                     "vpc_cni": {
-                        "cluster_name": "camelot-eks",
+                        "cluster_name": "example-eks",
                         "addon_name": "vpc-cni",
                         "addon_version": "v1.18.0-eksbuild.1",
                         "resolve_conflicts_on_create": "OVERWRITE",
@@ -1931,12 +1931,12 @@ mod tests {
             "aws_eks_addon",
             "vpc_cni",
             json!({
-                "cluster_name": "camelot-eks",
+                "cluster_name": "example-eks",
                 "addon_name": "vpc-cni",
                 "addon_version": "v1.15.4-eksbuild.1",
                 "resolve_conflicts_on_create": null,
                 "resolve_conflicts_on_update": null,
-                "id": "camelot-eks:vpc-cni"
+                "id": "example-eks:vpc-cni"
             }),
         ));
 
@@ -1951,13 +1951,13 @@ mod tests {
     }
 
     // ── BUG 7 regression: address-scoped externally-managed attribute
-    //    (breathe-controller vs magma on camelot-eks_controllers_ng's
+    //    (breathe-controller vs magma on example-eks_controllers_ng's
     //    scaling_config) ──
     //
     // Live incident: `breathe-controller`'s `EksNodegroupProvedor` calls
     // `UpdateNodegroupConfig` directly against AWS on every reconcile
     // tick, gated by a live `BreatheCloudPool` CR targeting
-    // `camelot-eks_controllers_ng` — bypassing Terraform/magma state
+    // `example-eks_controllers_ng` — bypassing Terraform/magma state
     // entirely. Pangea's static `scaling_config` declaration would
     // otherwise fight breathe's live scaling on every plan cycle.
 
@@ -1966,9 +1966,9 @@ mod tests {
         let cfg = Config::from_json(json!({
             "resource": {
                 "aws_eks_node_group": {
-                    "camelot-eks_controllers_ng": {
-                        "cluster_name": "camelot-eks",
-                        "node_group_name": "camelot-eks-controllers",
+                    "example-eks_controllers_ng": {
+                        "cluster_name": "example-eks",
+                        "node_group_name": "example-eks-controllers",
                         "scaling_config": { "min_size": 1, "max_size": 4, "desired_size": 1 }
                     }
                 }
@@ -1978,12 +1978,12 @@ mod tests {
         let mut st = empty_state();
         st.resources.push(mk_state_resource(
             "aws_eks_node_group",
-            "camelot-eks_controllers_ng",
+            "example-eks_controllers_ng",
             json!({
-                "cluster_name": "camelot-eks",
-                "node_group_name": "camelot-eks-controllers",
+                "cluster_name": "example-eks",
+                "node_group_name": "example-eks-controllers",
                 "scaling_config": { "min_size": 1, "max_size": 5, "desired_size": 5 },
-                "id": "camelot-eks:camelot-eks-controllers"
+                "id": "example-eks:example-eks-controllers"
             }),
         ));
 
@@ -1992,7 +1992,7 @@ mod tests {
         assert_eq!(
             p.resource_changes[0].action,
             Action::NoOp,
-            "camelot-eks_controllers_ng's scaling_config is breathe-owned — a live disagreement \
+            "example-eks_controllers_ng's scaling_config is breathe-owned — a live disagreement \
              with magma's static declaration must never report drift"
         );
     }
@@ -2008,9 +2008,9 @@ mod tests {
         let cfg = Config::from_json(json!({
             "resource": {
                 "aws_eks_node_group": {
-                    "camelot-eks_system_ng": {
-                        "cluster_name": "camelot-eks",
-                        "node_group_name": "camelot-eks-system",
+                    "example-eks_system_ng": {
+                        "cluster_name": "example-eks",
+                        "node_group_name": "example-eks-system",
                         "scaling_config": { "min_size": 1, "max_size": 4, "desired_size": 1 }
                     }
                 }
@@ -2020,12 +2020,12 @@ mod tests {
         let mut st = empty_state();
         st.resources.push(mk_state_resource(
             "aws_eks_node_group",
-            "camelot-eks_system_ng",
+            "example-eks_system_ng",
             json!({
-                "cluster_name": "camelot-eks",
-                "node_group_name": "camelot-eks-system",
+                "cluster_name": "example-eks",
+                "node_group_name": "example-eks-system",
                 "scaling_config": { "min_size": 1, "max_size": 5, "desired_size": 5 },
-                "id": "camelot-eks:camelot-eks-system"
+                "id": "example-eks:example-eks-system"
             }),
         ));
 
@@ -2034,7 +2034,7 @@ mod tests {
         assert_eq!(
             p.resource_changes[0].action,
             Action::Update,
-            "camelot-eks_system_ng has no BreatheCloudPool owner — its scaling_config drift \
+            "example-eks_system_ng has no BreatheCloudPool owner — its scaling_config drift \
              must still be reported, proving the exemption is address-scoped, not type-scoped"
         );
     }
@@ -2042,7 +2042,7 @@ mod tests {
     // ── OIDC-provider issuer URL regression (narrowly-scoped, not
     //    part of the 6-class family) ──
     //
-    // Live incident: `aws_iam_openid_connect_provider.camelot-eks_oidc`'s
+    // Live incident: `aws_iam_openid_connect_provider.example-eks_oidc`'s
     // `url` resolves (via
     // `${aws_eks_cluster.main.identity[0].oidc[0].issuer}`) to a value
     // WITH the `https://` scheme; AWS's `DescribeOpenIDConnectProvider`
@@ -2057,7 +2057,7 @@ mod tests {
         let cfg = Config::from_json(json!({
             "resource": {
                 "aws_iam_openid_connect_provider": {
-                    "camelot-eks_oidc": { "url": after_url }
+                    "example-eks_oidc": { "url": after_url }
                 }
             }
         }))
@@ -2065,7 +2065,7 @@ mod tests {
         let mut st = empty_state();
         st.resources.push(mk_state_resource(
             "aws_iam_openid_connect_provider",
-            "camelot-eks_oidc",
+            "example-eks_oidc",
             json!({
                 "url": before_url,
                 "id": "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-2.amazonaws.com/id/ABCDEF0123456789"
@@ -2086,7 +2086,7 @@ mod tests {
         let cfg = Config::from_json(json!({
             "resource": {
                 "aws_iam_openid_connect_provider": {
-                    "camelot-eks_oidc": {
+                    "example-eks_oidc": {
                         "url": "https://oidc.eks.us-east-2.amazonaws.com/id/DIFFERENT9999999"
                     }
                 }
@@ -2096,7 +2096,7 @@ mod tests {
         let mut st = empty_state();
         st.resources.push(mk_state_resource(
             "aws_iam_openid_connect_provider",
-            "camelot-eks_oidc",
+            "example-eks_oidc",
             json!({ "url": "oidc.eks.us-east-2.amazonaws.com/id/ABCDEF0123456789" }),
         ));
 
