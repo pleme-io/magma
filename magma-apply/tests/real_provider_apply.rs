@@ -58,6 +58,7 @@ async fn random_id_applies_via_real_provider() {
         before: None,
         after: Some(serde_json::json!({ "byte_length": 8 })),
         reasons: Vec::new(),
+        meta: Default::default(),
     };
     let plan = Plan {
         id: PlanId([0u8; 32]),

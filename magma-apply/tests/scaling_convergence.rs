@@ -99,6 +99,7 @@ fn plan_of(n: usize) -> Plan {
                 before: None,
                 after: Some(serde_json::json!({ "byte_length": 4 })),
                 reasons: Vec::new(),
+                meta: Default::default(),
             })
             .collect(),
         output_changes: Vec::new(),
