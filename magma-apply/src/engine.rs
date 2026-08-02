@@ -2885,36 +2885,24 @@ fn aliased_state_provider(resource: &StateResource) -> Option<StateResource> {
 /// An edge is added only when the target is itself among `changes`.
 /// A dependency that is absent, already applied, or a NoOp needs no
 /// ordering: it is not being touched this cycle, so nothing can race it.
+///
+/// The derivation itself is `magma_config::dependency_edges`, not a loop
+/// here. It moved because a front end building typed
+/// `magma_types::Resource` nodes needs the same two edge sources at
+/// CONFIG time, before any plan exists — and re-deriving them there
+/// would be a third copy of the loop whose second copy is exactly how
+/// the missing `depends_on` source came to exist in two engines at once.
+/// This function is now only the `changes → nodes → graph` wiring.
 pub(crate) fn build_change_graph(changes: &[&ResourceChange]) -> ResourceGraph {
-    let by_key: HashMap<(String, String), &ResourceChange> = changes
-        .iter()
-        .map(|c| ((c.address.type_id.0.clone(), c.address.name.clone()), *c))
-        .collect();
+    let nodes: Vec<magma_types::DependencyNode<'_>> =
+        changes.iter().map(|c| c.dependency_node()).collect();
 
     let mut graph = ResourceGraph::new();
     for c in changes {
         graph.add(c.address.clone());
     }
-    for c in changes {
-        let self_key = (c.address.type_id.0.clone(), c.address.name.clone());
-        let mut link = |dep_key: (String, String)| {
-            if dep_key == self_key {
-                return;
-            }
-            if let Some(dep) = by_key.get(&dep_key) {
-                graph.depend(c.address.clone(), dep.address.clone());
-            }
-        };
-        if let Some(after) = &c.after {
-            for refstr in collect_refs(after) {
-                if let Some(dep_key) = ref_target(&refstr) {
-                    link(dep_key);
-                }
-            }
-        }
-        for dep in &c.meta.depends_on {
-            link((dep.type_id.0.clone(), dep.name.clone()));
-        }
+    for edge in magma_config::dependency_edges(&nodes) {
+        graph.depend(edge.dependent, edge.dependency);
     }
     graph
 }
@@ -3050,89 +3038,20 @@ fn partition_changes<'a>(
     (datas, noops, reals)
 }
 
-/// Collect every `${…}` reference path (inner, no wrapper) found anywhere in
-/// a config value. `pub(crate)`: `crate::dependency_ordered` (the M0
-/// structural apply's own dependency-graph ordering, `lib.rs`) reuses this
-/// same extraction rather than re-implementing it — one reference-scanning
-/// pass, shared by both apply engines.
-///
-/// Escape-aware (2026-07-23): HCL2's own escaping convention doubles `$`/`%`
-/// before a `{` (`$${`/`%%{`) to mean a literal `${`/`%{` that must NEVER be
-/// treated as interpolation. A naive `s.find("${")` misreads a correctly
-/// escaped value — e.g. `github_repository_file.content` carrying a GitHub
-/// Actions `$${{ secrets.BOT_PAT }}` — as a real reference, extracting the
-/// malformed path `{ secrets.BOT_PAT ` (the stray leading brace is the
-/// leftover second `{` of the double-brace `${{ }}` GitHub Actions syntax).
-/// Same root cause and same fix shape as `magma-test-laws`'s
-/// `assert_no_dangling_references` (see that crate's `architecture.rs` for
-/// the full incident writeup) — ported here because this function does its
-/// OWN independent scan, not a shared one.
-pub(crate) fn collect_refs(v: &serde_json::Value) -> Vec<String> {
-    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
-        match v {
-            serde_json::Value::String(s) => scan_refs(s, out),
-            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
-            serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, out)),
-            _ => {}
-        }
-    }
-    let mut out = Vec::new();
-    walk(v, &mut out);
-    out
-}
-
-/// Byte-indexed, escape-aware `${…}` reference scan shared by [`collect_refs`]
-/// and (via its own copy, `substitute_refs` below, since that function must
-/// also rewrite `$${`/`%%{` back to `${`/`%{` in its output — a distinct job
-/// from pure extraction). Walks `s` left to right; at each position prefers
-/// the 3-byte escape match (`$${`/`%%{`, consumed whole, never re-examined —
-/// this is what stops the trailing brace of an escaped `${{` from being
-/// mistaken for a fresh opener) over the 2-byte reference-open match (`${`).
-/// Slicing only ever happens immediately before/after one of `$`/`%`/`{`/`}`
-/// — all single-byte ASCII, so every slice point is a guaranteed UTF-8 char
-/// boundary regardless of what non-ASCII content surrounds it.
-fn scan_refs(s: &str, out: &mut Vec<String>) {
-    let bytes = s.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if i + 2 < bytes.len()
-            && (bytes[i] == b'$' || bytes[i] == b'%')
-            && bytes[i + 1] == bytes[i]
-            && bytes[i + 2] == b'{'
-        {
-            i += 3;
-            continue;
-        }
-        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            let after = &s[i + 2..];
-            if let Some(end) = after.find('}') {
-                out.push(after[..end].trim().to_string());
-                i += 2 + end + 1;
-                continue;
-            }
-            break;
-        }
-        i += 1;
-    }
-}
-
-/// The `(type, name)` a reference path targets — `github_repository.galho.node_id`
-/// → `("github_repository", "galho")`. Returns `None` for `data.*` sources
-/// (resolved from existing state, not ordered as apply dependencies) or
-/// malformed paths. Strips any `[index]` from the name segment.
-/// `pub(crate)`: shared with `crate::dependency_ordered` (`lib.rs`) — see
-/// `collect_refs`'s doc.
-pub(crate) fn ref_target(inner: &str) -> Option<(String, String)> {
-    let segs: Vec<&str> = inner.split('.').collect();
-    if segs.first() == Some(&"data") {
-        return None;
-    }
-    if segs.len() >= 2 {
-        let name = segs[1].split('[').next().unwrap_or(segs[1]);
-        return Some((segs[0].to_string(), name.to_string()));
-    }
-    None
-}
+// `collect_refs` / `ref_target` used to be defined RIGHT HERE, and that
+// placement is what made them unreachable from config time. Edge
+// derivation is needed by a front end that has built typed
+// `magma_types::Resource` nodes and has no plan yet — it cannot depend on
+// the apply engine to find out what depends on what. They now live in
+// `magma_config`, with the rest of the escape-aware `${…}` family
+// (`resolve_reference`, `resolve_config`, `has_interpolation`), which is
+// also where they should have been when the 2026-07-23 escape incident
+// needed the same fix applied in three separate places.
+//
+// `substitute_refs` below deliberately keeps its OWN scan: it must also
+// rewrite `$${`/`%%{` back to `${`/`%{` in its output, which is a
+// different job from pure extraction.
+use magma_config::{collect_refs, ref_target};
 
 /// The resource `<name>` of a `github_repository.<name>.name` reference path
 /// (inner, no `${}` wrapper). In the org-posture architecture a

@@ -96,6 +96,42 @@ pub enum PlanError {
     Compliance(Vec<ComplianceViolation>),
 }
 
+// ── Declared-resource graph ────────────────────────────────────────
+
+/// The dependency DAG over a set of DECLARED resources — the typed
+/// door's counterpart to the apply engine's change graph.
+///
+/// This is the join a front end would otherwise hand-roll: the edge
+/// derivation lives in `magma_config` (it needs the `${…}` scanner) and
+/// the DAG lives in `magma_graph`, and this crate is the one that
+/// already has both. Hand-rolling it a third time is how the two apply
+/// engines came to carry two copies of the same loop.
+///
+/// Both edge sources apply — declared `depends_on` and interpolation —
+/// so a `(definfra …)` form that expresses ordering either way gets the
+/// same graph the apply engine would build for the resulting plan.
+///
+/// Cycles are NOT detected here. Ask the returned graph:
+/// `ResourceGraph::waves` returns `GraphError::CycleDetected`, and
+/// `detect_cycle` answers directly. Refusing here would give a front end
+/// a graph it cannot inspect to explain the cycle it just wrote.
+#[must_use]
+pub fn resource_graph(resources: &[magma_types::Resource]) -> magma_graph::ResourceGraph {
+    let nodes: Vec<magma_types::DependencyNode<'_>> = resources
+        .iter()
+        .map(magma_types::Resource::dependency_node)
+        .collect();
+
+    let mut graph = magma_graph::ResourceGraph::new();
+    for r in resources {
+        graph.add(r.address.clone());
+    }
+    for edge in magma_config::dependency_edges(&nodes) {
+        graph.depend(edge.dependent, edge.dependency);
+    }
+    graph
+}
+
 // ── Plan ──────────────────────────────────────────────────────────
 
 /// Compute a typed `Plan` from `config` against `state` — the M0
@@ -370,14 +406,11 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
 /// sources planned as `Create`/`NoOp` they were rarely re-read, so the null
 /// `after` mostly went unnoticed.
 fn lookup_config_value(config: &Config, addr: &ResourceAddress) -> Option<serde_json::Value> {
-    let table = match addr.kind {
-        ResourceKind::Data => &config.data,
-        _ => &config.resources,
-    };
-    table
-        .get(&addr.type_id.0)
-        .and_then(|by_name| by_name.get(&addr.name))
-        .cloned()
+    // One home for the kind→table mapping, in the crate that owns the
+    // container. This was a private copy here and a second one in
+    // magma-config's typed door — two chances to disagree about where a
+    // data source lives.
+    config.resource_body(addr)
 }
 
 /// Look up the diffable attribute value for `addr`.
@@ -2254,5 +2287,107 @@ mod tests {
             Action::Update,
             "a genuinely different OIDC issuer id must still report drift regardless of scheme normalization"
         );
+    }
+
+    // ── The typed door, end to end ─────────────────────────────────
+    //
+    // What a NEW dialect (a blue `(definfra …)` form) actually needs: to
+    // build resource nodes in Rust, get correct ordering out, and reach a
+    // Plan — with no Terraform JSON text authored, emitted or parsed
+    // anywhere in the path.
+
+    fn declared(type_id: &str, name: &str, attrs: serde_json::Value) -> magma_types::Resource {
+        magma_types::Resource::new(
+            ResourceAddress {
+                module: magma_types::ModulePath::root(),
+                kind: ResourceKind::Managed,
+                type_id: magma_types::ResourceTypeId(type_id.to_string()),
+                name: name.to_string(),
+                key: None,
+            },
+            attrs,
+        )
+        .expect("no meta-argument among the attributes")
+    }
+
+    /// The edge source interpolation structurally cannot see. Nothing in
+    /// this config contains a `${…}` anywhere, so the ordering exists
+    /// only because `depends_on` is a first-class edge source.
+    #[test]
+    fn a_front_end_gets_correct_waves_from_a_declared_dependency_alone() {
+        let resources = vec![
+            declared("aws_lambda_function", "handler", json!({ "memory": 512 }))
+                .depending_on([declared("aws_iam_role", "exec", json!({})).address]),
+            declared("aws_iam_role", "exec", json!({ "name": "exec" })),
+        ];
+        let graph = resource_graph(&resources);
+        let waves = graph.waves().expect("no cycle");
+
+        assert_eq!(waves.len(), 2, "the role must precede the function");
+        assert_eq!(waves[0].len(), 1);
+        assert_eq!(waves[0][0].name, "exec");
+        assert_eq!(waves[1][0].name, "handler");
+        assert!(graph.depends_on(&resources[0].address, &resources[1].address));
+    }
+
+    /// Two independent nodes are ONE wave — the parallelism a front end
+    /// would lose if the graph were built by declaration order.
+    #[test]
+    fn independent_declared_resources_share_a_wave() {
+        let resources = vec![
+            declared("aws_iam_role", "a", json!({})),
+            declared("aws_iam_role", "b", json!({})),
+        ];
+        let waves = resource_graph(&resources).waves().expect("no cycle");
+        assert_eq!(waves.len(), 1);
+        assert_eq!(waves[0].len(), 2);
+    }
+
+    /// A cycle is the graph's to report, not this function's to refuse —
+    /// a front end needs the graph in order to explain what it wrote.
+    #[test]
+    fn a_declared_cycle_is_reported_by_the_graph_rather_than_refused_at_construction() {
+        let a_addr = declared("aws_iam_role", "a", json!({})).address;
+        let b_addr = declared("aws_iam_role", "b", json!({})).address;
+        let resources = vec![
+            declared("aws_iam_role", "a", json!({})).depending_on([b_addr]),
+            declared("aws_iam_role", "b", json!({})).depending_on([a_addr]),
+        ];
+        let graph = resource_graph(&resources);
+        assert!(graph.detect_cycle().is_some());
+        assert!(matches!(
+            graph.waves(),
+            Err(magma_graph::GraphError::CycleDetected(_))
+        ));
+    }
+
+    /// The whole path: typed nodes → `Config` → `plan`, no JSON text.
+    /// The declared meta survives onto the emitted `ResourceChange`,
+    /// which is what makes the apply engine order it.
+    #[test]
+    fn typed_resources_reach_a_plan_with_their_meta_intact_and_no_json_authored() {
+        let resources = vec![
+            declared("aws_iam_role", "exec", json!({ "name": "exec" })),
+            declared("aws_lambda_function", "handler", json!({ "memory": 512 }))
+                .with_provider(magma_types::ProviderInstance::try_from("aws".to_string()).unwrap())
+                .depending_on([declared("aws_iam_role", "exec", json!({})).address]),
+        ];
+        let cfg = Config::from_resources(resources).expect("representable");
+        let p = plan(&cfg, &empty_state()).expect("plans");
+
+        let handler = p
+            .resource_changes
+            .iter()
+            .find(|c| c.address.name == "handler")
+            .expect("planned");
+        assert_eq!(handler.action, Action::Create);
+        assert_eq!(
+            handler.meta.provider.as_ref().map(|p| p.name()),
+            Some("aws")
+        );
+        assert_eq!(handler.meta.depends_on.len(), 1);
+        assert_eq!(handler.meta.depends_on[0].name, "exec");
+        // The meta never reached the attributes handed to the provider.
+        assert_eq!(handler.after, Some(json!({ "memory": 512 })));
     }
 }

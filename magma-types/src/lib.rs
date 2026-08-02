@@ -474,11 +474,279 @@ pub struct ResourceMeta {
 }
 
 impl ResourceMeta {
+    /// The meta-arguments magma implements — the two [`ResourceMeta`]
+    /// has fields for.
+    pub const IMPLEMENTED: [&'static str; 2] = ["provider", "depends_on"];
+
+    /// The meta-arguments magma recognises but does not implement, paired
+    /// with what silently ignoring each one would actually do. The message
+    /// is the point: an operator who hits this needs to know the executor
+    /// cannot honour what they wrote, not merely that a key was rejected.
+    pub const UNIMPLEMENTED: [(&'static str, &'static str); 5] = [
+        (
+            "count",
+            "Ignoring it would create ONE resource where N were declared.",
+        ),
+        (
+            "for_each",
+            "Ignoring it would create ONE resource where one per element was declared.",
+        ),
+        (
+            "lifecycle",
+            "Ignoring it would discard `prevent_destroy`, `ignore_changes` and \
+             `create_before_destroy` — a `prevent_destroy` resource could be destroyed.",
+        ),
+        (
+            "provisioner",
+            "Ignoring it would report success for a resource whose provisioning steps never ran.",
+        ),
+        (
+            "connection",
+            "Ignoring it would discard the connection settings its provisioners require.",
+        ),
+    ];
+
+    /// Is `key` a meta-argument — implemented or not?
+    ///
+    /// **The catalog is CLOSED and lives here, in one place, because two
+    /// independent doors now enforce it.** `magma_config::split_resource_body`
+    /// enforces it while parsing Terraform JSON; [`Resource::new`] enforces it
+    /// while a Rust front end constructs a node directly. Two copies of the
+    /// list would mean a meta-argument could be closed on one door and open on
+    /// the other — which is the *same* class of defect as the one the split
+    /// exists to fix, just relocated.
+    #[must_use]
+    pub fn is_meta_key(key: &str) -> bool {
+        Self::IMPLEMENTED.contains(&key) || Self::UNIMPLEMENTED.iter().any(|(k, _)| *k == key)
+    }
+
     /// True when the block declared no meta-arguments at all — the
     /// common case, and the one that serializes to nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.provider.is_none() && self.depends_on.is_empty()
+    }
+}
+
+// ── Declared resource ──────────────────────────────────────────────
+
+/// Why a [`Resource`] could not be constructed.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ResourceError {
+    /// A meta-argument was found among the provider attributes.
+    #[error(
+        "resource `{address}`: `{key}` is a meta-argument, not a provider attribute. \
+         It belongs on `Resource::meta` (a typed `ResourceMeta`), where magma can act \
+         on it. Left in the attributes it would be handed to the provider encoder, \
+         which walks the provider SCHEMA and drops unknown keys without complaint — \
+         so it would evaporate silently and still count as declared drift."
+    )]
+    MetaArgumentInAttributes { address: String, key: String },
+}
+
+/// One resource as **declared** — the config-side peer of
+/// [`StateResource`] (what the world holds) and [`ResourceChange`] (what
+/// a plan intends to do about the difference).
+///
+/// **This is the typed door into magma.** Until it existed, the only way
+/// to hand magma a resource was `magma_config::Config`, whose
+/// `resources` field is a `HashMap<String, HashMap<String, Value>>` —
+/// a transliteration of Terraform JSON in which identity, provider
+/// routing and ordering are all *strings inside an untyped body*. A
+/// front end in another dialect (a blue `(definfra …)` form) therefore
+/// had to emit Terraform JSON text and have magma parse it back, which
+/// makes the JSON surface load-bearing for a language that has no reason
+/// to know it exists.
+///
+/// A `Resource` carries the three facts that are magma's, not the
+/// provider's, as typed values:
+///
+/// * `address` — [`ResourceAddress`], not `"aws_vpc" → "main"` map keys.
+/// * `meta.provider` — [`ProviderInstance`], which structurally cannot
+///   hold an alias.
+/// * `meta.depends_on` — `Vec<ResourceAddress>`, not a list of strings
+///   that has to be re-parsed to become a graph edge.
+///
+/// **What stays JSON, and why that is not a gap.** `attributes` is a
+/// `serde_json::Value` because attribute *values* are cty data shaped by
+/// the provider's own schema, which magma only learns at runtime over
+/// the plugin protocol. They are data, not Terraform syntax; typing them
+/// would mean generating a Rust type per resource type per provider
+/// version. The JSON here is the same JSON `magma_cty` already encodes
+/// against a schema — no text is parsed and none is emitted.
+///
+/// **The one invariant.** `attributes` may not contain a meta-argument
+/// key. The field is private and [`Resource::new`] is the only
+/// constructor, so a `Resource` holding `provider` or `depends_on` among
+/// its attributes has no code path in safe Rust — including through
+/// `Deserialize`, which routes through the same check. Tier-honest: the
+/// *value* is rejected at the construction boundary (a `Result::Err`,
+/// i.e. parse-time-rejected), while the *state* of holding one is
+/// unrepresentable because nothing can write the field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(into = "ResourceRepr", try_from = "ResourceRepr")]
+pub struct Resource {
+    /// Canonical identity — kind, module, type, name, instance key.
+    pub address: ResourceAddress,
+    /// The executor-owned meta-arguments, typed.
+    pub meta: ResourceMeta,
+    /// Provider attributes ONLY. Private: see the type doc.
+    attributes: serde_json::Value,
+}
+
+/// Serialization shadow for [`Resource`], so the private `attributes`
+/// field round-trips through the same validation the constructor
+/// applies. A plan or a declaration read back from disk is a real
+/// boundary — the same reason [`ProviderInstance`] takes this shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ResourceRepr {
+    address: ResourceAddress,
+    #[serde(default)]
+    meta: ResourceMeta,
+    #[serde(default)]
+    attributes: serde_json::Value,
+}
+
+impl From<Resource> for ResourceRepr {
+    fn from(r: Resource) -> Self {
+        Self {
+            address: r.address,
+            meta: r.meta,
+            attributes: r.attributes,
+        }
+    }
+}
+
+impl TryFrom<ResourceRepr> for Resource {
+    type Error = ResourceError;
+    fn try_from(r: ResourceRepr) -> Result<Self, Self::Error> {
+        Self::new(r.address, r.attributes).map(|res| res.with_meta(r.meta))
+    }
+}
+
+impl Resource {
+    /// Declare a resource from its address and its provider attributes.
+    ///
+    /// Refuses any attribute whose key is a meta-argument
+    /// ([`ResourceMeta::is_meta_key`]) — that is the whole invariant this
+    /// constructor exists to hold. A non-object `attributes` is accepted
+    /// unchanged and carries no keys to check, matching what
+    /// `magma_config::split_resource_body` already tolerates on the JSON
+    /// door; the shape is handled (loudly) further downstream and is not
+    /// this constructor's to reinterpret.
+    pub fn new(
+        address: ResourceAddress,
+        attributes: serde_json::Value,
+    ) -> Result<Self, ResourceError> {
+        if let Some(obj) = attributes.as_object() {
+            for key in obj.keys() {
+                if ResourceMeta::is_meta_key(key) {
+                    return Err(ResourceError::MetaArgumentInAttributes {
+                        address: address.to_string(),
+                        key: key.clone(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            address,
+            meta: ResourceMeta::default(),
+            attributes,
+        })
+    }
+
+    /// Attach the full typed meta block.
+    #[must_use]
+    pub fn with_meta(mut self, meta: ResourceMeta) -> Self {
+        self.meta = meta;
+        self
+    }
+
+    /// Route this resource through a named provider instance.
+    #[must_use]
+    pub fn with_provider(mut self, provider: ProviderInstance) -> Self {
+        self.meta.provider = Some(provider);
+        self
+    }
+
+    /// Declare ordering that no interpolation expresses — the entire
+    /// reason `depends_on` exists.
+    #[must_use]
+    pub fn depending_on(mut self, deps: impl IntoIterator<Item = ResourceAddress>) -> Self {
+        self.meta.depends_on.extend(deps);
+        self
+    }
+
+    /// The provider attributes. Read-only by construction.
+    #[must_use]
+    pub fn attributes(&self) -> &serde_json::Value {
+        &self.attributes
+    }
+
+    /// Take the provider attributes, consuming the resource.
+    #[must_use]
+    pub fn into_attributes(self) -> serde_json::Value {
+        self.attributes
+    }
+
+    /// This resource as an edge-derivation node.
+    #[must_use]
+    pub fn dependency_node(&self) -> DependencyNode<'_> {
+        DependencyNode {
+            address: &self.address,
+            depends_on: &self.meta.depends_on,
+            body: Some(&self.attributes),
+        }
+    }
+}
+
+// ── Dependency-edge inputs ─────────────────────────────────────────
+
+/// The three facts dependency-edge derivation needs from a node,
+/// borrowed. Consumed by `magma_config::dependency_edges`, which owns
+/// the derivation itself (it needs the `${…}` scanner that lives with
+/// the rest of the interpolation family).
+///
+/// A borrowed VIEW rather than a concrete type, because the two node
+/// populations that need edges are different types at different stages:
+/// a declared [`Resource`] (config-time, what a front end builds) and a
+/// [`ResourceChange`] (plan-time, what the apply engine orders).
+/// Converting one into the other to share the derivation would clone
+/// every resource body on magma's hottest path; this view clones
+/// nothing, so there is no reason left to keep two copies of the
+/// derivation — which is how a missing edge source once existed in both
+/// and was fixed in neither.
+#[derive(Debug, Clone, Copy)]
+pub struct DependencyNode<'a> {
+    /// Who this node is.
+    pub address: &'a ResourceAddress,
+    /// Ordering the author declared explicitly.
+    pub depends_on: &'a [ResourceAddress],
+    /// The body to scan for `${type.name.attr}` references. `None` for a
+    /// node with no config body left — a delete.
+    pub body: Option<&'a serde_json::Value>,
+}
+
+/// One `dependent depends on dependency` edge: `dependency` must be
+/// applied before `dependent`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceEdge {
+    pub dependent: ResourceAddress,
+    pub dependency: ResourceAddress,
+}
+
+impl ResourceChange {
+    /// This planned change as an edge-derivation node. The body scanned
+    /// is `after` — the desired config, which still carries its literal
+    /// `${…}` references at this stage (`magma_plan` deliberately leaves
+    /// them unresolved so these edges survive).
+    #[must_use]
+    pub fn dependency_node(&self) -> DependencyNode<'_> {
+        DependencyNode {
+            address: &self.address,
+            depends_on: &self.meta.depends_on,
+            body: self.after.as_ref(),
+        }
     }
 }
 
@@ -1019,5 +1287,113 @@ mod read_is_not_a_change_tests {
             1,
             "a data orphan's Delete is real pending work; only Read is not"
         );
+    }
+
+    // ── Resource: the typed declaration node ───────────────────────
+    //
+    // The whole point of the type is that a meta-argument cannot hide in
+    // the attributes. Downstream, `magma_cty::from_json` walks the
+    // provider SCHEMA rather than the JSON, so an unknown key is dropped
+    // in silence while still counting as declared drift — a resource
+    // applied through the wrong provider, re-planning as Update forever,
+    // and no error anywhere. The JSON door closed that at parse time;
+    // this closes it at construction time, so the new door cannot reopen
+    // it.
+
+    fn res_addr(type_id: &str, name: &str) -> ResourceAddress {
+        ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Managed,
+            type_id: ResourceTypeId(type_id.to_string()),
+            name: name.to_string(),
+            key: None,
+        }
+    }
+
+    #[test]
+    fn every_meta_argument_in_the_closed_catalog_is_refused_in_the_attributes() {
+        // Drive the test FROM the catalog, so a meta-argument added to
+        // `ResourceMeta` without being closed on this door fails here
+        // rather than shipping open.
+        let keys: Vec<&str> = ResourceMeta::IMPLEMENTED
+            .iter()
+            .copied()
+            .chain(ResourceMeta::UNIMPLEMENTED.iter().map(|(k, _)| *k))
+            .collect();
+        assert_eq!(keys.len(), 7, "the catalog changed — check both doors");
+
+        for key in keys {
+            let attrs = serde_json::json!({ key: "whatever" });
+            let err = Resource::new(res_addr("aws_instance", "web"), attrs)
+                .expect_err("a meta-argument is not a provider attribute");
+            assert_eq!(
+                err,
+                ResourceError::MetaArgumentInAttributes {
+                    address: "aws_instance.web".to_string(),
+                    key: key.to_string(),
+                }
+            );
+            // The message has to say where it belongs, or the caller's
+            // next move is a guess.
+            assert!(
+                err.to_string().contains("Resource::meta"),
+                "the refusal must name the typed home, got: {err}"
+            );
+        }
+    }
+
+    /// Deserialize is a real boundary — a declaration is persisted and
+    /// read back — so it routes through the same constructor rather than
+    /// filling the private field directly.
+    #[test]
+    fn deserializing_a_resource_with_a_meta_argument_in_its_attributes_is_refused() {
+        let raw = serde_json::json!({
+            "address": res_addr("aws_instance", "web"),
+            "attributes": { "ami": "ami-1", "depends_on": ["aws_iam_role.exec"] }
+        });
+        let err = serde_json::from_value::<Resource>(raw)
+            .expect_err("the private field must not be reachable through serde");
+        assert!(
+            err.to_string().contains("depends_on"),
+            "the deserialize error must name the offending key, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_resource_round_trips_through_serde_with_its_typed_meta_intact() {
+        let r = Resource::new(
+            res_addr("aws_instance", "web"),
+            serde_json::json!({"ami": "ami-1"}),
+        )
+        .expect("valid")
+        .with_provider(ProviderInstance::try_from("aws".to_string()).expect("bare"))
+        .depending_on([res_addr("aws_iam_role", "exec")]);
+        let back: Resource =
+            serde_json::from_value(serde_json::to_value(&r).expect("serializes")).expect("parses");
+        assert_eq!(back, r);
+    }
+
+    /// Matches what `magma_config::split_resource_body` already tolerates
+    /// on the JSON door: a non-object body is passed through, because the
+    /// shape is handled (loudly) downstream and carries no keys to check.
+    #[test]
+    fn a_non_object_attribute_body_is_accepted_unchanged() {
+        let r = Resource::new(res_addr("aws_instance", "web"), serde_json::json!("opaque"))
+            .expect("no keys to check");
+        assert_eq!(*r.attributes(), serde_json::json!("opaque"));
+    }
+
+    #[test]
+    fn a_declared_resources_dependency_node_carries_both_edge_sources() {
+        let r = Resource::new(
+            res_addr("aws_subnet", "a"),
+            serde_json::json!({ "vpc_id": "${aws_vpc.main.id}" }),
+        )
+        .expect("valid")
+        .depending_on([res_addr("aws_iam_role", "exec")]);
+        let node = r.dependency_node();
+        assert_eq!(node.address, &res_addr("aws_subnet", "a"));
+        assert_eq!(node.depends_on, &[res_addr("aws_iam_role", "exec")]);
+        assert_eq!(node.body, Some(r.attributes()));
     }
 }

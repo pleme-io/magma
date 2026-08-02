@@ -21,8 +21,9 @@
 use std::collections::HashMap;
 
 use magma_types::{
-    ProviderInstance, ProviderInstanceError, ProviderReference, ResourceAddress, ResourceKind,
-    ResourceMeta, ResourceTypeId, State,
+    DependencyNode, ProviderInstance, ProviderInstanceError, ProviderReference, Resource,
+    ResourceAddress, ResourceEdge, ResourceError, ResourceKind, ResourceMeta, ResourceTypeId,
+    State,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -68,6 +69,26 @@ pub enum ConfigError {
         key: &'static str,
         detail: String,
     },
+    /// A typed [`Resource`] could not be built from a parsed block, or a
+    /// caller handed [`Config::from_resources`] one that was already
+    /// invalid.
+    #[error(transparent)]
+    Resource(#[from] ResourceError),
+    /// [`Config::from_resources`] was handed an address the Terraform
+    /// JSON container structurally cannot hold — see that method's doc.
+    #[error(
+        "resource `{address}`: {detail} \
+         magma's Terraform JSON container cannot represent it, so accepting it here \
+         would silently drop the part it cannot hold. Refusing instead."
+    )]
+    UnrepresentableAddress { address: String, detail: String },
+    /// Two declared resources share one `(kind, type, name)` slot. In the
+    /// JSON container the second would overwrite the first with no error.
+    #[error(
+        "duplicate resource address `{address}`: two declarations occupy one slot. \
+         The Terraform JSON container is a map, so one would silently replace the other."
+    )]
+    DuplicateAddress { address: String },
 }
 
 // ── Top-level config (Pangea-rendered + tiny subset) ──────────────
@@ -160,6 +181,107 @@ impl Config {
         managed.chain(data)
     }
 
+    /// The raw declared body for one address — the managed table for a
+    /// managed resource, the `data` table for a data source.
+    ///
+    /// Public and here rather than private in each consumer: `magma-plan`
+    /// carried its own copy (`lookup_config_value`) and so did this
+    /// crate's typed door, which is two chances for the kind-to-table
+    /// mapping to disagree about where a data source lives.
+    #[must_use]
+    pub fn resource_body(&self, address: &ResourceAddress) -> Option<serde_json::Value> {
+        let table = match address.kind {
+            ResourceKind::Data => &self.data,
+            _ => &self.resources,
+        };
+        table
+            .get(&address.type_id.0)
+            .and_then(|by_name| by_name.get(&address.name))
+            .cloned()
+    }
+
+    /// Lower this config to typed [`Resource`] nodes — the SECOND door's
+    /// currency, produced by the FIRST door.
+    ///
+    /// This is what makes the two doors one door. [`Config::from_json`]
+    /// stays the shipped path and is not touched; this method reads it
+    /// and hands back exactly the node type a Rust front end constructs
+    /// directly. So there is no "JSON dialect" and "typed dialect" with
+    /// their own semantics — there is one node type, and JSON is one way
+    /// to arrive at it.
+    ///
+    /// Meta-arguments are split out per [`split_resource_body`], which
+    /// means the same refusals apply: an aliased `provider`, a `count`,
+    /// a `lifecycle` all stop here rather than being dropped.
+    ///
+    /// Order is deterministic — sorted by rendered address — because the
+    /// underlying `HashMap` iteration order is not, and a dependency
+    /// graph built from an unordered node list has unstable (though
+    /// equally correct) wave contents.
+    pub fn resources_typed(&self) -> Result<Vec<Resource>, ConfigError> {
+        let mut out = Vec::new();
+        for address in self.resource_addresses() {
+            let label = address.to_string();
+            let body = self.resource_body(&address);
+            let (meta, attrs) = match body {
+                Some(b) => split_resource_body(&label, &b)?,
+                None => (ResourceMeta::default(), serde_json::Value::Null),
+            };
+            out.push(Resource::new(address, attrs)?.with_meta(meta));
+        }
+        out.sort_by_key(|r| r.address.to_string());
+        Ok(out)
+    }
+
+    /// Raise typed [`Resource`] nodes into a `Config` — the second door.
+    ///
+    /// A front end in another dialect builds `Resource` values in Rust
+    /// and gets a `Config` it can hand to `magma_plan::plan`, with no
+    /// Terraform JSON text authored, parsed or emitted anywhere.
+    ///
+    /// **Fidelity is guaranteed by refusal, not by hope.** The container
+    /// this fills is Terraform-JSON-shaped: `{type → {name → body}}`. It
+    /// has nowhere to put a module path, an instance key, or a kind other
+    /// than managed/data, and the `depends_on` strings it holds are
+    /// re-parsed by [`split_resource_body`] on the way back out. So every
+    /// address — the resource's own and each of its dependencies — is
+    /// checked against what the container can actually hold, and anything
+    /// it cannot is refused here. The round trip
+    /// `from_resources(rs)?.resources_typed()? == rs` therefore holds for
+    /// every input this accepts, which is the property a front end needs
+    /// and the one a silent truncation would break.
+    ///
+    /// These refusals are magma's *documented* bounds surfacing at the
+    /// boundary, not new limits: magma does not expand modules and does
+    /// not implement `count`/`for_each` (so no instance keys), per
+    /// `theory/MAGMA.md` §IX.
+    pub fn from_resources(
+        resources: impl IntoIterator<Item = Resource>,
+    ) -> Result<Self, ConfigError> {
+        let mut config = Self::default();
+        for r in resources {
+            let slot = container_slot(&r.address)?;
+            for dep in &r.meta.depends_on {
+                // A dependency address survives only as a string that
+                // `parse_depends_on_entry` must be able to read back.
+                container_slot(dep)?;
+            }
+            let body = meta_into_body(&r)?;
+            let by_name = match slot.0 {
+                ResourceKind::Data => &mut config.data,
+                _ => &mut config.resources,
+            }
+            .entry(slot.1)
+            .or_default();
+            if by_name.insert(slot.2, body).is_some() {
+                return Err(ConfigError::DuplicateAddress {
+                    address: r.address.to_string(),
+                });
+            }
+        }
+        Ok(config)
+    }
+
     /// Provider references declared by the `terraform.required_providers`
     /// block, joined with any `providers` configuration blocks.
     pub fn provider_references(&self) -> Vec<ProviderReference> {
@@ -177,37 +299,12 @@ impl Config {
 
 // ── Resource meta-arguments ─────────────────────────────────────────
 
-/// The meta-arguments magma implements, with the typed value each
-/// produces.
-const IMPLEMENTED_META: [&str; 2] = ["provider", "depends_on"];
-
-/// The meta-arguments magma recognises but does not implement, paired
-/// with what silently ignoring each one would actually do. The message
-/// is the point: an operator who hits this needs to know the executor
-/// cannot honour what they wrote, not merely that a key was rejected.
-const UNIMPLEMENTED_META: [(&str, &str); 5] = [
-    (
-        "count",
-        "Ignoring it would create ONE resource where N were declared.",
-    ),
-    (
-        "for_each",
-        "Ignoring it would create ONE resource where one per element was declared.",
-    ),
-    (
-        "lifecycle",
-        "Ignoring it would discard `prevent_destroy`, `ignore_changes` and \
-         `create_before_destroy` — a `prevent_destroy` resource could be destroyed.",
-    ),
-    (
-        "provisioner",
-        "Ignoring it would report success for a resource whose provisioning steps never ran.",
-    ),
-    (
-        "connection",
-        "Ignoring it would discard the connection settings its provisioners require.",
-    ),
-];
+/// The meta-argument catalog is CLOSED and lives on
+/// [`magma_types::ResourceMeta`], not here. Two doors now enforce it —
+/// this one (Terraform JSON) and `magma_types::Resource::new` (a Rust
+/// front end) — and a second copy of the list is exactly how a key ends
+/// up closed on one door and open on the other.
+use magma_types::ResourceMeta as MetaCatalog;
 
 /// Split a rendered resource block into its typed meta-arguments and the
 /// provider attributes that remain.
@@ -247,7 +344,7 @@ pub fn split_resource_body(
     let mut attrs = serde_json::Map::new();
 
     for (key, value) in obj {
-        if let Some((k, consequence)) = UNIMPLEMENTED_META.iter().find(|(k, _)| k == key) {
+        if let Some((k, consequence)) = MetaCatalog::UNIMPLEMENTED.iter().find(|(k, _)| k == key) {
             return Err(ConfigError::UnimplementedMeta {
                 address: address.to_string(),
                 key: k,
@@ -291,7 +388,9 @@ pub fn split_resource_body(
     }
 
     debug_assert!(
-        IMPLEMENTED_META.iter().all(|k| !attrs.contains_key(*k)),
+        MetaCatalog::IMPLEMENTED
+            .iter()
+            .all(|k| !attrs.contains_key(*k)),
         "an implemented meta-argument leaked into the attributes",
     );
     Ok((meta, serde_json::Value::Object(attrs)))
@@ -342,6 +441,253 @@ fn parse_depends_on_entry(address: &str, entry: &str) -> Result<ResourceAddress,
         name: name.to_string(),
         key: None,
     })
+}
+
+/// The `(kind, type, name)` slot a `ResourceAddress` occupies in the
+/// Terraform JSON container, or a refusal naming the part the container
+/// cannot hold. See [`Config::from_resources`].
+fn container_slot(
+    address: &ResourceAddress,
+) -> Result<(ResourceKind, String, String), ConfigError> {
+    let refuse = |detail: &str| ConfigError::UnrepresentableAddress {
+        address: address.to_string(),
+        detail: detail.to_string(),
+    };
+    if !address.module.is_root() {
+        return Err(refuse(
+            "it is scoped to a module, and magma does not expand module blocks, so there is \
+             no slot for it and no ordering to honour.",
+        ));
+    }
+    if address.key.is_some() {
+        return Err(refuse(
+            "it carries an instance key, which only `count`/`for_each` produce — and magma \
+             implements neither.",
+        ));
+    }
+    match address.kind {
+        ResourceKind::Managed | ResourceKind::Data => Ok((
+            address.kind,
+            address.type_id.0.clone(),
+            address.name.clone(),
+        )),
+        other => Err(refuse(&{
+            let mut s = String::from("it is a `");
+            s.push_str(&other.to_string());
+            s.push_str("`, and only managed resources and data sources have a resource slot.");
+            s
+        })),
+    }
+}
+
+/// Fold a [`Resource`]'s typed meta back into one Terraform-JSON body,
+/// so [`split_resource_body`] reads back exactly the meta it went in
+/// with.
+///
+/// Every emitted value is a constructed `serde_json::Value` and every
+/// address is rendered by [`ResourceAddress`]'s own `Display` — the two
+/// sanctioned typed-emission surfaces. No syntax is `format!`ed.
+fn meta_into_body(r: &Resource) -> Result<serde_json::Value, ConfigError> {
+    if r.meta.is_empty() {
+        return Ok(r.attributes().clone());
+    }
+    let serde_json::Value::Object(attrs) = r.attributes() else {
+        return Err(ConfigError::Malformed(format!(
+            "resource `{}` declares meta-arguments but its attributes are not a JSON object \
+             ({}), so there is no block to carry them",
+            r.address,
+            kind_of(r.attributes()),
+        )));
+    };
+    let mut body = attrs.clone();
+    if let Some(p) = &r.meta.provider {
+        body.insert(
+            "provider".to_string(),
+            serde_json::Value::String(p.name().to_string()),
+        );
+    }
+    if !r.meta.depends_on.is_empty() {
+        body.insert(
+            "depends_on".to_string(),
+            serde_json::Value::Array(
+                r.meta
+                    .depends_on
+                    .iter()
+                    .map(|d| serde_json::Value::String(d.to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    Ok(serde_json::Value::Object(body))
+}
+
+/// The JSON kind of a value, for a message that says what was found.
+fn kind_of(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
+// ── Dependency edges ────────────────────────────────────────────────
+
+/// Derive the dependency edges among a set of nodes — the ONE
+/// derivation, with both edge sources.
+///
+/// * **Interpolation** — a literal `${type.name.attr}` anywhere in the
+///   node's body. This was for a long time the only source, and it is
+///   why the missing one was invisible: the overwhelming majority of
+///   real ordering IS expressed as a reference, so ordering appeared to
+///   work.
+/// * **`depends_on`** — ordering the author declared explicitly. The
+///   meta-argument exists *precisely because* there is no interpolation
+///   to infer the edge from — an author with a reference does not need
+///   it — so the one case the interpolation scan structurally cannot see
+///   is exactly the case it covers.
+///
+/// An edge is emitted only when its target is itself among `nodes`. A
+/// dependency that is absent, already applied, or unchanged needs no
+/// ordering: it is not being touched, so nothing can race it. A
+/// self-edge is dropped.
+///
+/// Nodes are matched on `(type, name)`, deliberately ignoring kind and
+/// module — the same key the interpolation grammar itself carries, since
+/// `${aws_vpc.main.id}` names no kind and no module.
+///
+/// Edge order is the caller's node order, then interpolation edges in
+/// body-walk order, then declared edges in declaration order. Callers
+/// feed these straight into a graph, where duplicate edges are
+/// significant to in-degree, so the order and the multiplicity are part
+/// of the contract, not an accident.
+#[must_use]
+pub fn dependency_edges(nodes: &[DependencyNode<'_>]) -> Vec<ResourceEdge> {
+    let by_key: HashMap<(&str, &str), &ResourceAddress> = nodes
+        .iter()
+        .map(|n| {
+            (
+                (n.address.type_id.0.as_str(), n.address.name.as_str()),
+                n.address,
+            )
+        })
+        .collect();
+
+    let mut edges = Vec::new();
+    for n in nodes {
+        let self_key = (n.address.type_id.0.as_str(), n.address.name.as_str());
+        let link = |dep_key: (&str, &str), edges: &mut Vec<ResourceEdge>| {
+            if dep_key == self_key {
+                return;
+            }
+            if let Some(dep) = by_key.get(&dep_key) {
+                edges.push(ResourceEdge {
+                    dependent: n.address.clone(),
+                    dependency: (*dep).clone(),
+                });
+            }
+        };
+        if let Some(body) = n.body {
+            for refstr in collect_refs(body) {
+                if let Some((ty, name)) = ref_target(&refstr) {
+                    link((ty.as_str(), name.as_str()), &mut edges);
+                }
+            }
+        }
+        for dep in n.depends_on {
+            link((dep.type_id.0.as_str(), dep.name.as_str()), &mut edges);
+        }
+    }
+    edges
+}
+
+// ── Interpolation reference extraction ──────────────────────────────
+//
+// Lives here, with the rest of the `${…}` family (`resolve_reference`,
+// `resolve_config`, `has_interpolation`), and NOT in magma-apply where
+// it grew. Edge derivation is now needed at config time by a front end
+// that has no plan yet and no reason to depend on the apply engine; a
+// second copy of an escape-aware scanner is how the 2026-07-23 escape
+// incident managed to need fixing in three places.
+
+/// Collect every `${…}` reference path (inner, no wrapper) found
+/// anywhere in a config value.
+///
+/// Escape-aware: HCL2's own escaping convention doubles `$`/`%` before a
+/// `{` (`$${`/`%%{`) to mean a literal `${`/`%{` that must NEVER be
+/// treated as interpolation. A naive `s.find("${")` misreads a correctly
+/// escaped value — e.g. `github_repository_file.content` carrying a
+/// GitHub Actions `$${{ secrets.BOT_PAT }}` — as a real reference,
+/// extracting the malformed path `{ secrets.BOT_PAT ` (the stray leading
+/// brace is the leftover second `{` of the double-brace `${{ }}` GitHub
+/// Actions syntax).
+#[must_use]
+pub fn collect_refs(v: &serde_json::Value) -> Vec<String> {
+    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => scan_refs(s, out),
+            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(v, &mut out);
+    out
+}
+
+/// Byte-indexed, escape-aware `${…}` reference scan behind
+/// [`collect_refs`]. Walks `s` left to right; at each position prefers
+/// the 3-byte escape match (`$${`/`%%{`, consumed whole, never
+/// re-examined — this is what stops the trailing brace of an escaped
+/// `${{` from being mistaken for a fresh opener) over the 2-byte
+/// reference-open match (`${`). Slicing only ever happens immediately
+/// before/after one of `$`/`%`/`{`/`}` — all single-byte ASCII, so every
+/// slice point is a guaranteed UTF-8 char boundary regardless of what
+/// non-ASCII content surrounds it.
+fn scan_refs(s: &str, out: &mut Vec<String>) {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if i + 2 < bytes.len()
+            && (bytes[i] == b'$' || bytes[i] == b'%')
+            && bytes[i + 1] == bytes[i]
+            && bytes[i + 2] == b'{'
+        {
+            i += 3;
+            continue;
+        }
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            let after = &s[i + 2..];
+            if let Some(end) = after.find('}') {
+                out.push(after[..end].trim().to_string());
+                i += 2 + end + 1;
+                continue;
+            }
+            break;
+        }
+        i += 1;
+    }
+}
+
+/// The `(type, name)` a reference path targets —
+/// `github_repository.galho.node_id` → `("github_repository", "galho")`.
+/// Returns `None` for `data.*` sources (resolved from existing state,
+/// not ordered as apply dependencies) or malformed paths. Strips any
+/// `[index]` from the name segment.
+#[must_use]
+pub fn ref_target(inner: &str) -> Option<(String, String)> {
+    let segs: Vec<&str> = inner.split('.').collect();
+    if segs.first() == Some(&"data") {
+        return None;
+    }
+    if segs.len() >= 2 {
+        let name = segs[1].split('[').next().unwrap_or(segs[1]);
+        return Some((segs[0].to_string(), name.to_string()));
+    }
+    None
 }
 
 // ── State resolution map ────────────────────────────────────────────
@@ -1104,6 +1450,240 @@ mod tests {
         assert_eq!(
             resolved,
             json!("caf\u{e9} ${{ secrets.BOT_PAT }} \u{2764}\u{fe0f}")
+        );
+    }
+
+    // ── The typed door ─────────────────────────────────────────────
+    //
+    // `Config::from_json` is the shipped path for every current consumer
+    // (the CLI, the tlisp/lava path, magma-pangea). Everything below is a
+    // SECOND door onto the same machine, so the tests come in pairs: what
+    // the typed door does, and proof the JSON door is unchanged by it.
+
+    use magma_types::{InstanceKey, ModulePath};
+
+    fn managed(type_id: &str, name: &str) -> ResourceAddress {
+        ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Managed,
+            type_id: ResourceTypeId(type_id.to_string()),
+            name: name.to_string(),
+            key: None,
+        }
+    }
+
+    /// The JSON door is READ, never rewritten: `resources_typed` is a
+    /// projection. If it ever became a mutation, the raw map would lose
+    /// the meta keys — and every existing consumer reads that raw map.
+    #[test]
+    fn lowering_to_typed_nodes_leaves_the_raw_json_container_byte_identical() {
+        let raw = json!({
+            "resource": {
+                "aws_instance": {
+                    "web": {
+                        "ami": "ami-1",
+                        "provider": "aws",
+                        "depends_on": ["aws_iam_role.exec"]
+                    }
+                },
+                "aws_iam_role": { "exec": { "name": "exec" } }
+            }
+        });
+        let config = Config::from_json(raw.clone()).expect("parses");
+        let before = serde_json::to_value(&config.resources).expect("serializes");
+
+        let typed = config.resources_typed().expect("lowers");
+        assert_eq!(typed.len(), 2);
+
+        let after = serde_json::to_value(&config.resources).expect("serializes");
+        assert_eq!(
+            before, after,
+            "resources_typed must be a read, not a rewrite"
+        );
+        // And the meta keys are still IN the raw block, exactly where
+        // every existing consumer expects them.
+        assert_eq!(
+            config.resources["aws_instance"]["web"]["provider"],
+            json!("aws")
+        );
+    }
+
+    #[test]
+    fn the_json_door_produces_typed_provider_and_depends_on() {
+        let config = Config::from_json(json!({
+            "resource": {
+                "aws_instance": {
+                    "web": {
+                        "ami": "ami-1",
+                        "provider": "aws",
+                        "depends_on": ["aws_iam_role.exec"]
+                    }
+                }
+            }
+        }))
+        .expect("parses");
+
+        let typed = config.resources_typed().expect("lowers");
+        let web = typed
+            .iter()
+            .find(|r| r.address == managed("aws_instance", "web"))
+            .expect("present");
+        assert_eq!(
+            web.meta.provider.as_ref().map(ProviderInstance::name),
+            Some("aws")
+        );
+        assert_eq!(web.meta.depends_on, vec![managed("aws_iam_role", "exec")]);
+        // The meta keys are GONE from the attributes — that is the
+        // invariant `Resource` holds structurally.
+        assert_eq!(*web.attributes(), json!({ "ami": "ami-1" }));
+    }
+
+    /// The property a front end needs: what it declares is what magma
+    /// plans. Anything the JSON container could not hold faithfully is
+    /// refused by `from_resources`, so this round trip has no lossy
+    /// inputs to fail on.
+    #[test]
+    fn typed_resources_round_trip_through_the_json_container_unchanged() {
+        let mut declared = vec![
+            Resource::new(managed("aws_iam_role", "exec"), json!({ "name": "exec" }))
+                .expect("valid"),
+            Resource::new(managed("aws_instance", "web"), json!({ "ami": "ami-1" }))
+                .expect("valid")
+                .with_provider(ProviderInstance::try_from("aws".to_string()).expect("bare"))
+                .depending_on([managed("aws_iam_role", "exec")]),
+            Resource::new(
+                ResourceAddress {
+                    kind: ResourceKind::Data,
+                    ..managed("aws_ami", "latest")
+                },
+                json!({ "most_recent": true }),
+            )
+            .expect("valid"),
+        ];
+        declared.sort_by_key(|r| r.address.to_string());
+
+        let config = Config::from_resources(declared.clone()).expect("representable");
+        let back = config.resources_typed().expect("lowers");
+        assert_eq!(back, declared);
+    }
+
+    /// The declared-only edge — the case interpolation structurally
+    /// cannot see, because an author with a reference does not write
+    /// `depends_on` at all.
+    #[test]
+    fn a_declared_dependency_becomes_an_edge_with_no_interpolation_anywhere() {
+        let role = Resource::new(managed("aws_iam_role", "exec"), json!({ "name": "exec" }))
+            .expect("valid");
+        let web = Resource::new(managed("aws_instance", "web"), json!({ "ami": "ami-1" }))
+            .expect("valid")
+            .depending_on([managed("aws_iam_role", "exec")]);
+        let nodes = [role.dependency_node(), web.dependency_node()];
+
+        assert_eq!(
+            dependency_edges(&nodes),
+            vec![ResourceEdge {
+                dependent: managed("aws_instance", "web"),
+                dependency: managed("aws_iam_role", "exec"),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_interpolated_reference_still_becomes_an_edge() {
+        let vpc = Resource::new(managed("aws_vpc", "main"), json!({ "cidr": "10.0.0.0/16" }))
+            .expect("valid");
+        let sub = Resource::new(
+            managed("aws_subnet", "a"),
+            json!({ "vpc_id": "${aws_vpc.main.id}" }),
+        )
+        .expect("valid");
+        let nodes = [vpc.dependency_node(), sub.dependency_node()];
+
+        assert_eq!(
+            dependency_edges(&nodes),
+            vec![ResourceEdge {
+                dependent: managed("aws_subnet", "a"),
+                dependency: managed("aws_vpc", "main"),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_edge_to_a_node_that_is_not_present_is_not_emitted() {
+        let web = Resource::new(managed("aws_instance", "web"), json!({ "ami": "ami-1" }))
+            .expect("valid")
+            .depending_on([managed("aws_iam_role", "absent")]);
+        assert_eq!(dependency_edges(&[web.dependency_node()]), vec![]);
+    }
+
+    // ── What the container cannot hold is REFUSED, never truncated ──
+
+    #[test]
+    fn a_module_scoped_resource_is_refused_rather_than_flattened_into_the_root() {
+        let addr = ResourceAddress {
+            module: ModulePath(vec!["net".to_string()]),
+            ..managed("aws_vpc", "main")
+        };
+        let err = Config::from_resources([Resource::new(addr, json!({})).expect("valid")])
+            .expect_err("a module-scoped address has no slot");
+        assert!(
+            matches!(err, ConfigError::UnrepresentableAddress { ref detail, .. }
+                if detail.contains("module")),
+            "expected a module refusal naming the reason, got: {err}"
+        );
+    }
+
+    #[test]
+    fn an_instance_keyed_resource_is_refused_because_magma_implements_no_count() {
+        let addr = ResourceAddress {
+            key: Some(InstanceKey::Index(0)),
+            ..managed("aws_vpc", "main")
+        };
+        let err = Config::from_resources([Resource::new(addr, json!({})).expect("valid")])
+            .expect_err("an instance key has no slot");
+        assert!(
+            matches!(err, ConfigError::UnrepresentableAddress { ref detail, .. }
+                if detail.contains("count")),
+            "expected an instance-key refusal, got: {err}"
+        );
+    }
+
+    /// A dependency address is stored as a STRING and re-parsed on the
+    /// way back out. `parse_depends_on_entry` refuses `module.…`, so
+    /// accepting one here would drop the edge — the exact defect the
+    /// declared-edge source exists to fix.
+    #[test]
+    fn a_module_scoped_dependency_is_refused_rather_than_silently_dropped() {
+        let dep = ResourceAddress {
+            module: ModulePath(vec!["net".to_string()]),
+            ..managed("aws_vpc", "main")
+        };
+        let web = Resource::new(managed("aws_instance", "web"), json!({}))
+            .expect("valid")
+            .depending_on([dep]);
+        let err = Config::from_resources([web]).expect_err("a module dependency cannot round-trip");
+        assert!(matches!(err, ConfigError::UnrepresentableAddress { .. }));
+    }
+
+    #[test]
+    fn two_resources_in_one_slot_are_refused_rather_than_one_overwriting_the_other() {
+        let a = Resource::new(managed("aws_vpc", "main"), json!({ "cidr": "10.0.0.0/16" }))
+            .expect("valid");
+        let b = Resource::new(managed("aws_vpc", "main"), json!({ "cidr": "10.1.0.0/16" }))
+            .expect("valid");
+        let err = Config::from_resources([a, b]).expect_err("one slot, two declarations");
+        assert!(matches!(err, ConfigError::DuplicateAddress { .. }), "{err}");
+    }
+
+    /// The unimplemented-meta refusal reaches the typed door too — it is
+    /// the same closed catalog, enforced at both boundaries.
+    #[test]
+    fn the_typed_door_refuses_an_unimplemented_meta_argument_at_construction() {
+        let err = Resource::new(managed("aws_instance", "web"), json!({ "count": 3 }))
+            .expect_err("count is a meta-argument magma does not implement");
+        assert!(
+            matches!(err, ResourceError::MetaArgumentInAttributes { ref key, .. } if key == "count"),
+            "{err}"
         );
     }
 }
