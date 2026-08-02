@@ -242,10 +242,15 @@ fn attr_str<'a>(v: Option<&'a Value>, k: &str) -> Option<&'a str> {
 /// deliberate refusal, because the alternative (fall through to the address
 /// name) produces a *syntactically valid id for a different resource*.
 #[must_use]
+/// `declared` is the same `type → name → attributes` shape as `state_map`,
+/// built from THIS PLAN's changes. It answers "what will this parent be
+/// named" for a parent that does not exist yet — exactly, from the
+/// declaration, so it is never a guess.
 pub fn derive(
     change: &ResourceChange,
     resolved_after: Option<&Value>,
     state_map: &HashMap<String, Value>,
+    declared: &HashMap<String, Value>,
 ) -> Option<ImportId> {
     let raw = change.after.as_ref();
     if let Some(rule) = rule_for(change.address.type_id.0.as_str()) {
@@ -263,10 +268,33 @@ pub fn derive(
                     // tell us the parent's identity.
                     let rawv = attr_str(raw, k);
                     match rawv.and_then(ref_parent) {
-                        Some((ty, name)) => match parent_name_from_state(state_map, ty, name) {
+                        Some((ty, name)) => match parent_name_from_state(state_map, ty, name)
+                            // Not in state yet? The parent's DECLARED name is
+                            // still known exactly — it is in this very plan.
+                            // Reading it there is not a guess, so the id stays
+                            // `Catalog` and adoption is allowed.
+                            //
+                            // This is what unblocks the common case. Measured
+                            // on pleme-io-opensource (2026-08-01): 84 refusals
+                            // for `github_issue_label` and 16 for
+                            // `github_actions_repository_permissions`, ALL
+                            // `CatalogWithGuessedParent`, so every one fell
+                            // through to a Create that the provider rejected
+                            // with `already_exists` — forever, on every cycle.
+                            //
+                            // And the guess it replaces was genuinely unsafe,
+                            // not merely imprecise: the rejected ids included
+                            // `caixa_tlisp_gha`, whose repository is really
+                            // `caixa-tlisp-gha`. The convention
+                            // (resource-name == repo-name) is broken by every
+                            // underscore-sanitized resource name, so refusing
+                            // was correct — the fix is to stop guessing, not
+                            // to trust the guess.
+                            .or_else(|| parent_name_from_state(declared, ty, name))
+                        {
                             Some(real) => real,
                             None => {
-                                // Parent not in state (or its name is null):
+                                // Neither in state nor declared in this plan:
                                 // fall back to the resource name under the
                                 // org-posture convention, and SAY it is a guess.
                                 confidence = Confidence::CatalogWithGuessedParent;
@@ -386,6 +414,7 @@ mod tests {
             before: None,
             after: Some(after),
             reasons: vec![],
+            meta: Default::default(),
         }
     }
 
@@ -396,6 +425,79 @@ mod tests {
             serde_json::json!({ resource_name: { "name": real_name, "node_id": "R_kgDOabc" } }),
         );
         sm
+    }
+
+    /// THE pleme-io-opensource regression, both halves.
+    ///
+    /// Measured 2026-08-01: 84 `github_issue_label` + 16
+    /// `github_actions_repository_permissions` adoptions were refused as
+    /// `CatalogWithGuessedParent`, so every one fell through to a Create the
+    /// provider rejected with `already_exists`, forever.
+    #[test]
+    fn declared_parent_name_makes_the_id_exact_instead_of_a_guess() {
+        // The child references a parent that is NOT in state — it is being
+        // created by this same plan.
+        let child = mk(
+            "github_issue_label",
+            "caixa-tlisp-gha-label-bug",
+            serde_json::json!({
+                "repository": "${github_repository.caixa_tlisp_gha.name}",
+                "name": "bug"
+            }),
+        );
+
+        // Without the declaration: the old behavior. The guess uses the
+        // RESOURCE name `caixa_tlisp_gha`, but the repository is really
+        // `caixa-tlisp-gha` — so the guess is WRONG, and refusing it was
+        // correct.
+        let guessed = derive(&child, None, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(guessed.confidence, Confidence::CatalogWithGuessedParent);
+        assert!(!guessed.confidence.is_exact());
+        assert_eq!(guessed.id, "caixa_tlisp_gha:bug");
+
+        // With the parent's DECLARED name from the same plan: exact, and the
+        // id is the one the provider's importer actually wants.
+        let declared = state_with_repo("caixa_tlisp_gha", "caixa-tlisp-gha");
+        let exact = derive(&child, None, &HashMap::new(), &declared).unwrap();
+        assert_eq!(exact.confidence, Confidence::Catalog);
+        assert!(exact.confidence.is_exact(), "adoption must be allowed");
+        assert_eq!(exact.id, "caixa-tlisp-gha:bug");
+    }
+
+    /// State still wins over the declaration — a parent that already exists
+    /// is the stronger fact, and the declaration must not override it.
+    #[test]
+    fn state_takes_precedence_over_the_declared_name() {
+        let child = mk(
+            "github_issue_label",
+            "blue-label-bug",
+            serde_json::json!({
+                "repository": "${github_repository.blue.name}",
+                "name": "bug"
+            }),
+        );
+        let in_state = state_with_repo("blue", "blue-from-state");
+        let declared = state_with_repo("blue", "blue-from-plan");
+        let got = derive(&child, None, &in_state, &declared).unwrap();
+        assert_eq!(got.id, "blue-from-state:bug");
+        assert_eq!(got.confidence, Confidence::Catalog);
+    }
+
+    /// Neither source knows the parent: still a guess, still refused. The
+    /// fix narrows the guess, it does not remove the honest fallback.
+    #[test]
+    fn unknown_parent_is_still_reported_as_a_guess() {
+        let child = mk(
+            "github_issue_label",
+            "ghost-label-bug",
+            serde_json::json!({
+                "repository": "${github_repository.ghost.name}",
+                "name": "bug"
+            }),
+        );
+        let got = derive(&child, None, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(got.confidence, Confidence::CatalogWithGuessedParent);
+        assert!(!got.confidence.is_exact());
     }
 
     // ── CATALOG REFLECTION ────────────────────────────────────────────────
@@ -533,7 +635,7 @@ mod tests {
                 row.ty
             );
             let after = (row.after)();
-            let got = derive(&mk(row.ty, "x", after.clone()), Some(&after), &sm);
+            let got = derive(&mk(row.ty, "x", after.clone()), Some(&after), &sm, &HashMap::new());
             match got {
                 Some(ImportId { id, confidence }) if id == row.expect => {
                     assert_eq!(confidence, Confidence::Catalog, "{}", row.ty);
@@ -565,6 +667,7 @@ mod tests {
             &mk("github_branch_protection", "cse_lint_main", after),
             Some(&resolved),
             &sm,
+            &HashMap::new(),
         )
         .expect("derivable");
         assert_eq!(got.id, "cse-lint:main");
@@ -584,7 +687,7 @@ mod tests {
             "name": "bug"
         });
         let sm = state_with_repo("caixa_tlisp_handoff", "caixa-tlisp-handoff");
-        let got = derive(&mk("github_issue_label", "l", after), None, &sm).expect("derivable");
+        let got = derive(&mk("github_issue_label", "l", after), None, &sm, &HashMap::new()).expect("derivable");
         assert_eq!(got.id, "caixa-tlisp-handoff:bug");
         assert_eq!(got.confidence, Confidence::Catalog);
     }
@@ -597,7 +700,7 @@ mod tests {
             "repository": "${github_repository.tag_forge.name}",
             "name": "bug"
         });
-        let got = derive(&mk("github_issue_label", "l", after), None, &HashMap::new())
+        let got = derive(&mk("github_issue_label", "l", after), None, &HashMap::new(), &HashMap::new())
             .expect("derivable");
         assert_eq!(got.id, "tag_forge:bug");
         assert_eq!(got.confidence, Confidence::CatalogWithGuessedParent);
@@ -611,6 +714,7 @@ mod tests {
         let got = derive(
             &mk("github_issue_label", "l", after.clone()),
             Some(&after),
+            &HashMap::new(),
             &HashMap::new(),
         )
         .expect("derivable");
@@ -628,7 +732,8 @@ mod tests {
             derive(
                 &mk("github_branch_protection", "x_main", after),
                 None,
-                &state_with_repo("x", "x")
+                &state_with_repo("x", "x"),
+                &HashMap::new(),
             ),
             None
         );
@@ -641,6 +746,7 @@ mod tests {
             &mk("github_repository", "breathe", after.clone()),
             Some(&after),
             &HashMap::new(),
+            &HashMap::new(),
         )
         .expect("derivable");
         assert_eq!(got.id, "breathe");
@@ -649,6 +755,7 @@ mod tests {
         let got = derive(
             &mk("some_other_type", "thing", serde_json::json!({ "x": 1 })),
             None,
+            &HashMap::new(),
             &HashMap::new(),
         )
         .expect("derivable");
@@ -687,6 +794,7 @@ mod tests {
         let got = derive(
             &mk("github_issue_label", "tag_forge_label_bug", after),
             None,
+            &HashMap::new(),
             &HashMap::new(),
         )
         .expect("derivable");

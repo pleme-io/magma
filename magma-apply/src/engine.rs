@@ -546,6 +546,25 @@ pub async fn run_plan_with_providers_resumable(
         }
     }
 
+    // DECLARED names, from this plan. A composite import id like
+    // `<repo>:<label>` needs the parent's real name, and for a parent this
+    // plan is only just creating, state cannot supply it — but the plan can,
+    // exactly, from the declaration. Without this, `natural_id::derive` fell
+    // back to the parent's RESOURCE name under the org-posture convention
+    // (`resource-name == repo-name`), which every underscore-sanitized name
+    // breaks, so the id was marked `CatalogWithGuessedParent`, adoption
+    // refused it as non-exact, and the Create failed `already_exists` on
+    // every cycle forever.
+    //
+    // Built once, from the whole plan, so it also covers parents scheduled
+    // AFTER the child in apply order.
+    let mut declared_map: HashMap<String, serde_json::Value> = HashMap::new();
+    for c in &plan.resource_changes {
+        if let Some(after) = c.after.as_ref() {
+            sm_insert(&mut declared_map, &c.address, after);
+        }
+    }
+
     // Split the plan into (data sources, NoOp managed, real managed). Data
     // sources are evaluated up front (ReadDataSource) so their results populate
     // the resolution map under `data.<type>.<name>` BEFORE any managed resource
@@ -824,7 +843,12 @@ pub async fn run_plan_with_providers_resumable(
             // down there produced un-importable ids for every reference-keyed
             // type. Computed for creates only; nothing else can conflict.
             let adoption = if change.action == Action::Create {
-                crate::natural_id::derive(change, resolved.after.as_ref(), &state_map)
+                crate::natural_id::derive(
+                    change,
+                    resolved.after.as_ref(),
+                    &state_map,
+                    &declared_map,
+                )
             } else {
                 None
             };
@@ -1870,7 +1894,8 @@ pub(crate) async fn import_and_confirm(
 /// would be a second, ungated path to the same guess.
 #[cfg(test)]
 fn natural_import_id(change: &ResourceChange) -> Option<String> {
-    crate::natural_id::derive(change, change.after.as_ref(), &HashMap::new()).map(|i| i.id)
+    crate::natural_id::derive(change, change.after.as_ref(), &HashMap::new(), &HashMap::new())
+        .map(|i| i.id)
 }
 
 /// Resolve the provider-native import id for adopting a create-conflicted
@@ -1914,7 +1939,7 @@ async fn resolve_import_id(
         },
         None => {
             let derived = precomputed.cloned().or_else(|| {
-                crate::natural_id::derive(change, change.after.as_ref(), &HashMap::new())
+                crate::natural_id::derive(change, change.after.as_ref(), &HashMap::new(), &HashMap::new())
             });
             gate_on_confidence(derived, &change.address, type_name)
         }
@@ -3700,6 +3725,7 @@ mod tests {
             before: None,
             after: Some(after),
             reasons: vec![],
+            meta: Default::default(),
         };
         // Composite <parent>:<subkey>, NOT the bare address name.
         assert_eq!(
@@ -3842,6 +3868,7 @@ mod tests {
             before: None,
             after: None,
             reasons: vec![],
+            meta: Default::default(),
         };
         let changes = vec![
             // a data source the planner marked NoOp (the bug trigger)
@@ -3914,6 +3941,7 @@ mod tests {
                 before: Some(resolved.clone()),
                 after: None, // exactly the live plan shape that triggered the bug
                 reasons: vec![],
+                meta: Default::default(),
             }],
             output_changes: vec![],
             observation: magma_types::Observation::unrefreshed(),
@@ -3992,6 +4020,7 @@ mod tests {
                 before: Some(serde_json::json!({ "result": [{ "id": "acct-1" }] })),
                 after: None,
                 reasons: vec![magma_types::ChangeReason::DeletedResource],
+                meta: Default::default(),
             }],
             output_changes: vec![],
             observation: magma_types::Observation::unrefreshed(),
@@ -4419,6 +4448,7 @@ mod tests {
                     before: None,
                     after: Some(serde_json::json!({ "name": n })),
                     reasons: vec![],
+                    meta: Default::default(),
                 })
                 .collect(),
             output_changes: vec![],
@@ -4800,6 +4830,7 @@ mod tests {
                 before: None,
                 after: Some(serde_json::json!({ "name": "quero.cloud" })),
                 reasons: vec![],
+                meta: Default::default(),
             }],
             output_changes: vec![],
             observation: magma_types::Observation::unrefreshed(),
