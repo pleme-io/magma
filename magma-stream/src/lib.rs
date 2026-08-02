@@ -372,6 +372,21 @@ impl EventSink for JsonLinesSink {
             .open(&self.path)
             .await?;
         f.write_all(line.as_bytes()).await?;
+        // EXPLICIT FLUSH, and it is not optional.
+        //
+        // `tokio::fs::File` buffers, and dropping it does NOT guarantee the
+        // buffer reaches the OS — `AsyncWriteExt::write_all` only fills it.
+        // The previous two-call form (json, then a separate b"\n") happened
+        // to survive that by accident, so collapsing to one write silently
+        // started LOSING records: magma-replay's round-trip tests emitted 3
+        // events and parsed 1.
+        //
+        // That is worse than the interleaving this collapse was meant to
+        // fix, and it is the trap in the whole change: an audit sink that
+        // drops records fails in the same direction as one that corrupts
+        // them — the log cannot be replayed — but silently, with no
+        // malformed line to notice.
+        f.flush().await?;
         Ok(())
     }
 }
