@@ -116,7 +116,11 @@ async fn auto_on_conflict_converts_create_into_import() {
     let target = addr("github_repository", "galho");
     let natural_id = "galho"; // derived from planned `after` attrs
 
-    let absorbed = import_on_conflict(&env, &target, natural_id, &mut state)
+    // The instance the conflicting create was routed to. This test
+    // uses the default one, which is what `provider_for_change` yields
+    // for a resource declaring no `provider`.
+    let instance = magma_types::ProviderInstance::implied_by_type(&target.type_id.0);
+    let absorbed = import_on_conflict(&env, &target, natural_id, &mut state, &instance)
         .await
         .expect("import-on-conflict succeeds against real RPC");
 
@@ -198,7 +202,11 @@ async fn raw_import_client_returns_typed_instances() {
     // Drive the ImportEnvironment surface directly (the same call the
     // prepass makes) and assert the decoded typed shape.
     let instances = env
-        .import_resource_state("aws_iam_role", "cluster-role-id")
+        .import_resource_state(
+            "aws_iam_role",
+            "cluster-role-id",
+            &magma_types::ProviderInstance::implied_by_type("aws_iam_role"),
+        )
         .await
         .expect("import RPC ok");
     assert_eq!(instances.len(), 1);

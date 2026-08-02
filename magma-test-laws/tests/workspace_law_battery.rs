@@ -140,6 +140,7 @@ impl magma_apply::import_prepass::ImportEnvironment for LawMockEnv {
         &self,
         type_name: &str,
         id: &str,
+        _provider: &magma_types::ProviderInstance,
     ) -> Result<Vec<magma_types::ImportedInstance>, String> {
         if id == "missing" {
             return Err("mock: resource not found".into());

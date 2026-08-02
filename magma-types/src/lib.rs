@@ -1265,15 +1265,76 @@ pub struct OutputValue {
 /// operator's `spec.importHints` / `importPolicy.autoOnConflict` and
 /// magma's import prepass. Serializable so it threads through the
 /// bundle / config / plan-input wire boundary.
+/// Where one explicit import hint points — the provider-specific id,
+/// and the provider INSTANCE holding the resource.
+///
+/// **Two wire shapes, one meaning, and the bare-string one is
+/// byte-preserved.** Every hint written before provider aliases existed
+/// is a bare `"<id>"` string, and an operator's `spec.importHints` is a
+/// `map[string]string`. Those deserialize to [`Id`] and serialize back to
+/// exactly the string they came from, so no stored directive, bundle or
+/// plan input changes by a byte. The object form appears only for a hint
+/// that says something the bare form cannot.
+///
+/// The same idiom `magma_config`'s provider container uses for the same
+/// reason: the richer shape is emitted only when there is something
+/// richer to say.
+///
+/// ```json
+/// { "github_repository.galho": "galho" }
+/// { "aws_instance.west": { "id": "i-1", "provider": "aws.us_east_2" } }
+/// ```
+///
+/// [`Id`]: ImportTarget::Id
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ImportTarget {
+    /// A bare import id, adopted through the DEFAULT instance of the
+    /// resource type's provider — the rule every hint has always taken.
+    Id(String),
+    /// An import id plus the instance that holds the resource. Needed
+    /// whenever the resource does not live in the default account or
+    /// region: `ImportResourceState` is answered by whichever instance
+    /// the RPC is issued to, so importing through the default one asks
+    /// the wrong account and gets "not found" — or, worse, finds an
+    /// unrelated resource answering to the same id and adopts THAT.
+    Pinned {
+        id: String,
+        provider: ProviderInstance,
+    },
+}
+
+impl ImportTarget {
+    /// The provider-specific import id, passed verbatim to
+    /// `ImportResourceState`.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Id(id) | Self::Pinned { id, .. } => id,
+        }
+    }
+
+    /// The pinned provider instance, or `None` for "the default instance
+    /// of this resource type's provider".
+    #[must_use]
+    pub fn provider(&self) -> Option<&ProviderInstance> {
+        match self {
+            Self::Id(_) => None,
+            Self::Pinned { provider, .. } => Some(provider),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportDirectives {
-    /// Explicit `resource-address → import-ID` map. The address is the
-    /// canonical Terraform address string (`cloudflare_zone.quero_cloud`,
+    /// Explicit `resource-address → import target` map. The address is
+    /// the canonical Terraform address string (`cloudflare_zone.quero_cloud`,
     /// `cloudflare_dns_record.api`, `github_repository.galho`). The
-    /// value is the provider-specific import id passed verbatim to
-    /// `ImportResourceState`.
+    /// value is the provider-specific import id — see [`ImportTarget`]
+    /// for the bare-string form every existing hint takes and the pinned
+    /// form that names a provider instance.
     #[serde(default)]
-    pub explicit: HashMap<String, String>,
+    pub explicit: HashMap<String, ImportTarget>,
     /// When `true`, a create the provider rejects as already-exists is
     /// retried as an import using the resource's natural id. Mirrors the
     /// operator's `importPolicy.autoOnConflict`.
@@ -1299,13 +1360,42 @@ impl ImportDirectives {
     /// Look up the explicit import id for a canonical address string.
     #[must_use]
     pub fn explicit_id(&self, address: &str) -> Option<&str> {
-        self.explicit.get(address).map(String::as_str)
+        self.explicit.get(address).map(ImportTarget::id)
     }
 
-    /// Insert an explicit `address → id` hint, builder-style.
+    /// The provider instance an address's hint pins the import to, or
+    /// `None` for the default instance of its type's provider.
+    #[must_use]
+    pub fn explicit_provider(&self, address: &str) -> Option<&ProviderInstance> {
+        self.explicit.get(address).and_then(ImportTarget::provider)
+    }
+
+    /// Insert an explicit `address → id` hint, builder-style. The import
+    /// is adopted through the DEFAULT instance — the unchanged meaning of
+    /// every hint written before instances could be named.
     #[must_use]
     pub fn with_explicit(mut self, address: impl Into<String>, id: impl Into<String>) -> Self {
-        self.explicit.insert(address.into(), id.into());
+        self.explicit
+            .insert(address.into(), ImportTarget::Id(id.into()));
+        self
+    }
+
+    /// Insert an explicit hint pinned to a named provider INSTANCE,
+    /// builder-style — the aliased-import door.
+    #[must_use]
+    pub fn with_explicit_on(
+        mut self,
+        address: impl Into<String>,
+        id: impl Into<String>,
+        provider: ProviderInstance,
+    ) -> Self {
+        self.explicit.insert(
+            address.into(),
+            ImportTarget::Pinned {
+                id: id.into(),
+                provider,
+            },
+        );
         self
     }
 
@@ -1585,6 +1675,114 @@ mod tests {
         let json = serde_json::to_value(&d).unwrap();
         let back: ImportDirectives = serde_json::from_value(json).unwrap();
         assert_eq!(d, back);
+    }
+
+    // ── Import targets: the aliased hint, and the wire it shares ───
+    //
+    // An operator's `spec.importHints` is a `map[string]string`, and
+    // every hint ever written — plus every persisted bundle and plan
+    // input holding one — is a bare id string. Adding the instance had
+    // to leave that shape untouched, or a magma upgrade would strand
+    // in-flight directives.
+
+    /// **The bare form is byte-preserved.** Not "still parses" — the
+    /// serialized value is the same JSON string it was, so a stored
+    /// directive is unchanged by a round trip through the new type.
+    #[test]
+    fn an_unpinned_hint_serializes_as_the_bare_string_it_always_was() {
+        let d = ImportDirectives::none().with_explicit("github_repository.galho", "galho");
+        assert_eq!(
+            serde_json::to_value(&d).unwrap()["explicit"],
+            serde_json::json!({ "github_repository.galho": "galho" }),
+        );
+    }
+
+    /// …and reads back from that exact shape, which is what an operator
+    /// CRD writes.
+    #[test]
+    fn a_bare_string_hint_deserializes_to_the_default_instance() {
+        let d: ImportDirectives = serde_json::from_value(serde_json::json!({
+            "explicit": { "github_repository.galho": "galho" }
+        }))
+        .expect("the map[string]string shape an operator writes");
+        assert_eq!(d.explicit_id("github_repository.galho"), Some("galho"));
+        assert_eq!(
+            d.explicit_provider("github_repository.galho"),
+            None,
+            "a bare hint names no instance, so the import resolves to the default one",
+        );
+    }
+
+    #[test]
+    fn a_pinned_hint_carries_its_instance_across_the_wire() {
+        let d = ImportDirectives::none().with_explicit_on(
+            "aws_instance.west",
+            "i-1",
+            ProviderInstance::aliased("aws", "us_east_2").unwrap(),
+        );
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(
+            json["explicit"],
+            serde_json::json!({
+                "aws_instance.west": { "id": "i-1", "provider": "aws.us_east_2" }
+            }),
+            "the pinned form is an object, and the instance travels as its Display form",
+        );
+        let back: ImportDirectives = serde_json::from_value(json).unwrap();
+        assert_eq!(d, back);
+        assert_eq!(
+            back.explicit_provider("aws_instance.west")
+                .map(ProviderInstance::alias),
+            Some(Some("us_east_2")),
+        );
+    }
+
+    /// Both forms in one map — the migration state a real workspace is
+    /// in while one resource moves to a second account and the rest do
+    /// not. Each keeps its own shape.
+    #[test]
+    fn the_two_hint_forms_coexist_in_one_directive_set() {
+        let d: ImportDirectives = serde_json::from_value(serde_json::json!({
+            "explicit": {
+                "github_repository.galho": "galho",
+                "aws_instance.west": { "id": "i-1", "provider": "aws.us_east_2" }
+            }
+        }))
+        .expect("parses");
+        assert_eq!(d.explicit_provider("github_repository.galho"), None);
+        assert_eq!(
+            d.explicit_provider("aws_instance.west")
+                .map(ToString::to_string),
+            Some("aws.us_east_2".to_string()),
+        );
+        // Round trip preserves each entry's own shape.
+        assert_eq!(
+            serde_json::to_value(&d).unwrap()["explicit"],
+            serde_json::json!({
+                "github_repository.galho": "galho",
+                "aws_instance.west": { "id": "i-1", "provider": "aws.us_east_2" }
+            }),
+        );
+    }
+
+    /// A pinned hint whose instance reference is malformed is refused at
+    /// the serde boundary, the same place `ProviderInstance` refuses one
+    /// anywhere else — directives are persisted and re-read, so that is
+    /// a real boundary.
+    #[test]
+    fn a_pinned_hint_naming_a_malformed_instance_is_refused_at_the_wire() {
+        // The failure mode this guards is NOT "no error" — it is the
+        // untagged enum quietly falling through to `Id` and treating the
+        // whole object as an opaque id, which would import garbage. So
+        // the assertion is that no directive exists at all.
+        let parsed = serde_json::from_value::<ImportDirectives>(serde_json::json!({
+            "explicit": { "aws_instance.west": { "id": "i-1", "provider": "aws.a.b" } }
+        }));
+        assert!(
+            parsed.is_err(),
+            "a three-segment reference is not an instance, and must not degrade to a bare \
+             id — got {parsed:?}",
+        );
     }
 
     #[test]
