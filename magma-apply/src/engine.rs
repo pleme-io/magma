@@ -558,12 +558,11 @@ pub async fn run_plan_with_providers_resumable(
     //
     // Built once, from the whole plan, so it also covers parents scheduled
     // AFTER the child in apply order.
-    let mut declared_map: HashMap<String, serde_json::Value> = HashMap::new();
-    for c in &plan.resource_changes {
-        if let Some(after) = c.after.as_ref() {
-            sm_insert(&mut declared_map, &c.address, after);
-        }
-    }
+    // Built by `natural_id::declared_map` rather than inline here, because the
+    // map's SHAPE is part of `natural_id::derive`'s contract and the operator's
+    // pre-plan prepass needs the same map. Two hand-rolled copies of a contract
+    // is precisely the drift `natural_id` exists to end.
+    let declared_map = crate::natural_id::declared_map(&plan.resource_changes);
 
     // Split the plan into (data sources, NoOp managed, real managed). Data
     // sources are evaluated up front (ReadDataSource) so their results populate

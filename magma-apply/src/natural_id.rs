@@ -329,6 +329,37 @@ pub fn derive(
     })
 }
 
+/// Build the `declared` map [`derive`] expects, from a whole plan's changes.
+///
+/// Shape is `type → { name → attributes }` — the same shape as `state_map`, so
+/// the two are interchangeable inputs to the same lookup.
+///
+/// This is `pub` for the same reason [`derive`] is (see the module docs): the
+/// map's SHAPE is part of `derive`'s contract, so a caller that hand-rolls it
+/// holds a second copy of that contract, free to drift. magma's apply loop and
+/// the operator's pre-plan prepass both need this map; they now build it with
+/// one function instead of two.
+///
+/// Built from the WHOLE change set on purpose, so a child whose parent is
+/// scheduled after it in apply order still resolves its parent's declared name.
+#[must_use]
+pub fn declared_map(changes: &[ResourceChange]) -> HashMap<String, Value> {
+    let mut m: HashMap<String, Value> = HashMap::new();
+    for c in changes {
+        let Some(after) = c.after.as_ref() else {
+            continue;
+        };
+        let entry = m
+            .entry(c.address.type_id.0.clone())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Value::Object(map) = entry {
+            map.insert(c.address.name.clone(), after.clone());
+        }
+    }
+    m
+}
+
+
 /// The attributes whose PLANNED value the imported resource must agree with.
 ///
 /// A successful `ImportResourceState` answers *"something exists under this
