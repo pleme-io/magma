@@ -4723,6 +4723,65 @@ mod tests {
         assert_eq!(row.provider.source, "hashicorp/aws");
     }
 
+    /// The apply → state → **tfstate v4 bytes** chain, pinned against
+    /// what OpenTofu itself writes.
+    ///
+    /// The two halves of this were each covered and their JOIN was not:
+    /// the test above asserts the typed `ProviderReference` fields, and
+    /// magma-state's `provider_reference_round_trips_with_alias` asserts
+    /// the string form of a reference built by hand. Nothing pinned that
+    /// an apply's row, once ENCODED, is the byte an operator's existing
+    /// tofu state already contains — so `default_provider_for`'s source
+    /// mapping, `provider_reference_for`'s alias threading and
+    /// `format_provider_reference`'s registry qualification could each
+    /// keep passing their own test while the composed byte drifted. State
+    /// compatibility is the whole compatibility contract for a resource
+    /// magma adopts from tofu or hands back to it: a row whose provider
+    /// string does not match is a row tofu reads as bound to a provider
+    /// configuration it cannot find.
+    ///
+    /// The expected strings are not derived — they are transcribed from a
+    /// real `tofu apply` (OpenTofu v1.10.9, darwin_arm64) over a config
+    /// declaring `provider "null" {}`, `provider "null" { alias = "second" }`
+    /// and one resource pinned to each. Both come from the same state
+    /// file, so the aliased and unaliased forms are pinned against one
+    /// another exactly as tofu emits them.
+    #[test]
+    fn an_encoded_row_carries_the_exact_provider_string_opentofu_writes() {
+        let cases = [
+            (
+                aliased_change("null_resource", "b", aliased("null", "second")),
+                "provider[\"registry.opentofu.org/hashicorp/null\"].second",
+            ),
+            (
+                change_with_meta("null_resource", "a", Default::default()),
+                "provider[\"registry.opentofu.org/hashicorp/null\"]",
+            ),
+        ];
+
+        for (change, expected) in cases {
+            let mut rec = NodeRecord::default();
+            rec.insert(
+                &change,
+                serde_json::json!({ "id": "2061053846366703230" }),
+                0,
+            );
+            let mut state = empty_state();
+            rec.commit(&mut state);
+
+            let bytes = magma_state::tfstate_v4::encode(&state).expect("encodes");
+            let doc: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON");
+            let written = doc["resources"][0]["provider"]
+                .as_str()
+                .expect("every resource row carries a provider string");
+            assert_eq!(
+                written, expected,
+                "the encoded provider string must be byte-identical to OpenTofu's, or tofu \
+                 reads this row as bound to a provider configuration it cannot find",
+            );
+        }
+    }
+
     #[test]
     fn an_unaliased_apply_records_exactly_the_row_it_always_did() {
         let change = change_with_meta("aws_instance", "web", Default::default());

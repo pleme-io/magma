@@ -73,7 +73,8 @@ use chrono::Utc;
 use magma_attest::hash_plan_inputs;
 use magma_config::Config;
 use magma_types::{
-    Action, ChangeReason, Plan, ResourceAddress, ResourceChange, ResourceKind, ResourceMeta, State,
+    Action, ChangeReason, Plan, ProviderInstance, ResourceAddress, ResourceChange, ResourceKind,
+    ResourceMeta, State,
 };
 
 mod compliance;
@@ -94,6 +95,20 @@ pub enum PlanError {
     Serde(#[from] serde_json::Error),
     #[error("compliance violation — refusing to plan:\n{}", .0.iter().map(|v| format!("  - {v}")).collect::<Vec<_>>().join("\n"))]
     Compliance(Vec<ComplianceViolation>),
+    /// A state row records a provider instance that is not a well-formed
+    /// reference. Refused rather than resolved to the default instance —
+    /// see [`deleted_provider_instance`], where degrading to the default
+    /// would issue this resource's DESTROY against the wrong account.
+    #[error(
+        "state row `{address}`: {source} — refusing to plan its deletion rather than \
+         destroying it through the default provider instance, which is a different \
+         account or region than the one holding it"
+    )]
+    MalformedStateProvider {
+        address: String,
+        #[source]
+        source: magma_types::ProviderInstanceError,
+    },
 }
 
 // ── Declared-resource graph ────────────────────────────────────────
@@ -176,6 +191,59 @@ fn split_meta(
     Ok((meta, Some(attrs)))
 }
 
+/// The provider instance a DELETE must be issued through — the one the
+/// STATE ROW records, never the one the resource type implies.
+///
+/// **A delete's provider is a state fact, not a config fact.** This
+/// branch built an empty [`ResourceMeta`] on the reasoning that "a
+/// delete has no config block left to carry meta-arguments", which is
+/// true of `depends_on` and false of `provider`: the resource is being
+/// deleted precisely because its config block is gone, so the only
+/// surviving record of which instance holds it is the row in state —
+/// and since `db764fa` that row records the alias.
+///
+/// Leaving it empty was harmless only while every row magma wrote
+/// carried `alias: None`. Once an aliased row can exist it is the
+/// original wrong-account defect in the one action that cannot be
+/// undone: `magma_apply::engine::provider_for_change` falls back to the
+/// TYPE PREFIX when a change names no provider, so a resource living in
+/// `aws.us_east_2` and removed from config had its `ApplyResourceChange`
+/// destroy issued through the DEFAULT `aws` instance. Either it fails
+/// against an account that never held the resource — and the row is
+/// dropped as already-gone, orphaning live infrastructure nothing tracks
+/// any more — or it succeeds against a different resource that happens
+/// to answer to the same id.
+///
+/// Only an ALIASED row yields a value. An alias-free row still returns
+/// `None` so the type-prefix fallback runs exactly as it always has:
+/// every row written before aliases existed takes the identical path,
+/// byte for byte.
+///
+/// A row whose recorded alias is not a well-formed instance reference
+/// REFUSES the plan rather than degrading to `None`, because `None` here
+/// means "the default instance" — the precise wrong answer this function
+/// exists to stop. Such a row cannot come from magma or from tofu (an
+/// alias is an HCL identifier and cannot contain a `.`); it means the
+/// state was corrupted or hand-edited, and a destroy is the last action
+/// that should guess.
+fn deleted_provider_instance(
+    state: &State,
+    addr: &ResourceAddress,
+) -> Result<Option<ProviderInstance>, PlanError> {
+    let Some(row) = state.resources.iter().find(|r| r.address == *addr) else {
+        return Ok(None);
+    };
+    let Some(alias) = row.provider.alias.as_deref() else {
+        return Ok(None);
+    };
+    ProviderInstance::aliased(&row.provider.name, alias)
+        .map(Some)
+        .map_err(|source| PlanError::MalformedStateProvider {
+            address: addr.to_string(),
+            source,
+        })
+}
+
 pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     // Compliance gate — default-on, unbypassable (every architecture's
     // Ruby DSL choice converges here). Refuse to compute a plan at all
@@ -249,8 +317,21 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
             before,
             after: None,
             reasons: vec![ChangeReason::DeletedResource],
-            // A delete has no config block left to carry meta-arguments.
-            meta: ResourceMeta::default(),
+            // A delete has no config block left, so there is no
+            // `depends_on` to carry — but the provider instance is NOT a
+            // config fact here, it is a STATE fact, and the state row has
+            // it. See `deleted_provider_instance`.
+            meta: ResourceMeta {
+                provider: deleted_provider_instance(state, addr)?,
+                depends_on: vec![],
+                // Nothing to ignore: `ignore_changes` scopes an attribute
+                // COMPARISON, and a delete compares nothing. Listed
+                // explicitly rather than `..Default::default()` so a new
+                // meta-argument has to be considered for the delete path
+                // instead of defaulting into it unread — which is exactly
+                // how `provider` came to be empty here in the first place.
+                ignore_changes: vec![],
+            },
         });
     }
 
@@ -2473,6 +2554,109 @@ mod tests {
         assert!(
             msg.contains("aws.us_east_2") && msg.contains("account or region"),
             "must name the instance and the consequence: {msg}"
+        );
+    }
+
+    // ── The DELETE half of instance selection ──────────────────────
+    //
+    // A delete is the one action where the provider instance cannot come
+    // from config — the config block is gone, which is WHY the resource
+    // is being deleted. It comes from the state row, and the state row
+    // has recorded the alias since alias support landed. This branch
+    // built an empty `ResourceMeta` on the reasoning that a delete has no
+    // meta-arguments left to carry, which is true of `depends_on` and
+    // false of `provider`.
+
+    /// Build a state row bound to an ALIASED provider instance — the
+    /// shape `insert_resource` now writes, and the shape tofu writes as
+    /// `provider["registry.opentofu.org/hashicorp/aws"].us_east_2`.
+    fn aliased_state_row(type_id: &str, name: &str, alias: &str) -> StateResource {
+        let mut row = mk_state_resource(type_id, name, json!({ "id": "i-1" }));
+        row.provider.alias = Some(alias.into());
+        row
+    }
+
+    /// THE destroy-in-the-wrong-account defect. A resource living in an
+    /// aliased instance and removed from config planned as a `Delete`
+    /// carrying NO provider, and `provider_for_change` falls back to the
+    /// type prefix — so the destroy RPC went to the DEFAULT instance.
+    /// That either fails against an account that never held the resource
+    /// (and the row is dropped as already-gone, orphaning live
+    /// infrastructure) or succeeds against something else answering to
+    /// the same id.
+    #[test]
+    fn a_delete_is_issued_through_the_instance_the_state_row_records() {
+        let cfg = Config::from_json(json!({})).expect("an empty config deletes everything");
+        let mut st = empty_state();
+        st.resources
+            .push(aliased_state_row("aws_instance", "web", "us_east_2"));
+
+        let p = plan(&cfg, &st).expect("plans");
+        let del = p
+            .resource_changes
+            .iter()
+            .find(|c| c.action == Action::Delete)
+            .expect("the row is not in config, so it is deleted");
+        let instance = del
+            .meta
+            .provider
+            .as_ref()
+            .expect("a delete must name the instance holding the resource");
+        assert_eq!(instance.name(), "aws");
+        assert_eq!(
+            instance.alias(),
+            Some("us_east_2"),
+            "the alias the state row records is the only surviving record of \
+             which account holds this resource",
+        );
+    }
+
+    /// The alias-free row — every row magma wrote before aliases existed
+    /// — must keep taking the identical path: no declared provider, so
+    /// apply falls back to the type prefix exactly as it always has.
+    #[test]
+    fn a_delete_of_an_unaliased_row_still_declares_no_provider() {
+        let cfg = Config::from_json(json!({})).expect("parses");
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_instance",
+            "web",
+            json!({ "id": "i-1" }),
+        ));
+
+        let p = plan(&cfg, &st).expect("plans");
+        let del = &p.resource_changes[0];
+        assert_eq!(del.action, Action::Delete);
+        assert!(
+            del.meta.provider.is_none(),
+            "an unaliased row must not start declaring a provider — the type-prefix \
+             fallback is the unchanged path for every row written before aliases",
+        );
+    }
+
+    /// A recorded alias that is not a well-formed instance reference
+    /// cannot come from magma or from tofu (an alias is an HCL identifier
+    /// and cannot contain a `.`), so it means the state was corrupted or
+    /// hand-edited. Degrading to `None` would mean "the default
+    /// instance", which is precisely the wrong answer — and a destroy is
+    /// the last action that should guess.
+    #[test]
+    fn a_state_row_naming_a_malformed_instance_refuses_the_plan_rather_than_defaulting() {
+        let cfg = Config::from_json(json!({})).expect("parses");
+        let mut st = empty_state();
+        st.resources
+            .push(aliased_state_row("aws_instance", "web", "us.east.2"));
+
+        let err = plan(&cfg, &st)
+            .expect_err("a destroy must not be routed to the default account on a guess");
+        assert!(
+            matches!(err, PlanError::MalformedStateProvider { .. }),
+            "must be the typed state-provider refusal, got: {err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("aws_instance.web") && msg.contains("account or region"),
+            "must name the row and the consequence: {msg}"
         );
     }
 }
