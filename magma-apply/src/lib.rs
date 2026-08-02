@@ -342,33 +342,17 @@ fn resolve_for_structural_apply(
 /// is not dependency order. Falls back to the given order on a cycle /
 /// graph error — never refuses to apply.
 fn dependency_ordered<'a>(changes: &[&'a ResourceChange]) -> Vec<&'a ResourceChange> {
-    let keys: std::collections::HashSet<(String, String)> = changes
-        .iter()
-        .map(|c| (c.address.type_id.0.clone(), c.address.name.clone()))
-        .collect();
     let by_key: HashMap<(String, String), &'a ResourceChange> = changes
         .iter()
         .map(|c| ((c.address.type_id.0.clone(), c.address.name.clone()), *c))
         .collect();
 
-    let mut graph = magma_graph::ResourceGraph::new();
-    for c in changes {
-        graph.add(c.address.clone());
-    }
-    for c in changes {
-        let self_key = (c.address.type_id.0.clone(), c.address.name.clone());
-        if let Some(after) = &c.after {
-            for refstr in engine::collect_refs(after) {
-                if let Some(dep_key) = engine::ref_target(&refstr) {
-                    if dep_key != self_key && keys.contains(&dep_key) {
-                        if let Some(dep) = by_key.get(&dep_key) {
-                            graph.depend(c.address.clone(), dep.address.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Shared with the real provider-driven engine — see
+    // `engine::build_change_graph`. This loop used to be a second,
+    // independent copy of the edge construction, and both copies read
+    // interpolation references only: a `depends_on` declared with no
+    // `${…}` to infer from produced no edge in EITHER engine.
+    let graph = engine::build_change_graph(changes);
 
     match graph.waves() {
         // The ONE legitimate collapse of the wave decomposition in the

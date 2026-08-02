@@ -119,7 +119,13 @@ fn split_meta(
     let Some(body) = body else {
         return Ok((ResourceMeta::default(), None));
     };
-    let label = format!("{}.{}", addr.type_id.0, addr.name);
+    // `ResourceAddress`'s own `Display`, not a hand-rolled
+    // `format!("{}.{}", type_id.0, name)` — that shape silently drops
+    // `kind`, `module` and `key`, so a refusal on `data.aws_vpc.main`
+    // would name `aws_vpc.main` and read as a managed resource. See the
+    // `Display` impl's doc in magma-types for the incident that rule
+    // comes from.
+    let label = addr.to_string();
     let (meta, attrs) = magma_config::split_resource_body(&label, &body)?;
     Ok((meta, Some(attrs)))
 }
@@ -818,6 +824,110 @@ mod tests {
             outputs: Default::default(),
             resources: Vec::new(),
         }
+    }
+
+    // ── Meta-arguments end to end ──────────────────────────────────
+
+    /// The plan is where a meta-argument stopped being distinguishable
+    /// from an attribute: `lookup_config_value` returned the block
+    /// verbatim, so `depends_on` travelled on as `after` and the apply
+    /// engine's cty encoder dropped it without a word.
+    #[test]
+    fn a_declared_depends_on_reaches_the_plan_as_an_edge_and_never_as_an_attribute() {
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_iam_role": { "exec": { "name": "exec" } },
+                "aws_lambda_function": {
+                    "handler": {
+                        "function_name": "handler",
+                        "depends_on": ["aws_iam_role.exec"],
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let p = plan(&cfg, &empty_state()).expect("a declared depends_on must plan");
+        let lambda = p
+            .resource_changes
+            .iter()
+            .find(|c| c.address.type_id.0 == "aws_lambda_function")
+            .expect("the lambda is planned");
+        assert_eq!(
+            lambda
+                .meta
+                .depends_on
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["aws_iam_role.exec"],
+            "the declared ordering must survive into the plan",
+        );
+        assert_eq!(
+            lambda.after.as_ref().unwrap(),
+            &json!({ "function_name": "handler" }),
+            "a meta-argument must never travel on as a provider attribute",
+        );
+    }
+
+    /// A meta-argument counted as a config-declared key for drift, and
+    /// no provider ever returns one in state — so any resource carrying
+    /// one re-planned as `Update` on every single cycle, forever.
+    #[test]
+    fn a_meta_argument_never_reports_drift_against_a_matching_state() {
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_iam_role": { "exec": { "name": "exec" } },
+                "aws_lambda_function": {
+                    "handler": {
+                        "function_name": "handler",
+                        "depends_on": ["aws_iam_role.exec"],
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "aws_iam_role",
+            "exec",
+            json!({ "id": "role-1", "name": "exec" }),
+        ));
+        st.resources.push(mk_state_resource(
+            "aws_lambda_function",
+            "handler",
+            json!({ "id": "fn-1", "function_name": "handler" }),
+        ));
+        let p = plan(&cfg, &st).unwrap();
+        let lambda = p
+            .resource_changes
+            .iter()
+            .find(|c| c.address.type_id.0 == "aws_lambda_function")
+            .unwrap();
+        assert_eq!(
+            lambda.action,
+            Action::NoOp,
+            "state matches config; the `depends_on` key must not manufacture drift",
+        );
+    }
+
+    /// A config magma cannot honour must fail the PLAN, not reach an
+    /// apply that quietly does something else.
+    #[test]
+    fn a_resource_pinned_to_an_aliased_provider_fails_the_plan() {
+        let cfg = Config::from_json(json!({
+            "resource": {
+                "aws_instance": {
+                    "web": { "provider": "aws.us_east_2", "ami": "ami-123" }
+                }
+            }
+        }))
+        .unwrap();
+        let err = plan(&cfg, &empty_state())
+            .expect_err("magma cannot dial an aliased provider, so the plan must refuse");
+        assert!(
+            matches!(err, PlanError::Config(_)),
+            "must surface as the typed config refusal, got: {err}"
+        );
     }
 
     fn cfg_with_vpc() -> Config {

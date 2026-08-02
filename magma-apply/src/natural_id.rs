@@ -635,7 +635,12 @@ mod tests {
                 row.ty
             );
             let after = (row.after)();
-            let got = derive(&mk(row.ty, "x", after.clone()), Some(&after), &sm, &HashMap::new());
+            let got = derive(
+                &mk(row.ty, "x", after.clone()),
+                Some(&after),
+                &sm,
+                &HashMap::new(),
+            );
             match got {
                 Some(ImportId { id, confidence }) if id == row.expect => {
                     assert_eq!(confidence, Confidence::Catalog, "{}", row.ty);
@@ -687,7 +692,13 @@ mod tests {
             "name": "bug"
         });
         let sm = state_with_repo("caixa_tlisp_handoff", "caixa-tlisp-handoff");
-        let got = derive(&mk("github_issue_label", "l", after), None, &sm, &HashMap::new()).expect("derivable");
+        let got = derive(
+            &mk("github_issue_label", "l", after),
+            None,
+            &sm,
+            &HashMap::new(),
+        )
+        .expect("derivable");
         assert_eq!(got.id, "caixa-tlisp-handoff:bug");
         assert_eq!(got.confidence, Confidence::Catalog);
     }
@@ -700,8 +711,13 @@ mod tests {
             "repository": "${github_repository.tag_forge.name}",
             "name": "bug"
         });
-        let got = derive(&mk("github_issue_label", "l", after), None, &HashMap::new(), &HashMap::new())
-            .expect("derivable");
+        let got = derive(
+            &mk("github_issue_label", "l", after),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("derivable");
         assert_eq!(got.id, "tag_forge:bug");
         assert_eq!(got.confidence, Confidence::CatalogWithGuessedParent);
         assert!(!got.confidence.is_exact());

@@ -743,33 +743,15 @@ pub async fn run_plan_with_providers_resumable(
     // no-op reported as success.
     let pending: Vec<&ResourceChange> = cursor.frontier(reals.iter().copied());
 
-    let real_keys: HashSet<(String, String)> = pending
-        .iter()
-        .map(|c| (c.address.type_id.0.clone(), c.address.name.clone()))
-        .collect();
     let by_key: HashMap<(String, String), &ResourceChange> = pending
         .iter()
         .map(|c| ((c.address.type_id.0.clone(), c.address.name.clone()), *c))
         .collect();
 
-    let mut graph = ResourceGraph::new();
-    for c in &pending {
-        graph.add(c.address.clone());
-    }
-    for c in &pending {
-        let self_key = (c.address.type_id.0.clone(), c.address.name.clone());
-        if let Some(after) = &c.after {
-            for refstr in collect_refs(after) {
-                if let Some(dep_key) = ref_target(&refstr) {
-                    if dep_key != self_key && real_keys.contains(&dep_key) {
-                        if let Some(dep) = by_key.get(&dep_key) {
-                            graph.depend(c.address.clone(), dep.address.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Edges from BOTH interpolation references and declared `depends_on`
+    // — see `build_change_graph`, which the structural engine in `lib.rs`
+    // shares so the two can never diverge again.
+    let graph = build_change_graph(&pending);
 
     // Topological waves, kept AS WAVES rather than flattened. Iterating
     // wave-major then within-wave visits addresses in exactly the order the
@@ -1339,6 +1321,11 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
 
     for resource in std::mem::take(&mut state.resources) {
         let type_name = resource.address.type_id.0.clone();
+        if let Some(kept_alias) = aliased_state_provider(&resource) {
+            report.kept_on_error += resource.instances.len();
+            kept.push(kept_alias);
+            continue;
+        }
         let provider_name = provider_local_name(&type_name);
 
         // Resolve the implied type + current schema version once (clone
@@ -1565,6 +1552,11 @@ pub async fn refresh_named(
         targeted += 1;
 
         let type_name = resource.address.type_id.0.clone();
+        if let Some(kept_alias) = aliased_state_provider(&resource) {
+            report.kept_on_error += resource.instances.len();
+            kept.push(kept_alias);
+            continue;
+        }
         let provider_name = provider_local_name(&type_name);
         let (implied, current_version) = match registry.get(&provider_name).await {
             Ok(lp) => match lp.schema.resource(&type_name) {
@@ -1894,8 +1886,13 @@ pub(crate) async fn import_and_confirm(
 /// would be a second, ungated path to the same guess.
 #[cfg(test)]
 fn natural_import_id(change: &ResourceChange) -> Option<String> {
-    crate::natural_id::derive(change, change.after.as_ref(), &HashMap::new(), &HashMap::new())
-        .map(|i| i.id)
+    crate::natural_id::derive(
+        change,
+        change.after.as_ref(),
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .map(|i| i.id)
 }
 
 /// Resolve the provider-native import id for adopting a create-conflicted
@@ -1939,7 +1936,12 @@ async fn resolve_import_id(
         },
         None => {
             let derived = precomputed.cloned().or_else(|| {
-                crate::natural_id::derive(change, change.after.as_ref(), &HashMap::new(), &HashMap::new())
+                crate::natural_id::derive(
+                    change,
+                    change.after.as_ref(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                )
             });
             gate_on_confidence(derived, &change.address, type_name)
         }
@@ -2168,7 +2170,7 @@ async fn apply_one_inner(
     }
 
     let type_name = change.address.type_id.0.clone();
-    let provider_name = provider_local_name(&type_name);
+    let provider_name = provider_for_change(change);
     let lp = reg.get(&provider_name).await?;
     // Clone the implied type so the immutable schema borrow ends before
     // the mutable conn RPC calls. The provider's CURRENT declared schema
@@ -2796,6 +2798,127 @@ pub(crate) fn provider_local_name(type_id: &str) -> String {
     type_id.split('_').next().unwrap_or(type_id).to_string()
 }
 
+/// The provider local name to dial for one planned change — the
+/// resource's DECLARED `provider` meta-argument when it has one, else
+/// the type-prefix inference [`provider_local_name`] has always used.
+///
+/// **This is the fix for the wrong-provider defect.** Provider selection
+/// used to read `provider_local_name(type_id)` and nothing else, so
+/// `ProviderReference.alias` — a real field on a real type since M0 —
+/// was consulted on no apply path at all. A resource declaring
+/// `provider = "aws.us_east_2"` was applied through the DEFAULT `aws`
+/// provider: infrastructure created in the wrong account or region, with
+/// no error at any layer, because the meta-argument had already been
+/// dropped at the cty boundary before selection ever ran.
+///
+/// The alias half of that is refused at the config boundary
+/// (`magma_config::split_resource_body`), so a `ResourceChange` reaching
+/// here can only carry a bare provider name — see
+/// [`magma_types::ProviderInstance`] for what that does and does not
+/// prove. What this function adds is the other half: when a resource
+/// names its provider explicitly, that name is USED. The prefix rule
+/// stays as the fallback for the (overwhelmingly common) resource that
+/// declares nothing, and remains a guess — `google_*` resources are
+/// served by the `google` provider, but the mapping is convention, not
+/// contract.
+pub(crate) fn provider_for_change(change: &ResourceChange) -> String {
+    match &change.meta.provider {
+        Some(p) => p.name().to_string(),
+        None => provider_local_name(&change.address.type_id.0),
+    }
+}
+
+/// A state resource magma must NOT refresh, because the state file says
+/// it belongs to an aliased provider instance that magma cannot dial.
+///
+/// The refresh paths select their provider from the resource TYPE PREFIX,
+/// never from `StateResource.provider` — so a state row adopted from
+/// tofu/terraform reading
+/// `provider["registry.opentofu.org/hashicorp/aws"].us_east_2` was read
+/// back through the DEFAULT `aws` provider. That queries a different
+/// account or region than the one holding the resource, and the answer
+/// ("it isn't there") is indistinguishable from real deletion drift.
+///
+/// Refusing is the conservative half: the resource is kept verbatim and
+/// counted into `kept_on_error`, so the cycle's `Observation` reports
+/// the reduced coverage instead of presenting a wrong read as fact.
+/// Selection itself is unchanged for the alias-free case, which is
+/// every row magma writes — `crate::default_provider_for` always emits
+/// `alias: None`.
+fn aliased_state_provider(resource: &StateResource) -> Option<StateResource> {
+    let alias = resource.provider.alias.as_deref()?;
+    tracing::warn!(
+        address = %resource.address,
+        provider = %resource.provider.name,
+        alias,
+        "magma: refusing to refresh a resource bound to an aliased provider instance — \
+         magma dials only the default instance of a provider, so reading this row would \
+         query the wrong account or region and could report a live resource as deleted. \
+         Kept verbatim and counted as unrefreshed.",
+    );
+    Some(resource.clone())
+}
+
+/// Build the apply-ordering graph for a set of planned changes.
+///
+/// ONE builder, shared by both apply engines — `run_plan_with_providers`
+/// (the real provider-driven engine) and `crate::dependency_ordered`
+/// (the M0 structural engine). They previously carried two independent
+/// copies of this loop, which is precisely how the `depends_on` defect
+/// could exist in both at once and be fixed in neither.
+///
+/// Two edge sources, and both are needed:
+///
+/// * **Interpolation** — a literal `${type.name.attr}` anywhere in the
+///   change's `after`. This was the only source, and it is the reason
+///   the defect was invisible: the overwhelming majority of real
+///   ordering IS expressed as a reference, so ordering appeared to work.
+/// * **`depends_on`** — ordering the author declared explicitly.
+///   A `depends_on` exists precisely BECAUSE there is no interpolation
+///   to infer the edge from (an author with a reference does not need
+///   the meta-argument), so the one case the interpolation scan
+///   structurally cannot see is exactly the case `depends_on` covers.
+///   Dropping it meant a resource could be created before the thing it
+///   was declared to require, with no error — the provider simply
+///   failed, or worse, succeeded against an incomplete prerequisite.
+///
+/// An edge is added only when the target is itself among `changes`.
+/// A dependency that is absent, already applied, or a NoOp needs no
+/// ordering: it is not being touched this cycle, so nothing can race it.
+pub(crate) fn build_change_graph(changes: &[&ResourceChange]) -> ResourceGraph {
+    let by_key: HashMap<(String, String), &ResourceChange> = changes
+        .iter()
+        .map(|c| ((c.address.type_id.0.clone(), c.address.name.clone()), *c))
+        .collect();
+
+    let mut graph = ResourceGraph::new();
+    for c in changes {
+        graph.add(c.address.clone());
+    }
+    for c in changes {
+        let self_key = (c.address.type_id.0.clone(), c.address.name.clone());
+        let mut link = |dep_key: (String, String)| {
+            if dep_key == self_key {
+                return;
+            }
+            if let Some(dep) = by_key.get(&dep_key) {
+                graph.depend(c.address.clone(), dep.address.clone());
+            }
+        };
+        if let Some(after) = &c.after {
+            for refstr in collect_refs(after) {
+                if let Some(dep_key) = ref_target(&refstr) {
+                    link(dep_key);
+                }
+            }
+        }
+        for dep in &c.meta.depends_on {
+            link((dep.type_id.0.clone(), dep.name.clone()));
+        }
+    }
+    graph
+}
+
 // ── Apply-time reference resolution helpers ───────────────────────────────
 //
 // References in a rendered config are literal `${type.name.attr}` strings in
@@ -2851,7 +2974,7 @@ async fn read_data_source_one(
         let _ = p.acquire().await;
     }
     let type_name = change.address.type_id.0.clone();
-    let provider_name = provider_local_name(&type_name);
+    let provider_name = provider_for_change(change);
     let lp = reg.get(&provider_name).await?;
     let implied = lp
         .schema
@@ -3254,7 +3377,9 @@ mod tests {
 
     #[test]
     fn a_real_id_still_records() {
-        assert!(has_resource_id(&serde_json::json!({ "id": "sg-0123456789abcdef0" })));
+        assert!(has_resource_id(
+            &serde_json::json!({ "id": "sg-0123456789abcdef0" })
+        ));
         // a provider that chose a non-string identity still chose one
         assert!(has_resource_id(&serde_json::json!({ "id": 42 })));
     }
@@ -4080,6 +4205,134 @@ mod tests {
             "the orphaned data-source row must be dropped from state",
         );
         assert!(state.resources.is_empty(), "no rows remain");
+    }
+
+    // ── Provider selection + declared ordering ─────────────────────
+
+    fn change_with_meta(ty: &str, name: &str, meta: magma_types::ResourceMeta) -> ResourceChange {
+        ResourceChange {
+            address: ResourceAddress {
+                module: magma_types::ModulePath::root(),
+                kind: ResourceKind::Managed,
+                type_id: magma_types::ResourceTypeId(ty.into()),
+                name: name.into(),
+                key: None,
+            },
+            action: Action::Create,
+            before: None,
+            after: Some(serde_json::json!({ "name": name })),
+            reasons: vec![],
+            meta,
+        }
+    }
+
+    /// Provider selection read the resource TYPE PREFIX and nothing
+    /// else, so a resource that named its provider explicitly was
+    /// applied through whichever provider its type happened to spell.
+    #[test]
+    fn a_resource_that_names_its_provider_is_dialed_through_that_provider() {
+        let meta = magma_types::ResourceMeta {
+            provider: Some(
+                magma_types::ProviderInstance::try_from("githubenterprise".to_string()).unwrap(),
+            ),
+            depends_on: vec![],
+        };
+        let c = change_with_meta("github_repository", "izumi", meta);
+        assert_eq!(
+            provider_for_change(&c),
+            "githubenterprise",
+            "the DECLARED provider must win over the type-prefix guess",
+        );
+    }
+
+    #[test]
+    fn a_resource_that_names_no_provider_still_falls_back_to_its_type_prefix() {
+        let c = change_with_meta("github_repository", "izumi", Default::default());
+        assert_eq!(provider_for_change(&c), "github");
+    }
+
+    /// THE `depends_on` defect. The graph was built ONLY by scanning
+    /// `after` for literal `${type.name.attr}` strings, so an ordering
+    /// declared with no interpolation to infer from produced NO edge —
+    /// and `depends_on` exists precisely for the case where there is no
+    /// interpolation. The resource could be created before the thing it
+    /// was declared to require, with no error anywhere.
+    #[test]
+    fn a_declared_depends_on_orders_the_apply_even_with_no_interpolation() {
+        let role = change_with_meta("aws_iam_role", "exec", Default::default());
+        let dependent = change_with_meta(
+            "aws_lambda_function",
+            "handler",
+            magma_types::ResourceMeta {
+                provider: None,
+                depends_on: vec![role.address.clone()],
+            },
+        );
+        // Deliberately dependent-first, so plan order alone would apply
+        // the lambda before its role.
+        let changes = vec![&dependent, &role];
+        let graph = build_change_graph(&changes);
+        assert!(
+            graph.depends_on(&dependent.address, &role.address),
+            "a declared depends_on must be a real graph edge",
+        );
+        // Asserted on the WAVE decomposition, which is what the
+        // provider-backed executor actually consumes — this crate is
+        // sealed against collapsing waves into a flat order (see
+        // `the_provider_apply_never_linearises_the_wave_decomposition`).
+        let waves = graph.waves().expect("acyclic");
+        let wave_of = |addr: &ResourceAddress| {
+            waves
+                .iter()
+                .position(|w| w.iter().any(|a| a == addr))
+                .expect("every node lands in some wave")
+        };
+        assert!(
+            wave_of(&role.address) < wave_of(&dependent.address),
+            "the declared dependency must land in an earlier wave, so it is applied first",
+        );
+        assert_eq!(
+            waves.len(),
+            2,
+            "one edge means two waves; a single wide wave would assert these are independent",
+        );
+    }
+
+    /// The interpolation-derived edges must keep working unchanged —
+    /// the new source is additive, not a replacement.
+    #[test]
+    fn an_interpolated_reference_still_orders_the_apply() {
+        let vpc = change_with_meta("aws_vpc", "main", Default::default());
+        let mut subnet = change_with_meta("aws_subnet", "priv", Default::default());
+        subnet.after = Some(serde_json::json!({ "vpc_id": "${aws_vpc.main.id}" }));
+        let changes = vec![&subnet, &vpc];
+        let graph = build_change_graph(&changes);
+        assert!(graph.depends_on(&subnet.address, &vpc.address));
+    }
+
+    /// A `depends_on` pointing at something this cycle is not touching
+    /// needs no edge — it is not being changed, so nothing can race it.
+    #[test]
+    fn a_depends_on_targeting_a_resource_outside_this_cycle_adds_no_edge() {
+        let absent = ResourceAddress {
+            module: magma_types::ModulePath::root(),
+            kind: ResourceKind::Managed,
+            type_id: magma_types::ResourceTypeId("aws_iam_role".into()),
+            name: "not_in_this_plan".into(),
+            key: None,
+        };
+        let only = change_with_meta(
+            "aws_lambda_function",
+            "handler",
+            magma_types::ResourceMeta {
+                provider: None,
+                depends_on: vec![absent.clone()],
+            },
+        );
+        let changes = vec![&only];
+        let graph = build_change_graph(&changes);
+        assert_eq!(graph.len(), 1, "no phantom node for an untouched target");
+        assert!(!graph.depends_on(&only.address, &absent));
     }
 
     #[test]

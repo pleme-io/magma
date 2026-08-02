@@ -814,6 +814,85 @@ pub enum MagmaTypesError {
 mod tests {
     use super::*;
 
+    // ── Provider instance ──────────────────────────────────────────
+    //
+    // `ProviderReference.alias` has been a field on a real type since
+    // M0 and was read on NO apply path: provider selection was
+    // `type_id.split('_').next()` and nothing else. A resource declaring
+    // `provider = "aws.us_east_2"` was therefore applied through the
+    // DEFAULT `aws` provider — real infrastructure in the wrong account,
+    // reported as success.
+
+    #[test]
+    fn an_aliased_provider_reference_is_refused_rather_than_resolved_to_the_default() {
+        let err = ProviderInstance::try_from("aws.us_east_2".to_string())
+            .expect_err("an aliased provider reference must not resolve");
+        assert_eq!(err, ProviderInstanceError::Aliased("aws.us_east_2".into()));
+        // The message has to say WHY, because the operator's next move
+        // depends on knowing magma silently used a different account.
+        assert!(
+            err.to_string().contains("account or region"),
+            "the refusal must name the consequence it prevents, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_bare_provider_reference_resolves_to_that_provider() {
+        let p = ProviderInstance::try_from("aws".to_string()).expect("a bare name is valid");
+        assert_eq!(p.name(), "aws");
+    }
+
+    #[test]
+    fn an_empty_provider_reference_is_refused() {
+        assert_eq!(
+            ProviderInstance::try_from(String::new()),
+            Err(ProviderInstanceError::Empty)
+        );
+    }
+
+    /// A plan is persisted and re-read across reconcile cycles and pod
+    /// restarts, so deserialization is a real boundary, not a
+    /// theoretical one — an alias must not be able to sneak in through
+    /// it either.
+    #[test]
+    fn an_aliased_provider_cannot_be_deserialized_into_a_change() {
+        let err = serde_json::from_str::<ProviderInstance>("\"aws.us_east_2\"")
+            .expect_err("deserialization must enforce the same invariant as construction");
+        assert!(
+            err.to_string().contains("account or region"),
+            "the typed refusal must survive the serde boundary, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_provider_instance_round_trips_as_a_plain_string() {
+        let p = ProviderInstance::try_from("cloudflare".to_string()).unwrap();
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(json, "\"cloudflare\"");
+        assert_eq!(serde_json::from_str::<ProviderInstance>(&json).unwrap(), p);
+    }
+
+    /// An in-flight plan written before `meta` existed must still be
+    /// readable — a magma upgrade must not strand a persisted plan.
+    #[test]
+    fn a_change_serialized_without_meta_still_deserializes() {
+        let json = serde_json::json!({
+            "address": {
+                "module": [],
+                "kind": "managed",
+                "type_id": "aws_vpc",
+                "name": "main",
+                "key": null,
+            },
+            "action": "create",
+            "before": null,
+            "after": null,
+            "reasons": [],
+        });
+        let c: ResourceChange = serde_json::from_value(json).expect("legacy plan must still read");
+        assert!(c.meta.is_empty());
+    }
+
     #[test]
     fn import_directives_builder_and_lookup() {
         let d = ImportDirectives::none()

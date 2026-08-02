@@ -66,7 +66,9 @@ fn scannable(p: &Path) -> bool {
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -102,7 +104,9 @@ fn no_real_deployment_names() {
         if p.file_name().and_then(|f| f.to_str()) == Some("publishability_no_host_estate.rs") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&p) else { continue };
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
         let lower = text.to_lowercase();
         for name in FORBIDDEN_NAMES {
             if lower.contains(name) {
@@ -124,7 +128,9 @@ fn no_real_deployment_names() {
 fn no_host_account_id() {
     let hits: Vec<String> = sources()
         .into_iter()
-        .filter(|p| p.file_name().and_then(|f| f.to_str()) != Some("publishability_no_host_estate.rs"))
+        .filter(|p| {
+            p.file_name().and_then(|f| f.to_str()) != Some("publishability_no_host_estate.rs")
+        })
         .filter(|p| {
             std::fs::read_to_string(p)
                 .map(|t| t.contains(FORBIDDEN_ACCOUNT))
@@ -146,15 +152,14 @@ fn no_real_aws_resource_ids() {
         if p.file_name().and_then(|f| f.to_str()) == Some("publishability_no_host_estate.rs") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&p) else { continue };
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
         for prefix in ID_PREFIXES {
             let mut rest = text.as_str();
             while let Some(i) = rest.find(prefix) {
                 rest = &rest[i + prefix.len()..];
-                let body: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_hexdigit())
-                    .collect();
+                let body: String = rest.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
                 if body.len() >= 8 && !ALLOWED_ID_BODIES.contains(&body.as_str()) {
                     hits.push(format!("{}: {prefix}{body}", p.display()));
                 }

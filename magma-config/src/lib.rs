@@ -261,12 +261,13 @@ pub fn split_resource_body(
                     key: "provider",
                     detail: format!("expected a string, got {value}"),
                 })?;
-                meta.provider = Some(ProviderInstance::try_from(s.to_string()).map_err(
-                    |source| ConfigError::ProviderMeta {
-                        address: address.to_string(),
-                        source,
-                    },
-                )?);
+                meta.provider =
+                    Some(ProviderInstance::try_from(s.to_string()).map_err(|source| {
+                        ConfigError::ProviderMeta {
+                            address: address.to_string(),
+                            source,
+                        }
+                    })?);
             }
             "depends_on" => {
                 let list = value.as_array().ok_or_else(|| ConfigError::MalformedMeta {
@@ -678,6 +679,136 @@ fn unescape_only(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── Meta-argument split ────────────────────────────────────────
+    //
+    // Both defects this split fixes were SILENT. `magma_cty::from_json`
+    // builds a value by walking the provider SCHEMA, so a meta-argument
+    // left among the attributes is dropped with no error at all — and
+    // meanwhile it still counts as a config-declared key for drift.
+    // Nothing anywhere reported a problem.
+
+    #[test]
+    fn a_declared_provider_is_carried_as_meta_not_handed_to_the_provider() {
+        let (meta, attrs) = split_resource_body(
+            "aws_instance.web",
+            &json!({ "provider": "aws", "ami": "ami-123" }),
+        )
+        .expect("a bare provider name is honourable");
+        assert_eq!(
+            meta.provider.as_ref().map(ProviderInstance::name),
+            Some("aws")
+        );
+        // The attribute map handed to the provider must not contain it.
+        assert_eq!(attrs, json!({ "ami": "ami-123" }));
+    }
+
+    /// THE wrong-account defect. Until this split existed, this body
+    /// produced attributes still containing `provider`, which the cty
+    /// encoder dropped — and the resource was applied through the
+    /// default `aws` provider with no error at any layer.
+    #[test]
+    fn a_resource_pinned_to_an_aliased_provider_is_refused_not_silently_defaulted() {
+        let err = split_resource_body(
+            "aws_instance.web",
+            &json!({ "provider": "aws.us_east_2", "ami": "ami-123" }),
+        )
+        .expect_err("magma cannot dial an aliased provider, so it must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("aws_instance.web"),
+            "must name the resource: {msg}"
+        );
+        assert!(
+            matches!(err, ConfigError::ProviderMeta { .. }),
+            "must be the typed provider-meta refusal, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_declared_depends_on_becomes_typed_addresses_and_leaves_the_attributes() {
+        let (meta, attrs) = split_resource_body(
+            "aws_instance.web",
+            &json!({
+                "depends_on": ["aws_iam_role.exec", "data.aws_vpc.main", "aws_subnet.a[0]"],
+                "ami": "ami-123",
+            }),
+        )
+        .expect("depends_on is implemented");
+        let got: Vec<String> = meta.depends_on.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            got,
+            vec!["aws_iam_role.exec", "data.aws_vpc.main", "aws_subnet.a"],
+            "an index suffix targets the resource, matching how interpolation edges key",
+        );
+        assert_eq!(attrs, json!({ "ami": "ami-123" }));
+    }
+
+    #[test]
+    fn a_depends_on_naming_a_module_is_refused_because_magma_cannot_order_against_one() {
+        let err = split_resource_body(
+            "aws_instance.web",
+            &json!({ "depends_on": ["module.networking"] }),
+        )
+        .expect_err("magma does not expand modules, so it cannot honour the ordering");
+        assert!(err.to_string().contains("module"), "got: {err}");
+    }
+
+    #[test]
+    fn a_malformed_depends_on_is_refused_rather_than_ignored() {
+        for body in [
+            json!({ "depends_on": "aws_iam_role.exec" }), // not a list
+            json!({ "depends_on": [42] }),                // not a string
+            json!({ "depends_on": ["not_an_address"] }),  // no `.name`
+            json!({ "depends_on": ["a.b.c"] }),           // too many segments
+        ] {
+            assert!(
+                split_resource_body("aws_instance.web", &body).is_err(),
+                "a depends_on magma cannot parse must never be silently dropped: {body}"
+            );
+        }
+    }
+
+    /// Every meta-argument leaves the attributes, whether or not magma
+    /// implements it — that is what makes the two populations
+    /// structurally distinct rather than distinguished case by case.
+    /// The ones magma does NOT implement are refused, because each is
+    /// silently wrong when ignored (a dropped `count` builds one
+    /// resource where N were declared; a dropped `lifecycle` can
+    /// destroy a `prevent_destroy` resource).
+    #[test]
+    fn a_recognised_but_unimplemented_meta_argument_is_refused_never_ignored() {
+        for key in [
+            "count",
+            "for_each",
+            "lifecycle",
+            "provisioner",
+            "connection",
+        ] {
+            let body = json!({ key: json!({}), "ami": "ami-123" });
+            let Err(err) = split_resource_body("aws_instance.web", &body) else {
+                panic!("`{key}` must be refused, not silently dropped from the attributes");
+            };
+            assert!(
+                matches!(err, ConfigError::UnimplementedMeta { key: k, .. } if k == key),
+                "`{key}` must be the typed unimplemented-meta refusal, got: {err}"
+            );
+            // The message must state what ignoring it would have done.
+            assert!(
+                err.to_string().contains("Ignoring it would"),
+                "the refusal must name the consequence, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_block_with_no_meta_arguments_passes_through_untouched() {
+        let body = json!({ "ami": "ami-123", "tags": { "Name": "web" } });
+        let (meta, attrs) =
+            split_resource_body("aws_instance.web", &body).expect("no meta, no refusal");
+        assert!(meta.is_empty());
+        assert_eq!(attrs, body);
+    }
 
     #[test]
     fn parse_minimal_terraform_json() {
