@@ -18,7 +18,26 @@ workspace = true
 # the Terraform JSON reader path only — consumers who only deal in
 # Pangea-rendered JSON don't need the Ruby toolchain. The fleet default
 # (substrate's rust-workspace-release build) enables this feature.
-magnus = ["dep:pangea-ruby-eval"]
+# The feature STAYS (★★ MODULARIZE, DON'T DELETE) — it is the declaration
+# that this loader exists and where the Ruby path will land. What it no
+# longer carries is the dependency, because nothing uses it yet:
+# `magnus::PangeaRubyLoader` is a `PhantomData` stub whose `load()` returns
+# an empty rendering behind `TODO(M0): wire pangea_ruby_eval::RubyEvaluator`.
+# Zero code references the crate — only two comments name it.
+#
+# Why removing an UNUSED optional dep matters: it was
+# `git = "…/pleme-io/pangea-operator"`, a PRIVATE repo, and cargo records a
+# git source in Cargo.lock whether or not the feature is on. So the lock
+# named a private repo, and every full resolution — `cargo metadata`,
+# `cargo tree`, docs.rs, an IDE — reached for it. That is what made magma
+# unpublishable, and it bought nothing: the code it would enable is a stub.
+#
+# It is also a layering inversion worth not restoring: magma is the LIBRARY,
+# pangea-operator is its CONSUMER. When the Ruby path is really wired, the
+# evaluator should be injected by the consumer through `WorkspaceLoader`
+# (the trait already here), not pulled in by the library from its own
+# consumer's repo.
+magnus = []
 default = []
 
 [dependencies]
@@ -34,9 +53,10 @@ tracing      = { workspace = true }
 async-trait  = { workspace = true }
 petgraph     = { workspace = true }
 
-# In-process Ruby (M0 — Pangea Ruby DSL evaluator). Same crate
-# pangea-operator uses; per theory/MAGMA.md §II.1, the canonical pattern.
-pangea-ruby-eval = { git = "https://github.com/pleme-io/pangea-operator", optional = true }
+# NO `pangea-ruby-eval` here — see the `magnus` feature comment above. The
+# in-process Ruby evaluator is injected by the consumer via the
+# `WorkspaceLoader` trait when it is really wired; the library does not
+# depend on its own consumer's (private) repo.
 
 [dev-dependencies]
 tempfile = { workspace = true }
