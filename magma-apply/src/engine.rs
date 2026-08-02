@@ -4612,6 +4612,7 @@ mod tests {
             magma_types::ResourceMeta {
                 provider: Some(instance),
                 depends_on: vec![],
+                ignore_changes: vec![],
             },
         )
     }
