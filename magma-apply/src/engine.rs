@@ -4572,6 +4572,7 @@ mod tests {
                 magma_types::ProviderInstance::try_from("githubenterprise".to_string()).unwrap(),
             ),
             depends_on: vec![],
+            ignore_changes: vec![],
         };
         let c = change_with_meta("github_repository", "izumi", meta);
         assert_eq!(
@@ -4849,6 +4850,7 @@ mod tests {
             magma_types::ResourceMeta {
                 provider: None,
                 depends_on: vec![role.address.clone()],
+                ignore_changes: vec![],
             },
         );
         // Deliberately dependent-first, so plan order alone would apply
@@ -4910,6 +4912,7 @@ mod tests {
             magma_types::ResourceMeta {
                 provider: None,
                 depends_on: vec![absent.clone()],
+                ignore_changes: vec![],
             },
         );
         let changes = vec![&only];

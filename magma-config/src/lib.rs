@@ -768,6 +768,67 @@ pub fn split_resource_body(
                     meta.depends_on.push(parse_depends_on_entry(address, s)?);
                 }
             }
+            // `lifecycle` is checked SUB-KEY BY SUB-KEY, not wholesale. The
+            // block is accepted so a workspace using the one sub-key magma
+            // implements can run; every other sub-key is refused by name with
+            // the same typed error the whole block used to raise, so nothing
+            // magma cannot honour is silently dropped.
+            "lifecycle" => {
+                let obj = value.as_object().ok_or_else(|| ConfigError::MalformedMeta {
+                    address: address.to_string(),
+                    key: "lifecycle",
+                    detail: format!("expected an object, got {value}"),
+                })?;
+                for (sub, sub_value) in obj {
+                    if let Some((k, consequence)) = MetaCatalog::LIFECYCLE_UNIMPLEMENTED
+                        .iter()
+                        .find(|(k, _)| k == sub)
+                    {
+                        return Err(ConfigError::UnimplementedMeta {
+                            address: address.to_string(),
+                            key: k,
+                            consequence,
+                        });
+                    }
+                    if sub != "ignore_changes" {
+                        return Err(ConfigError::MalformedMeta {
+                            address: address.to_string(),
+                            key: "lifecycle",
+                            detail: format!("unknown lifecycle sub-key `{sub}`"),
+                        });
+                    }
+                    // Terraform also accepts the bare keyword `all`. Magma
+                    // refuses it rather than guessing: "ignore everything"
+                    // would silence drift on attributes nobody enumerated,
+                    // which is the same silent-wrongness this catalog forbids.
+                    let list = sub_value
+                        .as_array()
+                        .ok_or_else(|| ConfigError::MalformedMeta {
+                            address: address.to_string(),
+                            key: "lifecycle",
+                            detail: format!(
+                                "expected `ignore_changes` to be a list of attribute names, got {sub_value}"
+                            ),
+                        })?;
+                    for entry in list {
+                        let s = entry.as_str().ok_or_else(|| ConfigError::MalformedMeta {
+                            address: address.to_string(),
+                            key: "lifecycle",
+                            detail: format!("expected an attribute name string, got {entry}"),
+                        })?;
+                        if s == "all" {
+                            return Err(ConfigError::MalformedMeta {
+                                address: address.to_string(),
+                                key: "lifecycle",
+                                detail: "`ignore_changes = all` is not supported — \
+                                         enumerate the attributes to ignore"
+                                    .to_string(),
+                            });
+                        }
+                        meta.ignore_changes.push(s.to_string());
+                    }
+                }
+            }
             _ => {
                 attrs.insert(key.clone(), value.clone());
             }
@@ -1542,13 +1603,10 @@ mod tests {
     /// destroy a `prevent_destroy` resource).
     #[test]
     fn a_recognised_but_unimplemented_meta_argument_is_refused_never_ignored() {
-        for key in [
-            "count",
-            "for_each",
-            "lifecycle",
-            "provisioner",
-            "connection",
-        ] {
+        // Driven off the catalog itself, so a meta-argument added to
+        // `UNIMPLEMENTED` without a refusal path fails here rather than
+        // being silently dropped into the attributes.
+        for (key, _) in magma_types::ResourceMeta::UNIMPLEMENTED {
             let body = json!({ key: json!({}), "ami": "ami-123" });
             let Err(err) = split_resource_body("aws_instance.web", &body) else {
                 panic!("`{key}` must be refused, not silently dropped from the attributes");
@@ -1563,6 +1621,64 @@ mod tests {
                 "the refusal must name the consequence, got: {err}"
             );
         }
+    }
+
+    /// `lifecycle` left `UNIMPLEMENTED` and became SUB-KEY-scoped: the block
+    /// is accepted so the one sub-key magma implements can be used, and every
+    /// other sub-key keeps the identical typed refusal. Losing either half
+    /// would be a regression — accepting the block wholesale re-introduces
+    /// the silent wrongness, refusing it wholesale re-blocks every workspace
+    /// that only wants `ignore_changes`.
+    #[test]
+    fn an_unimplemented_lifecycle_sub_key_is_still_refused_by_name() {
+        for (sub, _) in magma_types::ResourceMeta::LIFECYCLE_UNIMPLEMENTED {
+            let body = json!({ "lifecycle": { sub: true }, "ami": "ami-123" });
+            let Err(err) = split_resource_body("aws_instance.web", &body) else {
+                panic!("`lifecycle.{sub}` must be refused, not silently accepted");
+            };
+            assert!(
+                matches!(err, ConfigError::UnimplementedMeta { key: k, .. } if k == sub),
+                "`lifecycle.{sub}` must name the SUB-KEY in the refusal, got: {err}"
+            );
+            assert!(
+                err.to_string().contains("Ignoring it would"),
+                "the refusal must name the consequence, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_ignore_changes_is_parsed_into_meta_and_leaves_the_attributes() {
+        let body = json!({
+            "lifecycle": { "ignore_changes": ["value"] },
+            "name": "/shaar/hub-public-key",
+            "value": "placeholder",
+        });
+        let (meta, attrs) =
+            split_resource_body("aws_ssm_parameter.hub", &body).expect("ignore_changes is honoured");
+        assert_eq!(meta.ignore_changes, vec!["value".to_string()]);
+        // The meta-argument itself must never reach the provider.
+        assert!(
+            attrs.get("lifecycle").is_none(),
+            "`lifecycle` leaked into the attributes: {attrs}"
+        );
+        // …but the attribute it NAMES is still a real attribute.
+        assert_eq!(attrs.get("value").and_then(|v| v.as_str()), Some("placeholder"));
+    }
+
+    /// Terraform's bare `all` keyword is refused rather than guessed at:
+    /// silencing drift on attributes nobody enumerated is exactly the
+    /// silent-wrongness the catalog exists to prevent.
+    #[test]
+    fn lifecycle_ignore_changes_all_is_refused() {
+        let body = json!({ "lifecycle": { "ignore_changes": ["all"] } });
+        let Err(err) = split_resource_body("aws_ssm_parameter.hub", &body) else {
+            panic!("`ignore_changes = all` must be refused");
+        };
+        assert!(
+            err.to_string().contains("enumerate the attributes"),
+            "the refusal must say what to do instead, got: {err}"
+        );
     }
 
     #[test]

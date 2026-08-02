@@ -585,11 +585,14 @@ impl From<ProviderInstance> for String {
 /// of the rendered JSON so they can never be mistaken for provider
 /// attributes.
 ///
-/// Only the two magma implements live here. The remaining Terraform
-/// meta-arguments (`count`, `for_each`, `lifecycle`, `provisioner`,
-/// `connection`) are recognised at the config boundary and **refused**
-/// there — see `magma_config::split_resource_body` — because each of
-/// them is silently wrong when ignored, not merely unsupported.
+/// Only what magma implements lives here. The remaining Terraform
+/// meta-arguments (`count`, `for_each`, `provisioner`, `connection`) are
+/// recognised at the config boundary and **refused** there — see
+/// `magma_config::split_resource_body` — because each of them is silently
+/// wrong when ignored, not merely unsupported.
+///
+/// `lifecycle` is refused *per sub-key* rather than wholesale: see
+/// [`ResourceMeta::ignore_changes`] and `LIFECYCLE_UNIMPLEMENTED`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceMeta {
     /// `provider = "aws"` / `provider = "aws.us_east_2"` — which provider
@@ -604,18 +607,61 @@ pub struct ResourceMeta {
     /// meta-argument exists).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<ResourceAddress>,
+    /// `lifecycle { ignore_changes = ["value"] }` — attribute names whose
+    /// drift the author has declared magma must NOT correct.
+    ///
+    /// This is the write-once / rotated-out-of-band case: an
+    /// `aws_ssm_parameter` seeded with a placeholder whose real value is
+    /// later written by the workload itself. Without it, every plan sees
+    /// config-vs-live divergence on `value`, emits an `Update`, and the
+    /// apply CLOBBERS the live secret with the placeholder — and, because
+    /// the config never matches, `assert_apply_converges` can never reach
+    /// a fixed point either.
+    ///
+    /// Empty means "correct all drift", which is magma's normal behaviour
+    /// and the behaviour of every resource that omits the block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignore_changes: Vec<String>,
 }
 
 impl ResourceMeta {
-    /// The meta-arguments magma implements — the two [`ResourceMeta`]
+    /// The meta-arguments magma implements — the ones [`ResourceMeta`]
     /// has fields for.
-    pub const IMPLEMENTED: [&'static str; 2] = ["provider", "depends_on"];
+    pub const IMPLEMENTED: [&'static str; 3] = ["provider", "depends_on", "lifecycle"];
+
+    /// The `lifecycle` sub-keys magma does NOT implement, paired with what
+    /// silently ignoring each would do.
+    ///
+    /// `lifecycle` is deliberately NOT all-or-nothing. Refusing the whole
+    /// block would keep magma from running any workspace that uses the one
+    /// sub-key it does implement, while accepting the whole block would
+    /// re-introduce exactly the silent wrongness [`UNIMPLEMENTED`] exists to
+    /// prevent. So the block is accepted, and each sub-key is checked:
+    /// `ignore_changes` is honoured, anything else is refused by name.
+    ///
+    /// [`UNIMPLEMENTED`]: ResourceMeta::UNIMPLEMENTED
+    pub const LIFECYCLE_UNIMPLEMENTED: [(&'static str, &'static str); 3] = [
+        (
+            "prevent_destroy",
+            "Ignoring it would let a resource the author marked undestroyable be destroyed.",
+        ),
+        (
+            "create_before_destroy",
+            "Ignoring it would destroy the old resource before creating its replacement, \
+             taking an outage the author explicitly wrote this to avoid.",
+        ),
+        (
+            "replace_triggered_by",
+            "Ignoring it would leave a resource in place that the author declared must be \
+             replaced when its trigger changes.",
+        ),
+    ];
 
     /// The meta-arguments magma recognises but does not implement, paired
     /// with what silently ignoring each one would actually do. The message
     /// is the point: an operator who hits this needs to know the executor
     /// cannot honour what they wrote, not merely that a key was rejected.
-    pub const UNIMPLEMENTED: [(&'static str, &'static str); 5] = [
+    pub const UNIMPLEMENTED: [(&'static str, &'static str); 4] = [
         (
             "count",
             "Ignoring it would create ONE resource where N were declared.",
@@ -623,11 +669,6 @@ impl ResourceMeta {
         (
             "for_each",
             "Ignoring it would create ONE resource where one per element was declared.",
-        ),
-        (
-            "lifecycle",
-            "Ignoring it would discard `prevent_destroy`, `ignore_changes` and \
-             `create_before_destroy` — a `prevent_destroy` resource could be destroyed.",
         ),
         (
             "provisioner",

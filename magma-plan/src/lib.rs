@@ -298,8 +298,13 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         let after_resolved = after
             .as_ref()
             .map(|v| magma_config::resolve_config(v, &state_map).unwrap_or_else(|_| v.clone()));
-        let drifted =
-            declared_attributes_drifted(&addr.type_id.0, &addr.name, &before, &after_resolved);
+        let drifted = declared_attributes_drifted(
+            &addr.type_id.0,
+            &addr.name,
+            &before,
+            &after_resolved,
+            &meta.ignore_changes,
+        );
         // Same rule as the Create arm: a data source is never UPDATED either.
         // A `data` block whose filter changed needs re-reading, not mutating —
         // and apply already treats it that way (`partition_changes` routes by
@@ -480,11 +485,21 @@ fn lookup_state_value(state: &State, addr: &ResourceAddress) -> Option<serde_jso
 /// the BUG 3–8 regression tests below): six schema-free false-positive
 /// classes plus one narrowly-scoped OIDC fix, none of which need the
 /// bigger provider-schema (`PlanResourceChange`) M0.x work.
+/// `ignored` is the resource's own `lifecycle.ignore_changes` list. It is
+/// the AUTHOR-DECLARED form of the same exemption
+/// `is_externally_managed_attribute` hardcodes: that function is a
+/// hand-maintained table of address+attribute pairs magma happens to know
+/// are written by a sibling controller, whereas this arrives from the
+/// workspace itself and needs no magma-side edit to cover a new resource.
+/// Both are consulted; the declared list is not a replacement for the table
+/// (removing it would regress every workspace relying on it), it is the
+/// general case the table was approximating.
 fn declared_attributes_drifted(
     resource_type: &str,
     resource_name: &str,
     before: &Option<serde_json::Value>,
     after: &Option<serde_json::Value>,
+    ignored: &[String],
 ) -> bool {
     let Some(after_val) = after else {
         // Nothing declared in config — nothing to compare.
@@ -517,6 +532,10 @@ fn declared_attributes_drifted(
             if is_externally_managed_attribute(resource_type, resource_name, k) {
                 return false;
             }
+            // The author's own `lifecycle { ignore_changes = [...] }`.
+            if ignored.iter().any(|i| i == k) {
+                return false;
+            }
             !before_obj.get(k).is_some_and(|before_v| {
                 attribute_matches(resource_type, k, before_v, after_v, before_obj, after_obj)
             })
@@ -529,6 +548,7 @@ fn declared_attributes_drifted(
         None => after_obj.keys().any(|k| {
             !is_write_only_attribute(resource_type, k)
                 && !is_externally_managed_attribute(resource_type, resource_name, k)
+                && !ignored.iter().any(|i| i == k)
         }),
     }
 }
@@ -1453,7 +1473,8 @@ mod tests {
                 "aws_subnet",
                 "priv",
                 &Some(subnet_before),
-                &subnet_after_raw
+                &subnet_after_raw,
+                &[]
             ),
             "old code path (raw, unresolved comparison) must reproduce the spurious-drift bug shape"
         );

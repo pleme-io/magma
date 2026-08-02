@@ -198,6 +198,51 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
         }
     }
 
+    // DATA SOURCES GO BEFORE EVERY MANAGED RESOURCE, and the dependency
+    // graph cannot express that.
+    //
+    // `magma_config::dependency_edges` derives edges via
+    // `magma_types::ref_target`, which returns `None` for any `data.*`
+    // path — deliberately, on the documented premise that a data source is
+    // "resolved from existing state, not ordered as apply dependencies"
+    // (magma-types/src/reference.rs:610). That premise is true on a
+    // steady-state re-apply and FALSE on the first apply from empty state:
+    // there IS no existing state, the data source is read in THIS pass
+    // (`Action::Read`, see `apply_one`), and a managed resource
+    // referencing it must therefore be ordered after it.
+    //
+    // Because no edge exists, ordering fell back to plan order —
+    // alphabetical by (type_id, name) — and `aws_security_group` sorts
+    // before `aws_vpc`. So on camelot-eks-shaar-concentrator the SG was
+    // applied while `data.aws_vpc.camelot_eks` was still absent from
+    // `state_map`; `resolve_for_structural_apply` failed, fell back to the
+    // RAW value, and state recorded the literal
+    // `"vpc_id": "${data.aws_vpc.camelot_eks.id}"`. The re-plan then
+    // resolved the same reference successfully (the data source is in
+    // state by then) and compared `vpc-090f93f4590e59ebc` against that
+    // literal — permanent `AttributeDrift`, so `assert_apply_converges`
+    // could never be satisfied and the workspace sat at phase=Failed.
+    //
+    // Hoisting reads is sound rather than a heuristic: a data source is a
+    // pure lookup. It can reference other data sources and inputs, never a
+    // managed resource this pass creates, so nothing it needs can be
+    // ordered after it. Relative order WITHIN the reads is left to
+    // `dependency_ordered` so data-to-data references still order.
+    let (reads, mutations): (Vec<&ResourceChange>, Vec<&ResourceChange>) = reals
+        .iter()
+        .partition(|c| matches!(c.action, Action::Read));
+
+    for change in dependency_ordered(&reads) {
+        match apply_one(change, state, &mut state_map) {
+            Ok(a) => applied.push(a),
+            Err(e) => failed.push(FailedChange {
+                address: change.address.clone(),
+                action: change.action,
+                reason: e.to_string(),
+            }),
+        }
+    }
+
     // Real changes are applied in DEPENDENCY order, not plan order —
     // plan order is alphabetical by (type_id, name) (see
     // `magma_plan::plan`'s deterministic sort), which is NOT
@@ -209,7 +254,7 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
     // below) — mirrors `engine::run_plan_with_providers`'s own
     // `ResourceGraph`-based ordering. Falls back to plan order on a
     // cycle / graph error — never refuses to apply.
-    for change in dependency_ordered(&reals) {
+    for change in dependency_ordered(&mutations) {
         match apply_one(change, state, &mut state_map) {
             Ok(a) => applied.push(a),
             Err(e) => failed.push(FailedChange {
