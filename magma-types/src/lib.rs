@@ -19,8 +19,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod observation;
+pub mod reference;
 
 pub use observation::{Coverage, DriftVerdict, Observation, ObservationError, RefreshCounts};
+pub use reference::{
+    AttrError, AttrStep, AttrValue, Ref, RefError, TextPart, collect_refs, ref_target,
+};
 
 // ── Identity ───────────────────────────────────────────────────────
 
@@ -542,6 +546,28 @@ pub enum ResourceError {
          so it would evaporate silently and still count as declared drift."
     )]
     MetaArgumentInAttributes { address: String, key: String },
+    /// The typed [`Ref`]s attached to a resource are not exactly the
+    /// references its body carries.
+    #[error(
+        "resource `{address}`: its typed references and its body disagree. Declared \
+         {declared:?}, body carries {found:?}. Edge derivation reads the TYPED references \
+         for a resource that has any and does not scan its body, so a disagreement is a \
+         dependency edge that is missing or invented — silently, since both halves are \
+         individually well-formed. The two are the same references seen twice; they are \
+         required to be equal, in body-walk order."
+    )]
+    RefsDoNotMatchBody {
+        address: String,
+        declared: Vec<String>,
+        found: Vec<String>,
+    },
+    /// A typed attribute tree could not be lowered — see [`AttrError`].
+    #[error("resource `{address}`: {source}")]
+    Attr {
+        address: String,
+        #[source]
+        source: AttrError,
+    },
 }
 
 /// One resource as **declared** — the config-side peer of
@@ -575,14 +601,36 @@ pub enum ResourceError {
 /// version. The JSON here is the same JSON `magma_cty` already encodes
 /// against a schema — no text is parsed and none is emitted.
 ///
-/// **The one invariant.** `attributes` may not contain a meta-argument
-/// key. The field is private and [`Resource::new`] is the only
-/// constructor, so a `Resource` holding `provider` or `depends_on` among
-/// its attributes has no code path in safe Rust — including through
-/// `Deserialize`, which routes through the same check. Tier-honest: the
-/// *value* is rejected at the construction boundary (a `Result::Err`,
-/// i.e. parse-time-rejected), while the *state* of holding one is
-/// unrepresentable because nothing can write the field.
+/// **What no longer stays JSON: references.** A value that points at
+/// another resource is not provider data — it is magma's own dependency
+/// structure, and it used to survive only as the literal text
+/// `"${aws_vpc.main.id}"`. [`Resource::from_attrs`] takes a typed
+/// [`AttrValue`] tree instead, lowers each [`Ref`] through the one
+/// renderer, and keeps the references *as values* alongside the rendered
+/// body. The body is unchanged in shape — the same JSON a provider
+/// encoder sees — and the graph no longer has to be recovered from it by
+/// scanning.
+///
+/// **The invariants.**
+///
+/// 1. `attributes` may not contain a meta-argument key. The field is
+///    private and [`Resource::new`] is the only constructor, so a
+///    `Resource` holding `provider` or `depends_on` among its attributes
+///    has no code path in safe Rust — including through `Deserialize`,
+///    which routes through the same check.
+/// 2. `refs`, when non-empty, is exactly the reference set the body
+///    carries, in body-walk order — `collect_refs(attributes) ==
+///    refs.map(Ref::path)`. Every way to attach references
+///    ([`from_attrs`](Resource::from_attrs), [`with_refs`](Resource::with_refs),
+///    `Deserialize`) goes through the same check, so the typed door and
+///    the JSON door cannot disagree about what this resource depends on.
+///    That equality *is* the compatibility contract between the two
+///    doors, enforced at construction rather than asserted in a test.
+///
+/// Tier-honest for both: the *value* is rejected at the construction
+/// boundary (a `Result::Err`, i.e. parse-time-rejected), while the
+/// *state* of holding a bad one is unrepresentable because nothing can
+/// write the fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(into = "ResourceRepr", try_from = "ResourceRepr")]
 pub struct Resource {
@@ -592,6 +640,9 @@ pub struct Resource {
     pub meta: ResourceMeta,
     /// Provider attributes ONLY. Private: see the type doc.
     attributes: serde_json::Value,
+    /// The references this resource's body carries, typed. Private: see
+    /// invariant 2 in the type doc.
+    refs: Vec<Ref>,
 }
 
 /// Serialization shadow for [`Resource`], so the private `attributes`
@@ -605,6 +656,11 @@ struct ResourceRepr {
     meta: ResourceMeta,
     #[serde(default)]
     attributes: serde_json::Value,
+    /// Omitted entirely when empty, so a JSON-authored resource
+    /// serializes to exactly the bytes it did before typed references
+    /// existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    refs: Vec<Ref>,
 }
 
 impl From<Resource> for ResourceRepr {
@@ -613,6 +669,7 @@ impl From<Resource> for ResourceRepr {
             address: r.address,
             meta: r.meta,
             attributes: r.attributes,
+            refs: r.refs,
         }
     }
 }
@@ -620,7 +677,9 @@ impl From<Resource> for ResourceRepr {
 impl TryFrom<ResourceRepr> for Resource {
     type Error = ResourceError;
     fn try_from(r: ResourceRepr) -> Result<Self, Self::Error> {
-        Self::new(r.address, r.attributes).map(|res| res.with_meta(r.meta))
+        Self::new(r.address, r.attributes)?
+            .with_meta(r.meta)
+            .with_refs(r.refs)
     }
 }
 
@@ -652,7 +711,44 @@ impl Resource {
             address,
             meta: ResourceMeta::default(),
             attributes,
+            refs: Vec::new(),
         })
+    }
+
+    /// Declare a resource from a typed attribute tree — **the door with
+    /// no Terraform syntax in it at all.**
+    ///
+    /// [`Resource::new`] closed the structural half: address, provider
+    /// and ordering stopped being strings. This closes the value half. A
+    /// reference is an [`AttrValue::Ref`] over the target's own
+    /// [`ResourceAddress`], lowered to `${…}` by the one renderer, and
+    /// the resulting `Resource` carries those references as *values* — so
+    /// the dependency graph is read off the declaration instead of
+    /// recovered from its text.
+    ///
+    /// ```
+    /// # use magma_types::{AttrValue, ModulePath, Ref, Resource, ResourceAddress, ResourceKind, ResourceTypeId};
+    /// # fn a(t: &str, n: &str) -> ResourceAddress { ResourceAddress {
+    /// #     module: ModulePath::root(), kind: ResourceKind::Managed,
+    /// #     type_id: ResourceTypeId(t.into()), name: n.into(), key: None } }
+    /// let vpc_id = Ref::new(a("aws_vpc", "main"), ["id"])?;
+    /// let subnet = Resource::from_attrs(
+    ///     a("aws_subnet", "a"),
+    ///     AttrValue::map([
+    ///         ("cidr_block", AttrValue::from("10.0.1.0/24")),
+    ///         ("vpc_id", AttrValue::from(vpc_id)),
+    ///     ]),
+    /// )?;
+    /// assert_eq!(subnet.attributes()["vpc_id"], "${aws_vpc.main.id}");
+    /// assert_eq!(subnet.refs().len(), 1);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn from_attrs(address: ResourceAddress, attrs: AttrValue) -> Result<Self, ResourceError> {
+        let (body, refs) = attrs.lower().map_err(|source| ResourceError::Attr {
+            address: address.to_string(),
+            source,
+        })?;
+        Self::new(address, body)?.with_refs(refs)
     }
 
     /// Attach the full typed meta block.
@@ -677,10 +773,46 @@ impl Resource {
         self
     }
 
+    /// Attach the typed references this resource's body carries.
+    ///
+    /// Fallible on purpose, and checked against the body: the references
+    /// must be exactly the ones a scan of `attributes` finds, in the same
+    /// order (invariant 2 on the type). [`Resource::from_attrs`] is the
+    /// ergonomic door and cannot get this wrong — it produces both halves
+    /// from one tree — but a front end that renders its own JSON can
+    /// still hand its references over here and have the claim checked
+    /// rather than trusted.
+    ///
+    /// Passing an empty list is always accepted and means "this resource
+    /// was authored as JSON; derive its edges by scanning".
+    pub fn with_refs(mut self, refs: Vec<Ref>) -> Result<Self, ResourceError> {
+        if !refs.is_empty() {
+            let found = reference::collect_refs(&self.attributes);
+            let declared: Vec<String> = refs.iter().map(Ref::path).collect();
+            if found != declared {
+                return Err(ResourceError::RefsDoNotMatchBody {
+                    address: self.address.to_string(),
+                    declared,
+                    found,
+                });
+            }
+        }
+        self.refs = refs;
+        Ok(self)
+    }
+
     /// The provider attributes. Read-only by construction.
     #[must_use]
     pub fn attributes(&self) -> &serde_json::Value {
         &self.attributes
+    }
+
+    /// The typed references this resource's body carries. Empty for a
+    /// JSON-authored resource, whose references live only as text and are
+    /// recovered by scanning.
+    #[must_use]
+    pub fn refs(&self) -> &[Ref] {
+        &self.refs
     }
 
     /// Take the provider attributes, consuming the resource.
@@ -696,6 +828,7 @@ impl Resource {
             address: &self.address,
             depends_on: &self.meta.depends_on,
             body: Some(&self.attributes),
+            refs: &self.refs,
         }
     }
 }
@@ -722,9 +855,17 @@ pub struct DependencyNode<'a> {
     pub address: &'a ResourceAddress,
     /// Ordering the author declared explicitly.
     pub depends_on: &'a [ResourceAddress],
-    /// The body to scan for `${type.name.attr}` references. `None` for a
+    /// The body to scan for `${type.name.attr}` references — the
+    /// COMPATIBILITY source, used only when `refs` is empty. `None` for a
     /// node with no config body left — a delete.
     pub body: Option<&'a serde_json::Value>,
+    /// The references this node carries as typed values — the STRUCTURAL
+    /// source. When non-empty these are the node's interpolation edges
+    /// and `body` is not scanned: the answer is already known, so there
+    /// is nothing to re-derive from text. A [`Resource`] guarantees the
+    /// two say the same thing (invariant 2 on that type), which is why
+    /// choosing one is safe rather than a preference.
+    pub refs: &'a [Ref],
 }
 
 /// One `dependent depends on dependency` edge: `dependency` must be
@@ -740,12 +881,24 @@ impl ResourceChange {
     /// is `after` — the desired config, which still carries its literal
     /// `${…}` references at this stage (`magma_plan` deliberately leaves
     /// them unresolved so these edges survive).
+    ///
+    /// **A change carries no typed references, deliberately.** A plan is
+    /// computed against a `magma_config::Config`, whose container is
+    /// Terraform-JSON-shaped: a reference survives it as the rendered
+    /// string and nothing else. So the apply-time graph takes the
+    /// compatibility path, and it gets the same edges the typed path
+    /// would — that equality is what `Resource`'s invariant 2 guarantees.
+    /// Carrying references down to here would mean threading a side
+    /// channel through the plan for an answer that is already correct;
+    /// the honest place for the structural path is config time, where the
+    /// declaration still exists.
     #[must_use]
     pub fn dependency_node(&self) -> DependencyNode<'_> {
         DependencyNode {
             address: &self.address,
             depends_on: &self.meta.depends_on,
             body: self.after.as_ref(),
+            refs: &[],
         }
     }
 }
@@ -1205,6 +1358,151 @@ mod tests {
         assert_eq!(inst.private, vec![1, 2, 3]);
         assert_eq!(inst.status, InstanceStatus::Ready);
         assert_eq!(inst.schema_version, 0);
+    }
+
+    // ── Typed references on a declared resource ────────────────────
+
+    fn managed(type_id: &str, name: &str) -> ResourceAddress {
+        ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Managed,
+            type_id: ResourceTypeId(type_id.to_string()),
+            name: name.to_string(),
+            key: None,
+        }
+    }
+
+    /// The typed door renders the reference into the body AND keeps it as
+    /// a value — the body a provider encoder sees is unchanged, and the
+    /// dependency is no longer only inferable from that body's text.
+    #[test]
+    fn a_typed_attribute_tree_renders_the_body_and_keeps_the_reference() {
+        let vpc_id = Ref::new(managed("aws_vpc", "main"), ["id"]).expect("referenceable");
+        let subnet = Resource::from_attrs(
+            managed("aws_subnet", "a"),
+            AttrValue::map([
+                ("cidr_block", AttrValue::from("10.0.1.0/24")),
+                ("vpc_id", AttrValue::from(vpc_id.clone())),
+            ]),
+        )
+        .expect("valid");
+
+        assert_eq!(
+            *subnet.attributes(),
+            serde_json::json!({
+                "cidr_block": "10.0.1.0/24",
+                "vpc_id": "${aws_vpc.main.id}",
+            })
+        );
+        assert_eq!(subnet.refs(), [vpc_id]);
+        assert_eq!(subnet.dependency_node().refs.len(), 1);
+    }
+
+    /// A JSON-authored resource carries no typed references — its edges
+    /// come from the scan, exactly as before. Nothing about the second
+    /// door changes the first.
+    #[test]
+    fn a_json_authored_resource_carries_no_typed_references() {
+        let subnet = Resource::new(
+            managed("aws_subnet", "a"),
+            serde_json::json!({ "vpc_id": "${aws_vpc.main.id}" }),
+        )
+        .expect("valid");
+        assert!(subnet.refs().is_empty());
+        assert!(subnet.dependency_node().refs.is_empty());
+    }
+
+    /// Invariant 2, enforced. Attaching references that are not exactly
+    /// the ones the body carries is refused — because edge derivation
+    /// believes the typed half and would silently produce the wrong
+    /// graph.
+    #[test]
+    fn references_that_do_not_match_the_body_are_refused() {
+        let vpc_id = Ref::new(managed("aws_vpc", "main"), ["id"]).expect("referenceable");
+
+        // Declared but absent from the body.
+        let err = Resource::new(managed("aws_subnet", "a"), serde_json::json!({ "x": 1 }))
+            .expect("valid")
+            .with_refs(vec![vpc_id.clone()])
+            .expect_err("the body carries no such reference");
+        assert!(
+            matches!(err, ResourceError::RefsDoNotMatchBody { .. }),
+            "{err}"
+        );
+
+        // Present in the body but only half-declared.
+        let err = Resource::new(
+            managed("aws_subnet", "a"),
+            serde_json::json!({
+                "a": "${aws_vpc.main.id}",
+                "b": "${aws_internet_gateway.gw.id}",
+            }),
+        )
+        .expect("valid")
+        .with_refs(vec![vpc_id])
+        .expect_err("one declared, two in the body");
+        assert!(
+            matches!(err, ResourceError::RefsDoNotMatchBody { .. }),
+            "{err}"
+        );
+    }
+
+    /// A declaration is persisted and re-read, so the invariant has to
+    /// survive serde — the same reason `ProviderInstance` is checked
+    /// there.
+    #[test]
+    fn references_inconsistent_with_the_body_cannot_be_deserialized() {
+        let good = Resource::from_attrs(
+            managed("aws_subnet", "a"),
+            AttrValue::map([(
+                "vpc_id",
+                AttrValue::from(Ref::new(managed("aws_vpc", "main"), ["id"]).expect("valid")),
+            )]),
+        )
+        .expect("valid");
+
+        let mut v = serde_json::to_value(&good).expect("serializes");
+        assert_eq!(
+            serde_json::from_value::<Resource>(v.clone()).expect("valid"),
+            good
+        );
+
+        // Repoint the body at a different resource, leaving the typed
+        // reference behind — the shape a hand-edited plan would have.
+        v["attributes"]["vpc_id"] = serde_json::json!("${aws_vpc.other.id}");
+        let err = serde_json::from_value::<Resource>(v).expect_err("body and refs disagree");
+        assert!(
+            err.to_string().contains("disagree"),
+            "the refusal must survive the serde boundary, got: {err}"
+        );
+    }
+
+    /// A resource with no typed references serializes to exactly the
+    /// bytes it did before they existed — the field is omitted, not
+    /// written as an empty list.
+    #[test]
+    fn a_resource_without_typed_references_serializes_unchanged() {
+        let r = Resource::new(
+            managed("aws_vpc", "main"),
+            serde_json::json!({ "cidr": "10/8" }),
+        )
+        .expect("valid");
+        let v = serde_json::to_value(&r).expect("serializes");
+        let keys: Vec<&String> = v.as_object().expect("an object").keys().collect();
+        assert_eq!(keys, ["address", "attributes", "meta"]);
+    }
+
+    /// A literal interpolation cannot be smuggled through the typed door
+    /// as a plain string — that is what makes "this resource's references
+    /// are exactly these values" true rather than hopeful.
+    #[test]
+    fn a_reference_spelled_as_text_is_refused_by_the_typed_door() {
+        let err = Resource::from_attrs(
+            managed("aws_subnet", "a"),
+            AttrValue::map([("vpc_id", AttrValue::from("${aws_vpc.main.id}"))]),
+        )
+        .expect_err("a reference spelled as a string");
+        assert!(matches!(err, ResourceError::Attr { .. }), "{err}");
     }
 }
 

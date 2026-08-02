@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 
 use magma_types::{
-    DependencyNode, ProviderInstance, ProviderInstanceError, ProviderReference, Resource,
+    DependencyNode, ProviderInstance, ProviderInstanceError, ProviderReference, Ref, Resource,
     ResourceAddress, ResourceEdge, ResourceError, ResourceKind, ResourceMeta, ResourceTypeId,
     State,
 };
@@ -89,6 +89,21 @@ pub enum ConfigError {
          The Terraform JSON container is a map, so one would silently replace the other."
     )]
     DuplicateAddress { address: String },
+    /// A typed [`magma_types::Ref`] names a resource this configuration
+    /// does not declare.
+    #[error(
+        "resource `{address}`: the reference `{reference}` targets `{target}`, which this \
+         configuration does not declare. Nothing would apply it, so the reference resolves \
+         to nothing and orders against nothing. This is the check a reference spelled as a \
+         string could never get: a mistyped `${{…}}` is not a parse error, it is a \
+         dependency edge that silently is not there — and the resource applies early, \
+         against a prerequisite that does not exist yet."
+    )]
+    DanglingReference {
+        address: String,
+        reference: String,
+        target: String,
+    },
 }
 
 // ── Top-level config (Pangea-rendered + tiny subset) ──────────────
@@ -116,6 +131,27 @@ pub struct Config {
     /// represented for graph + output tracking.
     #[serde(default, rename = "module")]
     pub modules: HashMap<String, serde_json::Value>,
+    /// Typed references carried by resources declared through
+    /// [`Config::from_resources`], keyed by rendered address.
+    ///
+    /// **`#[serde(skip)]`, and that is the whole point.** The Terraform
+    /// JSON container has no slot for a typed reference — a reference
+    /// survives it as the rendered `${…}` string and nothing else. Rather
+    /// than let the typed door silently degrade on the way through,
+    /// `from_resources` parks its references here and `resources_typed`
+    /// hands them back, so the documented round trip
+    /// `from_resources(rs)?.resources_typed()? == rs` keeps holding for
+    /// everything `from_resources` accepts.
+    ///
+    /// Skipped from serde in both directions, so
+    /// [`Config::from_json`](Config::from_json) reads exactly what it
+    /// read before and a serialized `Config` carries exactly the fields
+    /// it carried before. A `Config` that has been through JSON therefore
+    /// has an empty table and its resources take the scanning path —
+    /// which yields the same edges (that is `Resource`'s invariant 2), so
+    /// the degradation is in the typing, never in the graph.
+    #[serde(skip)]
+    typed_refs: HashMap<String, Vec<Ref>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -227,7 +263,12 @@ impl Config {
                 Some(b) => split_resource_body(&label, &b)?,
                 None => (ResourceMeta::default(), serde_json::Value::Null),
             };
-            out.push(Resource::new(address, attrs)?.with_meta(meta));
+            let refs = self.typed_refs.get(&label).cloned().unwrap_or_default();
+            out.push(
+                Resource::new(address, attrs)?
+                    .with_meta(meta)
+                    .with_refs(refs)?,
+            );
         }
         out.sort_by_key(|r| r.address.to_string());
         Ok(out)
@@ -258,15 +299,16 @@ impl Config {
     pub fn from_resources(
         resources: impl IntoIterator<Item = Resource>,
     ) -> Result<Self, ConfigError> {
+        let resources: Vec<Resource> = resources.into_iter().collect();
         let mut config = Self::default();
-        for r in resources {
+        for r in &resources {
             let slot = container_slot(&r.address)?;
             for dep in &r.meta.depends_on {
                 // A dependency address survives only as a string that
                 // `parse_depends_on_entry` must be able to read back.
                 container_slot(dep)?;
             }
-            let body = meta_into_body(&r)?;
+            let body = meta_into_body(r)?;
             let by_name = match slot.0 {
                 ResourceKind::Data => &mut config.data,
                 _ => &mut config.resources,
@@ -278,8 +320,39 @@ impl Config {
                     address: r.address.to_string(),
                 });
             }
+            if !r.refs().is_empty() {
+                config
+                    .typed_refs
+                    .insert(r.address.to_string(), r.refs().to_vec());
+            }
+        }
+        // Every typed reference must name something this configuration
+        // declares. See `ConfigError::DanglingReference`.
+        for r in &resources {
+            for reference in r.refs() {
+                if !config.declares(reference.target()) {
+                    return Err(ConfigError::DanglingReference {
+                        address: r.address.to_string(),
+                        reference: reference.to_string(),
+                        target: reference.target().to_string(),
+                    });
+                }
+            }
         }
         Ok(config)
+    }
+
+    /// Does this config declare `address` — is there a body in the slot
+    /// it occupies?
+    #[must_use]
+    fn declares(&self, address: &ResourceAddress) -> bool {
+        let table = match address.kind {
+            ResourceKind::Data => &self.data,
+            _ => &self.resources,
+        };
+        table
+            .get(&address.type_id.0)
+            .is_some_and(|by_name| by_name.contains_key(&address.name))
     }
 
     /// Provider references declared by the `terraform.required_providers`
@@ -538,11 +611,20 @@ fn kind_of(v: &serde_json::Value) -> &'static str {
 /// Derive the dependency edges among a set of nodes — the ONE
 /// derivation, with both edge sources.
 ///
-/// * **Interpolation** — a literal `${type.name.attr}` anywhere in the
-///   node's body. This was for a long time the only source, and it is
-///   why the missing one was invisible: the overwhelming majority of
-///   real ordering IS expressed as a reference, so ordering appeared to
-///   work.
+/// * **Interpolation** — a reference from one resource to another. This
+///   was for a long time the only source, and it is why the missing one
+///   was invisible: the overwhelming majority of real ordering IS
+///   expressed as a reference, so ordering appeared to work.
+///
+///   It arrives two ways, and the difference is the point. A node
+///   carrying typed [`magma_types::Ref`] values is read **structurally**
+///   — the edge is a field of the value, so there is nothing to scan,
+///   nothing to parse, and no escape to misread. A node with none is
+///   scanned for `${…}` literals, which is the **compatibility** path
+///   every JSON-authored body takes. The two are not two answers: a
+///   [`Resource`] cannot hold references that disagree with its body
+///   (invariant 2 on that type), so whichever path a node takes it gets
+///   the same edges.
 /// * **`depends_on`** — ordering the author declared explicitly. The
 ///   meta-argument exists *precisely because* there is no interpolation
 ///   to infer the edge from — an author with a reference does not need
@@ -589,10 +671,23 @@ pub fn dependency_edges(nodes: &[DependencyNode<'_>]) -> Vec<ResourceEdge> {
                 });
             }
         };
-        if let Some(body) = n.body {
-            for refstr in collect_refs(body) {
-                if let Some((ty, name)) = ref_target(&refstr) {
-                    link((ty.as_str(), name.as_str()), &mut edges);
+        if n.refs.is_empty() {
+            // COMPATIBILITY: a JSON-authored body, whose references exist
+            // only as text and must be recovered from it.
+            if let Some(body) = n.body {
+                for refstr in collect_refs(body) {
+                    if let Some((ty, name)) = ref_target(&refstr) {
+                        link((ty.as_str(), name.as_str()), &mut edges);
+                    }
+                }
+            }
+        } else {
+            // STRUCTURAL: the references are typed values on the node.
+            // Nothing is scanned, nothing is parsed, and no escape can be
+            // misread — the target was never text.
+            for r in n.refs {
+                if let Some(key) = r.edge_target() {
+                    link(key, &mut edges);
                 }
             }
         }
@@ -605,90 +700,20 @@ pub fn dependency_edges(nodes: &[DependencyNode<'_>]) -> Vec<ResourceEdge> {
 
 // ── Interpolation reference extraction ──────────────────────────────
 //
-// Lives here, with the rest of the `${…}` family (`resolve_reference`,
-// `resolve_config`, `has_interpolation`), and NOT in magma-apply where
-// it grew. Edge derivation is now needed at config time by a front end
-// that has no plan yet and no reason to depend on the apply engine; a
-// second copy of an escape-aware scanner is how the 2026-07-23 escape
-// incident managed to need fixing in three places.
-
-/// Collect every `${…}` reference path (inner, no wrapper) found
-/// anywhere in a config value.
-///
-/// Escape-aware: HCL2's own escaping convention doubles `$`/`%` before a
-/// `{` (`$${`/`%%{`) to mean a literal `${`/`%{` that must NEVER be
-/// treated as interpolation. A naive `s.find("${")` misreads a correctly
-/// escaped value — e.g. `github_repository_file.content` carrying a
-/// GitHub Actions `$${{ secrets.BOT_PAT }}` — as a real reference,
-/// extracting the malformed path `{ secrets.BOT_PAT ` (the stray leading
-/// brace is the leftover second `{` of the double-brace `${{ }}` GitHub
-/// Actions syntax).
-#[must_use]
-pub fn collect_refs(v: &serde_json::Value) -> Vec<String> {
-    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
-        match v {
-            serde_json::Value::String(s) => scan_refs(s, out),
-            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
-            serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, out)),
-            _ => {}
-        }
-    }
-    let mut out = Vec::new();
-    walk(v, &mut out);
-    out
-}
-
-/// Byte-indexed, escape-aware `${…}` reference scan behind
-/// [`collect_refs`]. Walks `s` left to right; at each position prefers
-/// the 3-byte escape match (`$${`/`%%{`, consumed whole, never
-/// re-examined — this is what stops the trailing brace of an escaped
-/// `${{` from being mistaken for a fresh opener) over the 2-byte
-/// reference-open match (`${`). Slicing only ever happens immediately
-/// before/after one of `$`/`%`/`{`/`}` — all single-byte ASCII, so every
-/// slice point is a guaranteed UTF-8 char boundary regardless of what
-/// non-ASCII content surrounds it.
-fn scan_refs(s: &str, out: &mut Vec<String>) {
-    let bytes = s.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if i + 2 < bytes.len()
-            && (bytes[i] == b'$' || bytes[i] == b'%')
-            && bytes[i + 1] == bytes[i]
-            && bytes[i + 2] == b'{'
-        {
-            i += 3;
-            continue;
-        }
-        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            let after = &s[i + 2..];
-            if let Some(end) = after.find('}') {
-                out.push(after[..end].trim().to_string());
-                i += 2 + end + 1;
-                continue;
-            }
-            break;
-        }
-        i += 1;
-    }
-}
-
-/// The `(type, name)` a reference path targets —
-/// `github_repository.galho.node_id` → `("github_repository", "galho")`.
-/// Returns `None` for `data.*` sources (resolved from existing state,
-/// not ordered as apply dependencies) or malformed paths. Strips any
-/// `[index]` from the name segment.
-#[must_use]
-pub fn ref_target(inner: &str) -> Option<(String, String)> {
-    let segs: Vec<&str> = inner.split('.').collect();
-    if segs.first() == Some(&"data") {
-        return None;
-    }
-    if segs.len() >= 2 {
-        let name = segs[1].split('[').next().unwrap_or(segs[1]);
-        return Some((segs[0].to_string(), name.to_string()));
-    }
-    None
-}
+// `collect_refs` / `ref_target` are RE-EXPORTED from `magma_types`, not
+// defined here. They grew in magma-apply, moved here to sit beside the
+// rest of the `${…}` family (`resolve_reference`, `resolve_config`,
+// `has_interpolation`), and moved on to magma-types once `Ref` existed:
+// they are the inverse of `Ref`'s renderer, and the only property that
+// makes either side correct is that the two agree. An agreement split
+// across a crate boundary is one nobody can test in one place — which is
+// how a round trip stops holding quietly. The resolution half of the
+// family stays here; it needs `State`, which magma-types has no business
+// knowing about.
+//
+// Every existing consumer path (`magma_config::collect_refs`,
+// `magma_config::ref_target`) is unchanged.
+pub use magma_types::{collect_refs, ref_target};
 
 // ── State resolution map ────────────────────────────────────────────
 
@@ -1685,5 +1710,249 @@ mod tests {
             matches!(err, ResourceError::MetaArgumentInAttributes { ref key, .. } if key == "count"),
             "{err}"
         );
+    }
+
+    // ── Typed references ───────────────────────────────────────────
+    //
+    // The typed door's last text: a reference used to be authorable only
+    // as the literal `"${aws_vpc.main.id}"`. These are the two properties
+    // that let it stop being text without moving anything underneath it.
+
+    use magma_types::{AttrValue, Ref};
+
+    fn vpc_ref() -> Ref {
+        Ref::new(managed("aws_vpc", "main"), ["id"]).expect("referenceable")
+    }
+
+    /// The same two resources `json_pair` declares, authored typed.
+    /// Sorted by address, the order `resources_typed` returns, so the two
+    /// populations line up element for element.
+    fn typed_pair() -> Vec<Resource> {
+        let mut rs = vec![
+            Resource::new(
+                managed("aws_vpc", "main"),
+                json!({ "cidr_block": "10.0.0.0/16" }),
+            )
+            .expect("valid"),
+            Resource::from_attrs(
+                managed("aws_subnet", "a"),
+                AttrValue::map([
+                    ("cidr_block", AttrValue::from("10.0.1.0/24")),
+                    ("vpc_id", AttrValue::from(vpc_ref())),
+                ]),
+            )
+            .expect("valid"),
+        ];
+        rs.sort_by_key(|r| r.address.to_string());
+        rs
+    }
+
+    /// The subnet — the resource carrying the reference — from either
+    /// population.
+    fn subnet_of(rs: &[Resource]) -> &Resource {
+        rs.iter()
+            .find(|r| r.address == managed("aws_subnet", "a"))
+            .expect("declared")
+    }
+
+    fn json_pair() -> Vec<Resource> {
+        Config::from_json(json!({
+            "resource": {
+                "aws_vpc": { "main": { "cidr_block": "10.0.0.0/16" } },
+                "aws_subnet": {
+                    "a": { "cidr_block": "10.0.1.0/24", "vpc_id": "${aws_vpc.main.id}" }
+                }
+            }
+        }))
+        .expect("parses")
+        .resources_typed()
+        .expect("lowers")
+    }
+
+    /// **The compatibility proof.** The same two resources, authored
+    /// through each door, produce the SAME edges — one derived
+    /// structurally from typed references, one recovered by scanning
+    /// `${…}` out of a JSON body. If these ever diverge, one of the two
+    /// engines is ordering an apply differently from the other, which is
+    /// the failure the shared derivation exists to make impossible.
+    #[test]
+    fn a_typed_reference_and_the_json_it_renders_to_produce_the_same_edges() {
+        let typed = typed_pair();
+        let from_json = json_pair();
+
+        // The bodies are the same too — the typed door renders exactly
+        // the text the JSON door was authored with.
+        assert_eq!(
+            typed.iter().map(Resource::attributes).collect::<Vec<_>>(),
+            from_json
+                .iter()
+                .map(Resource::attributes)
+                .collect::<Vec<_>>()
+        );
+        // …but only one population carries the references as values.
+        assert_eq!(subnet_of(&typed).refs(), [vpc_ref()]);
+        assert!(subnet_of(&from_json).refs().is_empty());
+
+        let edges = |rs: &[Resource]| {
+            dependency_edges(&rs.iter().map(Resource::dependency_node).collect::<Vec<_>>())
+        };
+        let expected = vec![ResourceEdge {
+            dependent: managed("aws_subnet", "a"),
+            dependency: managed("aws_vpc", "main"),
+        }];
+        assert_eq!(edges(&typed), expected, "structural derivation");
+        assert_eq!(edges(&from_json), expected, "scanning derivation");
+    }
+
+    /// A data reference is not an ordering edge — data sources are read
+    /// up front from existing state. Both derivations must agree on that
+    /// too, or the typed door would invent an edge the apply engine does
+    /// not have.
+    #[test]
+    fn a_typed_data_reference_is_no_more_an_edge_than_a_scanned_one() {
+        let ami = ResourceAddress {
+            kind: ResourceKind::Data,
+            ..managed("aws_ami", "latest")
+        };
+        let typed = vec![
+            Resource::new(ami.clone(), json!({ "most_recent": true })).expect("valid"),
+            Resource::from_attrs(
+                managed("aws_instance", "web"),
+                AttrValue::map([(
+                    "ami",
+                    AttrValue::from(Ref::new(ami, ["id"]).expect("referenceable")),
+                )]),
+            )
+            .expect("valid"),
+        ];
+        let nodes: Vec<_> = typed.iter().map(Resource::dependency_node).collect();
+        assert_eq!(dependency_edges(&nodes), vec![]);
+    }
+
+    /// **The byte-identity proof.** `Config::from_json` is the shipped
+    /// path for every current consumer; the typed-reference side table is
+    /// `#[serde(skip)]` precisely so that path cannot notice it. Pinning
+    /// the serialized shape catches the field appearing — the one way
+    /// this change could reach a consumer that never asked for it.
+    #[test]
+    fn a_json_authored_config_serializes_to_exactly_the_fields_it_always_did() {
+        let raw = json!({
+            "terraform": { "required_providers": { "aws": { "source": "hashicorp/aws" } } },
+            "resource": {
+                "aws_subnet": { "a": { "vpc_id": "${aws_vpc.main.id}" } },
+                "aws_vpc": { "main": { "cidr_block": "10.0.0.0/16" } }
+            },
+            "data": { "aws_ami": { "latest": { "most_recent": true } } },
+            "output": { "id": { "value": "${aws_vpc.main.id}" } }
+        });
+        let config = Config::from_json(raw).expect("parses");
+        let round = serde_json::to_value(&config).expect("serializes");
+
+        let mut keys: Vec<&String> = round.as_object().expect("an object").keys().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "data",
+                "module",
+                "output",
+                "provider",
+                "resource",
+                "terraform"
+            ],
+            "a serialized Config must carry exactly the fields it always has"
+        );
+        assert_eq!(
+            round,
+            json!({
+                "terraform": {
+                    "required_providers": { "aws": { "source": "hashicorp/aws", "version": null } },
+                    "backend": {},
+                    "required_version": null
+                },
+                "provider": {},
+                "resource": {
+                    "aws_subnet": { "a": { "vpc_id": "${aws_vpc.main.id}" } },
+                    "aws_vpc": { "main": { "cidr_block": "10.0.0.0/16" } }
+                },
+                "data": { "aws_ami": { "latest": { "most_recent": true } } },
+                "output": { "id": { "value": "${aws_vpc.main.id}", "sensitive": false, "description": null } },
+                "module": {}
+            })
+        );
+    }
+
+    /// The round trip `from_resources(rs)?.resources_typed()? == rs`
+    /// keeps holding once resources carry typed references — the
+    /// container cannot hold one, so the `Config` carries them beside it
+    /// rather than letting the typed door silently degrade.
+    #[test]
+    fn typed_references_survive_the_round_trip_through_the_json_container() {
+        let mut declared = typed_pair();
+        declared.sort_by_key(|r| r.address.to_string());
+        let config = Config::from_resources(declared.clone()).expect("representable");
+        assert_eq!(config.resources_typed().expect("lowers"), declared);
+    }
+
+    /// A `Config` that has been through JSON has no typed references
+    /// left — and that costs nothing, because the edges are the same
+    /// either way (the test above). The degradation is in the typing, not
+    /// in the graph.
+    #[test]
+    fn typed_references_do_not_survive_a_trip_through_serialized_json() {
+        let config = Config::from_resources(typed_pair()).expect("representable");
+        let reparsed =
+            Config::from_json(serde_json::to_value(&config).expect("serializes")).expect("parses");
+
+        let back = reparsed.resources_typed().expect("lowers");
+        let subnet = subnet_of(&back);
+        assert!(subnet.refs().is_empty());
+        assert_eq!(subnet.attributes()["vpc_id"], json!("${aws_vpc.main.id}"));
+    }
+
+    /// **What a string could never be checked for.** A reference naming a
+    /// resource nothing declares is refused, with both ends named. As
+    /// text it was a silently missing edge: the apply engine finds no
+    /// node for the target, emits no ordering, and the resource applies
+    /// early against a prerequisite that does not exist.
+    #[test]
+    fn a_typed_reference_to_an_undeclared_resource_is_refused() {
+        let subnet = Resource::from_attrs(
+            managed("aws_subnet", "a"),
+            AttrValue::map([(
+                "vpc_id",
+                AttrValue::from(Ref::new(managed("aws_vpc", "typo"), ["id"]).expect("valid")),
+            )]),
+        )
+        .expect("valid");
+        let vpc = Resource::new(managed("aws_vpc", "main"), json!({})).expect("valid");
+
+        let err = Config::from_resources([vpc, subnet]).expect_err("nothing declares aws_vpc.typo");
+        assert!(
+            matches!(err, ConfigError::DanglingReference { ref target, .. } if target == "aws_vpc.typo"),
+            "{err}"
+        );
+    }
+
+    /// A reference to a declared DATA source is fine — it resolves, it
+    /// just does not order.
+    #[test]
+    fn a_typed_reference_to_a_declared_data_source_is_accepted() {
+        let ami = ResourceAddress {
+            kind: ResourceKind::Data,
+            ..managed("aws_ami", "latest")
+        };
+        let resources = vec![
+            Resource::new(ami.clone(), json!({ "most_recent": true })).expect("valid"),
+            Resource::from_attrs(
+                managed("aws_instance", "web"),
+                AttrValue::map([(
+                    "ami",
+                    AttrValue::from(Ref::new(ami, ["id"]).expect("referenceable")),
+                )]),
+            )
+            .expect("valid"),
+        ];
+        Config::from_resources(resources).expect("a declared data source is a valid target");
     }
 }
