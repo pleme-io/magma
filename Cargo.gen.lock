@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "978e3e24f4e54964ced7ccadd7b566396d164aae1226fee9f0881196a2a79883",
+  "cargo_lock_sha256": "a6776d13a0b08638a015ca62dd6b16a061913a13fb1fe124b5816bbf6b1a8a3e",
   "manifest_sha256": {
-    "Cargo.toml": "f0bd5699fa7fbc3e199d3aab3753578736521cdc23c239cb137953e3917987dc",
+    "Cargo.toml": "0307573af326df53d2e4b61ba63c965b3333249fedee6352ee7f439de20b12b0",
     "magma-apply/Cargo.toml": "9565c0f59a4499b4620c11ec1e8f3cc90629fe6f626e14256b529ce3742c5311",
     "magma-arch-test/Cargo.toml": "9c75271183cdc70bb256ae0265490500f1753b18b87caa9bcd76afeffaa58cc5",
     "magma-attest/Cargo.toml": "e77f0414566d26f73556049e4b3d4b7cfc449e73eac3ded69d7f935b06cf6433",
@@ -35,7 +35,7 @@
     "magma-repo/Cargo.toml": "771fada32122c27b193d6a2000bdf4c499772e579fc1b81b2725cba3db38d4b9",
     "magma-rubygems/Cargo.toml": "ebb65383ea7af8d2fa97c0c30a2908502ddbdbecd780c9f07e78ca2bff40a641",
     "magma-spec/Cargo.toml": "9f593423d5c7948ec9547c6f9cf93f8e178e96583f9681dc8ee84278e7e7d118",
-    "magma-state/Cargo.toml": "13d35962348785b835a7625618b30ae2e7041102dfcf12f76d4c6c316cf9b532",
+    "magma-state/Cargo.toml": "bf065d8cee5fbc140d2f16782d4ca46bbe815fe631f4193b04518d642017c6d6",
     "magma-stream/Cargo.toml": "e8ead4cf3d9416c795778256f957ba54b8898f1a45c8cabc8edbcae2d1676d64",
     "magma-tatara/Cargo.toml": "e8009079071a24907483600fc47fc0ac88eb2e97777bba1d9205c4b9b619e5ae",
     "magma-test-laws/Cargo.toml": "b3667b81f8002b2aaa3adc3abe8e746ef5386c9793b896c37554c05f4f9e3f9a",
@@ -1054,6 +1054,11 @@
             "tree": "target"
           }
         ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "cofre-fs-0.1.0-4f70b8fa025f2b78b7ca062fb0feb31188a8d31a": {
+        "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
       },
@@ -6707,6 +6712,16 @@
             "features": [
               "serde"
             ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "cofre_fs",
+            "package_key": "cofre-fs-0.1.0-4f70b8fa025f2b78b7ca062fb0feb31188a8d31a",
+            "kind": "normal",
+            "features": [],
             "uses_default_features": true,
             "optional": false,
             "target": null,
@@ -15834,6 +15849,9 @@
     "cmake-0.1.58": {
       "edition": "2021"
     },
+    "cofre-fs-0.1.0-4f70b8fa025f2b78b7ca062fb0feb31188a8d31a": {
+      "edition": "2024"
+    },
     "colorchoice-1.0.5": {
       "edition": "2021"
     },
@@ -16892,6 +16910,7 @@
     }
   },
   "git_nar_sha256": {
+    "cofre-fs-0.1.0-4f70b8fa025f2b78b7ca062fb0feb31188a8d31a": "sha256-6zDJ/dwsxZgb3KL2RuZFWMfcsQqKp7XAJvDDJgiyzrA=",
     "gen-macros-0.1.10-712c3466375ddb1d6876193f2afb0798d30efb70": "sha256-7BNW4JfFa8nTvkq9O7Thxt1P6fSgcmPU4sthBdBfMgM=",
     "gen-platform-0.1.10-712c3466375ddb1d6876193f2afb0798d30efb70": "sha256-7BNW4JfFa8nTvkq9O7Thxt1P6fSgcmPU4sthBdBfMgM=",
     "gen-types-0.1.10-712c3466375ddb1d6876193f2afb0798d30efb70": "sha256-7BNW4JfFa8nTvkq9O7Thxt1P6fSgcmPU4sthBdBfMgM=",

@@ -117,6 +117,10 @@ shigoto-types    = { git = "https://github.com/pleme-io/shigoto", rev = "c8792ad
 # provider mutation RPCs under GitHub's secondary rate limit.
 samba            = { git = "https://github.com/pleme-io/samba", rev = "29650485132f635429291b08c5b2cdc5f9293500", default-features = false }
 magma-lava       = { git = "https://github.com/pleme-io/magma-lava", branch = "main" }
+# Secret-file creation. tfstate holds provider-marked sensitive attributes in
+# plaintext by design, so the file's mode is the only protection the format
+# offers — cofre-fs establishes it at open(2) instead of chmod'ing afterwards.
+cofre-fs         = { git = "https://github.com/pleme-io/cofre" }
 indexmap         = { version = "2", features = ["serde"] }
 # pangea-ruby-eval is consumed via the `magnus` feature on magma-pangea —
 # the actual git dep is declared there to avoid forcing CRuby on every

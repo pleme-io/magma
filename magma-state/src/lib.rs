@@ -86,6 +86,36 @@ pub async fn read_state(path: impl AsRef<Path>) -> Result<State, StateError> {
     Ok(state)
 }
 
+/// Write `bytes` to `path` as a file created with mode 0600, off the
+/// runtime's worker threads.
+///
+/// **Why 0600 is load-bearing here.** A tfstate file records
+/// provider-marked sensitive attributes *in the clear* — the
+/// `"sensitive_attributes"` list names them, it does not encrypt them —
+/// so the file's permission bits are the only thing the format offers
+/// between a rendered password and every other local user. This creates
+/// the file at 0600 in the same `open(2)` that creates it
+/// ([`cofre_fs::write_secret`]) rather than writing first and chmod'ing
+/// after, so there is no interval during which the state is readable by
+/// anyone else. It also refuses to write through a symlink pre-planted
+/// at the path.
+///
+/// `cofre_fs::write_secret` is synchronous and `fsync`s, so it runs on a
+/// blocking thread rather than stalling an async worker.
+///
+/// Callers that want the write to be *atomic* should aim this at a
+/// temporary path and `rename(2)` it into place — `rename` preserves the
+/// mode, so the canonical file inherits the 0600.
+///
+/// # Errors
+/// The underlying `io::Error`, or a join failure wrapped as one.
+pub async fn write_secret_file(path: PathBuf, bytes: Vec<u8>) -> Result<(), StateError> {
+    tokio::task::spawn_blocking(move || cofre_fs::write_secret(&path, &bytes, 0o600))
+        .await
+        .map_err(std::io::Error::other)??;
+    Ok(())
+}
+
 /// Write a `State` atomically — write to `<path>.tmp`, fsync, rename.
 /// Atomic so a crash mid-write doesn't corrupt the canonical file.
 ///
@@ -93,11 +123,15 @@ pub async fn read_state(path: impl AsRef<Path>) -> Result<State, StateError> {
 /// result is directly readable by `tofu show -json` / `terraform
 /// show -json` and re-adoptable by a real tofu/terraform run — not
 /// just by another magma instance.
+///
+/// The temp file is created 0600 via [`write_secret_file`]; `rename`
+/// carries that mode onto the canonical path. See that function for why
+/// the mode is the only protection a tfstate has.
 pub async fn write_state(path: impl AsRef<Path>, state: &State) -> Result<(), StateError> {
     let path = path.as_ref();
     let tmp: PathBuf = path.with_extension("tfstate.tmp");
     let bytes = tfstate_v4::encode(state)?;
-    tokio::fs::write(&tmp, &bytes).await?;
+    write_secret_file(tmp.clone(), bytes).await?;
     tokio::fs::rename(&tmp, path).await?;
     Ok(())
 }
@@ -146,6 +180,31 @@ mod tests {
         // The tmp sibling must not survive a successful write.
         let leftover = path.with_extension("tfstate.tmp");
         assert!(!leftover.exists());
+    }
+
+    /// The canonical state file must land at 0600, not at the default
+    /// 0666-minus-umask a plain `fs::write` produces.
+    ///
+    /// This asserts the property magma owns — that the mode set on the
+    /// temp file survives `rename(2)` onto the real path. It does NOT
+    /// re-prove that the mode came from `open(2)` rather than a later
+    /// chmod; that is cofre-fs's property and is tested there under a
+    /// cleared umask.
+    #[tokio::test]
+    async fn written_state_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let s = empty_state();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("terraform.tfstate");
+        write_state(&path, &s).await.unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "tfstate holds sensitive attributes in plaintext; the mode is the \
+             only protection — got {mode:o}"
+        );
     }
 
     #[test]

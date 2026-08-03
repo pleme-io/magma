@@ -400,6 +400,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "cofre-fs"
+version = "0.1.0"
+source = "git+https://github.com/pleme-io/cofre#4f70b8fa025f2b78b7ca062fb0feb31188a8d31a"
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2116,6 +2121,7 @@ version = "0.1.15"
 dependencies = [
  "base64",
  "chrono",
+ "cofre-fs",
  "magma-types 0.1.15",
  "serde",
  "serde_json",

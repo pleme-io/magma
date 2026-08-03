@@ -119,7 +119,16 @@ impl Backend for LocalBackend {
         if let Some(parent) = self.state_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(&tmp, &bytes).await?;
+        // 0600 at open(2), then rename — see `magma_state::write_secret_file`
+        // for why the mode is the only protection a tfstate file has. This is
+        // the write the CLI actually reaches; `magma_state::write_state` is
+        // the same shape one layer down.
+        //
+        // The *directory* is deliberately left alone: `LocalBackend::new` is
+        // handed the operator's working directory (see `magma-cli`'s
+        // `std::env::current_dir()` call site), so tightening it with
+        // `cofre_fs::create_secret_dir` would chmod a project tree to 0700.
+        magma_state::write_secret_file(tmp.clone(), bytes).await?;
         tokio::fs::rename(&tmp, &self.state_path).await?;
         Ok(())
     }
@@ -257,6 +266,25 @@ mod tests {
         backend.write_state(&s).await.unwrap();
         let s2 = backend.read_state().await.unwrap();
         assert_eq!(s.lineage, s2.lineage);
+    }
+
+    /// The path the CLI actually reaches. `read_state` materializes the
+    /// state on first read, so this covers the create branch too.
+    #[tokio::test]
+    async fn local_backend_state_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let backend = LocalBackend::new(dir.path().to_path_buf());
+        let s = backend.read_state().await.unwrap();
+        backend.write_state(&s).await.unwrap();
+
+        let mode = std::fs::metadata(backend.state_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "state file must be owner-only, got {mode:o}");
     }
 
     #[tokio::test]
