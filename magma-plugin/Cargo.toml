@@ -28,7 +28,9 @@ bytes          = { workspace = true }
 async-trait    = { workspace = true }
 futures        = { workspace = true }
 rustls         = { workspace = true }
-rustls-pemfile = { workspace = true }
+# rustls-pemfile removed 2026-08-06 — declared but never used (this crate
+# GENERATES pem via rcgen, never parses it) and unmaintained upstream. See the
+# note in the workspace Cargo.toml.
 tokio-rustls   = { workspace = true }
 rcgen          = { workspace = true }
 base64         = { workspace = true }

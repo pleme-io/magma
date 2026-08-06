@@ -197,7 +197,18 @@ protoc-bin-vendored = "3"
 
 # ── mTLS (go-plugin handshake) ───────────────────────────────
 rustls         = { version = "0.23", features = ["ring"] }
-rustls-pemfile = "2"
+# rustls-pemfile REMOVED 2026-08-06. It was declared here and in magma-plugin
+# and had ZERO call sites anywhere in the workspace — grep for
+# `rustls_pemfile` across every .rs returns nothing. magma-plugin only ever
+# GENERATES pem (rcgen's `cert.pem()` / `key_pair.serialize_pem()`); it never
+# parses any, which is the only thing rustls-pemfile does.
+# It was not free: the crate is unmaintained (RUSTSEC-2025-0134, `patched: []`
+# — superseded by rustls-pki-types' own pem support), so every downstream
+# consumer inherited an advisory from a dependency magma does not call.
+# NOTE: this does NOT remove the crate from magma's own lock — tonic 0.12.3
+# also depends on it, so magma's own audit still flags it and closing that
+# needs a tonic bump. What it removes is the magma-plugin path, which is how
+# consumers like pangea-operator were picking it up.
 tokio-rustls   = "0.26"
 rcgen          = "0.13"
 
