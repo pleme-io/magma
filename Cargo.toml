@@ -146,7 +146,16 @@ quote        = "1"
 proc-macro2  = "1"
 
 # ── Async ────────────────────────────────────────────────────
-tokio        = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net", "signal", "fs"] }
+# `io-std` is declared explicitly (added 2026-08-06) because magma-cli calls
+# `tokio::io::stdin()`. It compiled before without being listed here only by
+# ACCIDENT: tonic 0.12 happened to enable `tokio/io-std` transitively, and
+# cargo's feature unification handed it to us. tonic 0.13 stopped enabling it,
+# and magma-cli instantly failed with `cannot find function stdin in module
+# tokio::io`. The bump did not break this — it revealed that a feature we
+# depend on directly was never ours. A crate must declare the features it
+# actually calls; inheriting one through an unrelated dependency's graph is a
+# build that works until someone else's dependency changes.
+tokio        = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "io-std", "net", "signal", "fs"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 async-trait  = "0.1"
 futures      = "0.3"
@@ -182,7 +191,18 @@ sqlx   = { version = "0.8", default-features = false, features = ["postgres", "r
 # ── Protobuf / gRPC (plugin protocol) ────────────────────────
 prost       = "0.13"
 prost-types = "0.13"
-tonic       = { version = "0.12", features = ["transport", "tls", "tls-webpki-roots"] }
+# 0.12 -> 0.13 is a SECURITY bump. tonic 0.12.3 depends on `rustls-pemfile`
+# (RUSTSEC-2025-0134, unmaintained, `patched: []`), and 0.13.0 is the first
+# release that drops it — so this is the at-cause fix for every consumer that
+# was inheriting that advisory through magma's gRPC stack. Removing the
+# unused direct declaration above was necessary but NOT sufficient: it only
+# moved the edge onto tonic.
+# Narrow on purpose: 0.13 keeps prost 0.13, hyper 1 and tower 0.5, so nothing
+# else in this block moves. The one breaking change that touches us is the TLS
+# feature split — 0.13 replaced `tls` with `tls-ring` / `tls-aws-lc`. `ring` is
+# the right half here because the workspace rustls above is
+# `features = ["ring"]`; picking aws-lc would pull a second crypto backend.
+tonic       = { version = "0.13", features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tower       = "0.5"
 hyper       = { version = "1", features = ["client", "http2"] }
 hyper-util  = { version = "0.1", features = ["tokio"] }
@@ -192,7 +212,9 @@ bytes       = "1"
 
 # Build-deps for magma-protocol
 prost-build         = "0.13"
-tonic-build         = "0.12"
+# Kept in lockstep with tonic above — tonic-build emits code against tonic's
+# own API, so a version skew here produces generated code that will not compile.
+tonic-build         = "0.13"
 protoc-bin-vendored = "3"
 
 # ── mTLS (go-plugin handshake) ───────────────────────────────
@@ -218,10 +240,19 @@ proptest = "1"
 insta    = "1"
 
 # ── Metrics ──────────────────────────────────────────────────
-# Standard Prometheus client. Matches pangea-operator's
-# `prometheus = "0.13"` so metric names + label conventions
-# align with the existing fleet observability stack.
-prometheus = "0.13"
+# Standard Prometheus client. 0.13 -> 0.14 (2026-08-06) is a SECURITY bump:
+# 0.13.4 depends on `protobuf ^2.0`, resolving to 2.28.0, which carries
+# RUSTSEC-2024-0437 (uncontrolled recursion — a crash on hostile input).
+# prometheus 0.14.0 moves to `protobuf ^3.7.2`, which is the patched line, so
+# the fix is here rather than a pin on protobuf itself.
+# The old comment claimed this version was held to match pangea-operator's
+# `prometheus = "0.13"` for metric-name/label alignment. That reasoning does
+# not survive contact: metric names and label conventions are what THIS code
+# passes to the client, not something the client version dictates, and no
+# metric name changes in this diff. Keeping a vulnerable transitive protobuf
+# to match a sibling repo's version number would be cargo-culting the number
+# rather than the convention.
+prometheus = "0.14"
 
 [profile.release]
 codegen-units = 1

@@ -97,7 +97,7 @@ fn err_chain(e: &dyn std::error::Error) -> String {
 /// the `GrpcService` blanket impl over `tower::Service`.
 #[derive(Clone)]
 pub struct H2Channel {
-    inner: hyper::client::conn::http2::SendRequest<tonic::body::BoxBody>,
+    inner: hyper::client::conn::http2::SendRequest<tonic::body::Body>,
     // The reason the underlying h2 connection died, captured by the
     // connection-driver task. Without this, an RPC after the connection
     // drops surfaces only tonic's opaque "Service was not ready: channel
@@ -261,7 +261,7 @@ impl CrashRing {
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
-impl tower::Service<http::Request<tonic::body::BoxBody>> for H2Channel {
+impl tower::Service<http::Request<tonic::body::Body>> for H2Channel {
     type Response = http::Response<hyper::body::Incoming>;
     type Error = BoxErr;
     type Future = std::pin::Pin<
@@ -275,7 +275,7 @@ impl tower::Service<http::Request<tonic::body::BoxBody>> for H2Channel {
         self.inner.poll_ready(cx).map_err(Into::into)
     }
 
-    fn call(&mut self, req: http::Request<tonic::body::BoxBody>) -> Self::Future {
+    fn call(&mut self, req: http::Request<tonic::body::Body>) -> Self::Future {
         use http_body_util::{BodyExt, Full};
         let mut sender = self.inner.clone();
         Box::pin(async move {
@@ -313,9 +313,13 @@ impl tower::Service<http::Request<tonic::body::BoxBody>> for H2Channel {
                 .await
                 .map_err(Into::<BoxErr>::into)?
                 .to_bytes();
-            let full: tonic::body::BoxBody = Full::new(bytes)
-                .map_err(|never: std::convert::Infallible| match never {})
-                .boxed_unsync();
+            // tonic 0.13 made `body::BoxBody` private and exposes the concrete
+            // `body::Body` instead. `Body::new` takes any http_body with
+            // `Data = Bytes`, so `Full` goes in directly and the deliberate
+            // single-frame shape described above is unchanged — the explicit
+            // Infallible map_err and boxed_unsync it used to need are now
+            // internal to `Body::new`.
+            let full = tonic::body::Body::new(Full::new(bytes));
             let req = http::Request::from_parts(parts, full);
             // Ensure the cloned sender handle is ready before sending.
             std::future::poll_fn(|cx| sender.poll_ready(cx))
@@ -347,7 +351,7 @@ where
         .initial_stream_window_size(WIN)
         .initial_connection_window_size(WIN)
         .max_frame_size(4 * 1024 * 1024)
-        .handshake::<_, tonic::body::BoxBody>(io)
+        .handshake::<_, tonic::body::Body>(io)
         .await
         .map_err(|e| PluginError::Transport(err_chain(&e)))?;
     let close_reason = std::sync::Arc::new(std::sync::Mutex::new(None));

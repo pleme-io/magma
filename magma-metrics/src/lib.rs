@@ -170,11 +170,11 @@ impl Metrics {
     /// plans_computed_total + plan_changes_total per action.
     pub fn record_plan(&self, plan: &Plan) {
         self.plans_computed_total
-            .with_label_values(&[&plan.kind])
+            .with_label_values(&[plan.kind.as_str()])
             .inc();
         for change in &plan.changes {
             self.plan_changes_total
-                .with_label_values(&[&plan.kind, action_label(change.action)])
+                .with_label_values(&[plan.kind.as_str(), action_label(change.action)])
                 .inc();
         }
     }
@@ -184,10 +184,10 @@ impl Metrics {
     pub fn record_drift(&self, report: &DriftReport) {
         for event in &report.events {
             self.drift_classified_total
-                .with_label_values(&[&report.kind, severity_label(event.severity)])
+                .with_label_values(&[report.kind.as_str(), severity_label(event.severity)])
                 .inc();
             self.drift_decisions_total
-                .with_label_values(&[&report.kind, decision_label(event.decision)])
+                .with_label_values(&[report.kind.as_str(), decision_label(event.decision)])
                 .inc();
         }
     }
@@ -208,20 +208,20 @@ impl Metrics {
             "applied"
         };
         self.apply_outcome_total
-            .with_label_values(&[&outcome.kind, result])
+            .with_label_values(&[outcome.kind.as_str(), result])
             .inc();
         for ac in &outcome.applied {
             self.apply_resources_total
-                .with_label_values(&[&outcome.kind, "applied"])
+                .with_label_values(&[outcome.kind.as_str(), "applied"])
                 .inc_by(0u64);
             let _ = ac; // already counted via outcome.applied.len() / actions
         }
         // Resource-level: one inc per applied + failed.
         self.apply_resources_total
-            .with_label_values(&[&outcome.kind, "applied"])
+            .with_label_values(&[outcome.kind.as_str(), "applied"])
             .inc_by(outcome.applied.len() as u64);
         self.apply_resources_total
-            .with_label_values(&[&outcome.kind, "failed"])
+            .with_label_values(&[outcome.kind.as_str(), "failed"])
             .inc_by(outcome.failed.len() as u64);
 
         let duration = (outcome.finished_at - outcome.started_at)
@@ -229,7 +229,7 @@ impl Metrics {
             .max(0) as f64
             / 1000.0;
         self.apply_duration_seconds
-            .with_label_values(&[&outcome.kind])
+            .with_label_values(&[outcome.kind.as_str()])
             .observe(duration);
     }
 
