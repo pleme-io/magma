@@ -772,16 +772,6 @@ dependencies = [
 
 [[package]]
 name = "gen-macros"
-version = "0.1.10"
-source = "git+https://github.com/pleme-io/gen#712c3466375ddb1d6876193f2afb0798d30efb70"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "gen-macros"
 version = "0.1.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e87d6e8b417dad4ba0d2ed96c58c2cd7af538f592dcf698db0cd8480b08225ed"
@@ -793,39 +783,12 @@ dependencies = [
 
 [[package]]
 name = "gen-platform"
-version = "0.1.10"
-source = "git+https://github.com/pleme-io/gen#712c3466375ddb1d6876193f2afb0798d30efb70"
-dependencies = [
- "gen-macros 0.1.10",
- "gen-types 0.1.10",
- "inventory",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "gen-platform"
 version = "0.1.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "340242b11b413b24644f55a9dd7ffd05e371910a738ab52981a03a6ffedf6783"
 dependencies = [
- "gen-macros 0.1.34",
- "gen-types 0.1.34",
- "inventory",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "gen-types"
-version = "0.1.10"
-source = "git+https://github.com/pleme-io/gen#712c3466375ddb1d6876193f2afb0798d30efb70"
-dependencies = [
- "blake3",
- "chrono",
- "indexmap",
+ "gen-macros",
+ "gen-types",
  "inventory",
  "serde",
  "serde_json",
@@ -1334,8 +1297,9 @@ dependencies = [
 
 [[package]]
 name = "lava-arch"
-version = "0.1.3"
-source = "git+https://github.com/pleme-io/lava-arch?branch=main#b76775c67ba839557e1d62cea07e95c30e5d47e3"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e0d64aa0892e04706682f27b99d5b43ade2d391f8de4505d5ddba6726b20dca"
 dependencies = [
  "indexmap",
  "lava-core",
@@ -1346,8 +1310,9 @@ dependencies = [
 
 [[package]]
 name = "lava-architectures"
-version = "0.1.13"
-source = "git+https://github.com/pleme-io/lava-architectures?branch=main#22653b5219cfccfda79156d2b304ff96b210b20e"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c32ab66d795dfab968a95bfc5f0bb2848b4666c503ddb20692a14c10f081a78a"
 dependencies = [
  "indexmap",
  "lava-arch",
@@ -1363,8 +1328,9 @@ dependencies = [
 
 [[package]]
 name = "lava-contracts"
-version = "0.1.2"
-source = "git+https://github.com/pleme-io/lava-contracts?branch=main#f60fe3b3c2ae3c05be8993cdd43b4381bbb41922"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1cb7f9133eb1454c01144e4a9ce1d7bdd9ec3964fcade8a485ccb78498d58f"
 dependencies = [
  "indexmap",
  "lava-core",
@@ -1373,8 +1339,9 @@ dependencies = [
 
 [[package]]
 name = "lava-core"
-version = "0.1.6"
-source = "git+https://github.com/pleme-io/lava-core?branch=main#df13f94d90911d47138bf211d492c4962630f8ca"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffbb50ddc27614f7498ae9aa60280eb3a2dba95023807131a36d5788515f2cff"
 dependencies = [
  "indexmap",
  "serde",
@@ -1385,8 +1352,9 @@ dependencies = [
 
 [[package]]
 name = "lava-eval"
-version = "0.1.7"
-source = "git+https://github.com/pleme-io/lava-eval?branch=main#05532c96f7434a33557e7221a006fa0bea631654"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6056a673f3f724602afaa929fffb175c26342f4be83a4c66e7be26ba0ef20316"
 dependencies = [
  "indexmap",
  "lava-arch",
@@ -1400,8 +1368,9 @@ dependencies = [
 
 [[package]]
 name = "lava-runtime"
-version = "0.1.5"
-source = "git+https://github.com/pleme-io/lava-runtime?branch=main#301762a6495112635a9c660c10f9975bf1b825f6"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30783f9a7655f7e01a6c72a0f84ef657a7bbd5136356cebab41745fd112f9fe6"
 dependencies = [
  "indexmap",
  "lava-core",
@@ -1414,8 +1383,9 @@ dependencies = [
 
 [[package]]
 name = "lava-schema"
-version = "0.1.4"
-source = "git+https://github.com/pleme-io/lava-schema?branch=main#1abb14533eca15a2092768d56357ebff3761b098"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d83a66c186569b58f2a852ed07e326c9e9ebe1073d5aa45b794ca81d6988df96"
 dependencies = [
  "indexmap",
  "lava-types",
@@ -1426,7 +1396,8 @@ dependencies = [
 [[package]]
 name = "lava-types"
 version = "0.1.2"
-source = "git+https://github.com/pleme-io/lava-types?branch=main#16ac0b6c7c33c96e2cf17c0067db94e8633e5062"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24efeadab0cdecd1a40d322763a205da794def84a1f6e230ba202c40934a20ae"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -1656,18 +1627,6 @@ dependencies = [
 
 [[package]]
 name = "magma-config"
-version = "0.1.1"
-source = "git+https://github.com/pleme-io/magma?branch=main#e8fc9308e549d95101baaf1e8af95431c38955bd"
-dependencies = [
- "magma-types 0.1.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "magma-config"
 version = "0.1.20"
 dependencies = [
  "magma-types 0.1.20",
@@ -1676,6 +1635,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "magma-config"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0be05859d5b67d1b276ff0b3df56f046ea90362cc3f3ca257b73680bf14a5a2c"
+dependencies = [
+ "magma-types 0.1.20 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -1707,7 +1679,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "chrono",
- "gen-platform 0.1.34",
+ "gen-platform",
  "hex",
  "magma-apply",
  "magma-backend",
@@ -1772,7 +1744,7 @@ version = "0.1.20"
 dependencies = [
  "blake3",
  "chrono",
- "gen-platform 0.1.34",
+ "gen-platform",
  "hex",
  "magma-converge",
  "magma-test-laws",
@@ -1840,8 +1812,9 @@ dependencies = [
 
 [[package]]
 name = "magma-lava"
-version = "0.2.3"
-source = "git+https://github.com/pleme-io/magma-lava?branch=main#78fb32d1ae8d5370be2a2ce98d958e45b6498969"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6733760326d8844e4fb930119bfc6f75ab0da7d547f0e6b74a0337d89c69d2e8"
 dependencies = [
  "indexmap",
  "lava-architectures",
@@ -1849,7 +1822,7 @@ dependencies = [
  "lava-eval",
  "lava-runtime",
  "lava-schema",
- "magma-config 0.1.1",
+ "magma-config 0.1.20 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2230,12 +2203,11 @@ dependencies = [
 
 [[package]]
 name = "magma-types"
-version = "0.1.1"
-source = "git+https://github.com/pleme-io/magma?branch=main#e8fc9308e549d95101baaf1e8af95431c38955bd"
+version = "0.1.20"
 dependencies = [
  "chrono",
- "gen-platform 0.1.10",
- "gen-types 0.1.10",
+ "gen-platform",
+ "gen-types",
  "schemars",
  "serde",
  "serde_json",
@@ -2246,10 +2218,12 @@ dependencies = [
 [[package]]
 name = "magma-types"
 version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c858b841f119fcd5cd51b199c79d7bc657b9ac32fbeabd0d5e952b2db51ca14f"
 dependencies = [
  "chrono",
- "gen-platform 0.1.34",
- "gen-types 0.1.34",
+ "gen-platform",
+ "gen-types",
  "schemars",
  "serde",
  "serde_json",
@@ -3397,8 +3371,8 @@ dependencies = [
  "async-trait",
  "blake3",
  "chrono",
- "gen-platform 0.1.34",
- "gen-types 0.1.34",
+ "gen-platform",
+ "gen-types",
  "hex",
  "schemars",
  "serde",
@@ -3415,8 +3389,8 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "figment",
- "gen-platform 0.1.34",
- "gen-types 0.1.34",
+ "gen-platform",
+ "gen-types",
  "notify",
  "serde",
  "serde_json",

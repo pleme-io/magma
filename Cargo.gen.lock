@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "0461d613f3e668149a5268f2df270235c0cb53288bf4ebaf91d60323d28b6579",
+  "cargo_lock_sha256": "ef474e20fdbb286fbbf99e9de931dc6c0d1b34f37e77ffab268309057372cfdd",
   "manifest_sha256": {
-    "Cargo.toml": "0558fb59124a31604c7363945fa67bcee89e3f6ef8a9684db0f8b588f79f8fbe",
+    "Cargo.toml": "e7f973bb44ea7f4155b645be25c605bee98f0a398a836c9a61d56fe6ee58a804",
     "magma-apply/Cargo.toml": "9565c0f59a4499b4620c11ec1e8f3cc90629fe6f626e14256b529ce3742c5311",
     "magma-arch-test/Cargo.toml": "9c75271183cdc70bb256ae0265490500f1753b18b87caa9bcd76afeffaa58cc5",
     "magma-attest/Cargo.toml": "e77f0414566d26f73556049e4b3d4b7cfc449e73eac3ded69d7f935b06cf6433",

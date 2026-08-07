@@ -123,7 +123,7 @@ shigoto-types    = "0.1.15"
 # samba light core (LeakyBucket pacer), NATS-free — the apply engine paces
 # provider mutation RPCs under GitHub's secondary rate limit.
 samba            = { version = "0.1.4", default-features = false }
-magma-lava       = { git = "https://github.com/pleme-io/magma-lava", branch = "main" }
+magma-lava       = { version = "0.2.7" }
 # Secret-file creation. tfstate holds provider-marked sensitive attributes in
 # plaintext by design, so the file's mode is the only protection the format
 # offers — cofre-fs establishes it at open(2) instead of chmod'ing afterwards.
