@@ -1,13 +1,13 @@
-//! Reproduction: the camelot-eks-shaar-concentrator preflight failure.
+//! Reproduction: the example-eks-concentrator-concentrator preflight failure.
 //!
-//! Live symptom (2026-08-02 07:32Z, camelot-eks, operator image
+//! Live symptom (2026-08-02 07:32Z, example-eks, operator image
 //! sha256:8a85100f…, magma pinned at 5b159e3): the InfrastructureTemplate sits
 //! at phase=Failed with
 //!
 //!   Magma execution failed: substrate preflight violations:
 //!   workspace::assert_all_laws: Workspace law violated: apply didn't converge
 //!   — re-plan has 1 non-NoOp changes: [... aws_security_group
-//!     "shaar-concentrator-camelot-sg", action: Update,
+//!     "concentrator-concentrator-example-sg", action: Update,
 //!     reasons: [AttributeDrift]]
 //!
 //! and the printed `before` / `after` are BYTE-IDENTICAL, which is what makes
@@ -16,7 +16,7 @@
 //! `after` (magma-plan/src/lib.rs:288-292), and that pair is never printed.
 //!
 //! The resource's only non-trivial attribute is
-//!   vpc_id = "${data.aws_vpc.camelot_eks.id}"
+//!   vpc_id = "${data.aws_vpc.example_eks.id}"
 //! — a reference INTO A DATA SOURCE. `assert_apply_converges` runs the whole
 //! lifecycle in memory with NO providers, so that data source can never
 //! actually be read.
@@ -44,9 +44,9 @@
 //!    state". From EMPTY state that premise is false: the data source is
 //!    read in the same pass, so with no edge the fallback plan order
 //!    (alphabetical) put `aws_security_group` before `aws_vpc`, the SG's
-//!    `${data.aws_vpc.camelot_eks.id}` failed to resolve, and state recorded
+//!    `${data.aws_vpc.example_eks.id}` failed to resolve, and state recorded
 //!    the raw literal. The re-plan then resolved it fine and compared
-//!    `vpc-090f93f4590e59ebc` against that literal — permanent drift.
+//!    `vpc-0123456789abcdef0` against that literal — permanent drift.
 //!    `magma_apply::run_plan` now applies `Action::Read` ahead of every
 //!    mutation.
 #![cfg(feature = "workspace-laws")]
@@ -54,7 +54,7 @@
 use magma_config::Config;
 
 fn concentrator_cfg() -> Config {
-    let raw = include_str!("fixtures/camelot-eks-shaar-concentrator.rendered.json");
+    let raw = include_str!("fixtures/example-eks-concentrator.rendered.json");
     let v: serde_json::Value = serde_json::from_str(raw).expect("rendered config parses");
     Config::from_json(v).expect("Config::from_json on the rendered config")
 }

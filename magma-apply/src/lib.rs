@@ -213,13 +213,13 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
     //
     // Because no edge exists, ordering fell back to plan order —
     // alphabetical by (type_id, name) — and `aws_security_group` sorts
-    // before `aws_vpc`. So on camelot-eks-shaar-concentrator the SG was
-    // applied while `data.aws_vpc.camelot_eks` was still absent from
+    // before `aws_vpc`. So on example-eks-concentrator-concentrator the SG was
+    // applied while `data.aws_vpc.example_eks` was still absent from
     // `state_map`; `resolve_for_structural_apply` failed, fell back to the
     // RAW value, and state recorded the literal
-    // `"vpc_id": "${data.aws_vpc.camelot_eks.id}"`. The re-plan then
+    // `"vpc_id": "${data.aws_vpc.example_eks.id}"`. The re-plan then
     // resolved the same reference successfully (the data source is in
-    // state by then) and compared `vpc-090f93f4590e59ebc` against that
+    // state by then) and compared `vpc-0123456789abcdef0` against that
     // literal — permanent `AttributeDrift`, so `assert_apply_converges`
     // could never be satisfied and the workspace sat at phase=Failed.
     //

@@ -1651,7 +1651,7 @@ mod tests {
     fn lifecycle_ignore_changes_is_parsed_into_meta_and_leaves_the_attributes() {
         let body = json!({
             "lifecycle": { "ignore_changes": ["value"] },
-            "name": "/shaar/hub-public-key",
+            "name": "/concentrator/hub-public-key",
             "value": "placeholder",
         });
         let (meta, attrs) =
