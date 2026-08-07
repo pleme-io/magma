@@ -9,6 +9,26 @@ name: auto-release
 on:
   push:
     branches: [main]
+    # A workflow-file edit changes no crate content, so it must not cut a
+    # release. Without this, editing this very file bumps the workspace and
+    # strands the members already on the registry at the older version.
+    paths-ignore:
+      - ".github/workflows/**"
+  # The drip job cannot resume itself. A reusable workflow does not carry its
+  # caller's triggers, so `on: schedule` has to be declared HERE — and without
+  # it the registry catch-up only ever runs when a human pushes or dispatches.
+  # That is load-bearing for this repo: crates.io throttles BRAND-NEW crate
+  # names (~1 per 10 min), so a 26-member workspace bootstraps across hours,
+  # parking with `429 Too Many` and a "capacity exhausted — parking '<name>'"
+  # line each round. Hourly, the backlog drains on its own; hand-dispatching
+  # faster than the quota refills just burns runs.
+  #
+  # Deliberately NOT armed fleet-wide: ~431 shims consume this workflow, and
+  # an hourly cron on each is ~10k runs/day against the shared GitHub API
+  # bucket the pangea-operator also draws from. Arm a shim when it has a real
+  # backlog to drain, as here.
+  schedule:
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       bump-type:
