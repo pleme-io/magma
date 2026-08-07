@@ -70,8 +70,8 @@ magma-cty       = { path = "magma-cty", version = "0.1.17" }
 
 # Gen-platform — typed-dispatcher catalog integration
 # (theory/UNIFIED-COMPUTING-MODEL.md §VI).
-gen-platform = { git = "https://github.com/pleme-io/gen" }
-gen-types = { git = "https://github.com/pleme-io/gen" }
+gen-platform = "0.1.34"
+gen-types = "0.1.34"
 magma-config    = { path = "magma-config", version = "0.1.17" }
 magma-pangea    = { path = "magma-pangea", version = "0.1.17" }
 magma-protocol  = { path = "magma-protocol", version = "0.1.17" }
@@ -109,18 +109,25 @@ magma-tfmod     = { path = "magma-tfmod", version = "0.1.17" }
 magma-repo      = { path = "magma-repo", version = "0.1.17" }
 magma-provider-registry = { path = "magma-provider-registry", version = "0.1.17" }
 
-# ── Pleme-io primitives (git deps; nixpkgs.follows enforced in flake.nix) ──
-shikumi          = { git = "https://github.com/pleme-io/shikumi" }
-shigoto          = { git = "https://github.com/pleme-io/shigoto", rev = "c8792add60be360ff29788f87f3bd46a2b666af6" }
-shigoto-types    = { git = "https://github.com/pleme-io/shigoto", rev = "c8792add60be360ff29788f87f3bd46a2b666af6" }
+# ── Pleme-io primitives — crates.io, NOT git ──
+# A bare git dep makes this workspace structurally unpublishable: cargo
+# refuses to package a dependency with no version requirement. It also
+# duplicates each crate in every consumer, since cargo never unifies
+# registry+git even at an identical version. magma-lava below is the one
+# remaining git dep and it is a genuine cycle, not an oversight: magma-lava
+# depends on magma-config, which is a member of THIS workspace. It flips as
+# soon as magma-config is on the registry.
+shikumi          = "0.1.496"
+shigoto          = "0.1.15"
+shigoto-types    = "0.1.15"
 # samba light core (LeakyBucket pacer), NATS-free — the apply engine paces
 # provider mutation RPCs under GitHub's secondary rate limit.
-samba            = { git = "https://github.com/pleme-io/samba", rev = "29650485132f635429291b08c5b2cdc5f9293500", default-features = false }
+samba            = { version = "0.1.4", default-features = false }
 magma-lava       = { git = "https://github.com/pleme-io/magma-lava", branch = "main" }
 # Secret-file creation. tfstate holds provider-marked sensitive attributes in
 # plaintext by design, so the file's mode is the only protection the format
 # offers — cofre-fs establishes it at open(2) instead of chmod'ing afterwards.
-cofre-fs         = { git = "https://github.com/pleme-io/cofre" }
+cofre-fs         = "0.1.4"
 indexmap         = { version = "2", features = ["serde"] }
 # pangea-ruby-eval is consumed via the `magnus` feature on magma-pangea —
 # the actual git dep is declared there to avoid forcing CRuby on every
