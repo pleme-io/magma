@@ -22,6 +22,45 @@ use magma_plugin::{Plugin, PluginSpec};
 use magma_protocol::tfplugin6;
 use magma_protocol::tfplugin6::provider_client::ProviderClient;
 
+/// Is this binary executable by the HOST, not merely present on disk?
+///
+/// The vendored fixture is `terraform-provider-null_3.2.4_darwin_arm64` — a
+/// Mach-O — and it is COMMITTED to the repo. So on a Linux runner it is very
+/// much present, `path.exists()` is true, the skip never fires, and the test
+/// dies at `Plugin::spawn(...).expect(...)` with an exec-format error. That
+/// failure kept magma's whole Test gate red, which kept the release from ever
+/// shipping magma-types / magma-config, which is what magma-lava, lava,
+/// lava-operator and pangea-operator are all waiting on.
+///
+/// The module doc above states the intended behaviour plainly — "tests
+/// skip-with-print when the binary is absent (Linux CI without the download
+/// step...)". That premise held until the binary was committed; presence
+/// stopped implying runnability and the guard silently became a no-op.
+///
+/// Magic bytes rather than a trial exec: it costs 4 bytes and cannot leave a
+/// stray process behind if the spawn half-succeeds.
+fn is_host_executable(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 4];
+    if f.read_exact(&mut magic).is_err() {
+        return false;
+    }
+    // ELF: 0x7F "ELF". Mach-O 64-bit: 0xFEEDFACF, byte-swapped 0xCFFAEDFE.
+    let is_elf = magic == [0x7F, b'E', b'L', b'F'];
+    let is_macho = magic == [0xFE, 0xED, 0xFA, 0xCF] || magic == [0xCF, 0xFA, 0xED, 0xFE];
+    if cfg!(target_os = "macos") {
+        is_macho
+    } else if cfg!(target_os = "linux") {
+        is_elf
+    } else {
+        // Unknown host: let the spawn decide rather than skip silently.
+        true
+    }
+}
+
 /// Locate the vendored null-provider binary. Returns `None` if absent
 /// (tests skip-with-print rather than fail in that case).
 fn locate_null_provider() -> Option<PathBuf> {
@@ -31,7 +70,7 @@ fn locate_null_provider() -> Option<PathBuf> {
     ];
     for candidate in candidates {
         let path = PathBuf::from(candidate);
-        if path.exists() {
+        if path.exists() && is_host_executable(&path) {
             return Some(path.canonicalize().unwrap_or(path));
         }
     }
@@ -39,7 +78,7 @@ fn locate_null_provider() -> Option<PathBuf> {
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let p = PathBuf::from(manifest_dir)
             .join("fixtures/providers/terraform-provider-null_v3.2.4_x5");
-        if p.exists() {
+        if p.exists() && is_host_executable(&p) {
             return Some(p);
         }
     }
@@ -50,8 +89,10 @@ fn skip_if_missing() -> Option<PathBuf> {
     let binary = locate_null_provider();
     if binary.is_none() {
         eprintln!(
-            "skip: terraform-provider-null binary not found. \
-             Download via:\n  \
+            "skip: no terraform-provider-null binary this host can RUN \
+             (absent, or present but built for another platform — the \
+             vendored fixture is darwin_arm64, so a Linux runner skips here). \
+             Download the matching build via:\n  \
              curl -fsSL https://releases.hashicorp.com/\
              terraform-provider-null/3.2.4/\
              terraform-provider-null_3.2.4_darwin_arm64.zip -o /tmp/null.zip && \
