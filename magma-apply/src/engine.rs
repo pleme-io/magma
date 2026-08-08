@@ -253,6 +253,62 @@ fn build_pacer(rph: f64) -> Option<Arc<LeakyBucket>> {
     }
 }
 
+/// Process-wide pacers, keyed by CREDENTIAL identity.
+///
+/// A rate limit is a property of the credential, not of a context, a workspace
+/// or a template. Every caller holding the same credential must draw from ONE
+/// bucket or the ceiling is silently multiplied by however many contexts exist
+/// — and that count is not stable: pangea-operator builds an ApplyContext at
+/// four call sites, and sharding an estate multiplies it again per shard.
+static SHARED_PACERS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, Arc<LeakyBucket>>>,
+> = std::sync::OnceLock::new();
+
+/// The one bucket for `key`, created on first use and returned thereafter.
+///
+/// `key` identifies the CREDENTIAL, not the workspace — two templates using
+/// the same token must pass the same key to be bounded together, and a caller
+/// keying by template name gets no protection at all while appearing paced.
+///
+/// `quota_pct` is the share of `budget_rph` this process may spend, leaving
+/// the remainder for everything else on that credential (CI, humans, other
+/// tools). Measured 2026-08-08: pangea-operator's convergence consumed the
+/// entire 5,000 req/hr GitHub budget and starved the org's release pipeline,
+/// which failed three times with "API rate limit exceeded" — the operator was
+/// not misbehaving, it simply had no notion of a share.
+///
+/// Returns `None` (unpaced) rather than erroring on invalid arguments, matching
+/// [`build_pacer`]: a pacer that cannot be built must not stop the apply.
+pub fn shared_pacer(key: &str, quota_pct: f64, budget_rph: f64) -> Option<Arc<LeakyBucket>> {
+    if quota_pct <= 0.0 || budget_rph <= 0.0 {
+        return None;
+    }
+    let map = SHARED_PACERS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guard = map
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = guard.get(key) {
+        return Some(Arc::clone(existing));
+    }
+    match LeakyBucket::new(quota_pct.min(1.0), budget_rph, 50, 25, 0.1, 1) {
+        Ok(b) => {
+            let arc = Arc::new(b);
+            guard.insert(key.to_string(), Arc::clone(&arc));
+            tracing::info!(
+                key,
+                quota_pct,
+                budget_rph,
+                "magma: created shared credential pacer"
+            );
+            Some(arc)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "magma: failed to build shared pacer — proceeding unpaced");
+            None
+        }
+    }
+}
+
 impl ApplyContext {
     pub fn new(workspace_dir: PathBuf) -> Self {
         Self {
@@ -6152,6 +6208,36 @@ mod tests {
     /// true safe rate is an external-world fact discovered from response
     /// headers. What is sealed here is that the rate the engine was *told* to
     /// hold is actually held — the plumbing, not the number.
+    /// The same credential key returns the SAME bucket, always.
+    ///
+    /// This is what makes the ceiling real. Keying by anything that varies per
+    /// caller — template name, workspace dir, context — yields a fresh bucket
+    /// per caller, which paces each one individually while the credential's
+    /// actual ceiling is multiplied by the caller count. That failure is
+    /// invisible: every caller looks paced.
+    #[test]
+    fn one_credential_gets_one_bucket_however_many_callers_ask() {
+        let a = shared_pacer("cred-A", 0.7, 5000.0).expect("pacer");
+        let b = shared_pacer("cred-A", 0.7, 5000.0).expect("pacer");
+        let c = shared_pacer("cred-B", 0.7, 5000.0).expect("pacer");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "same credential must share one bucket, or the ceiling is doubled"
+        );
+        assert!(
+            !Arc::ptr_eq(&a, &c),
+            "different credentials must NOT share — one estate's spend would \
+             throttle an unrelated provider"
+        );
+    }
+
+    /// An unusable quota disables pacing rather than failing the apply.
+    #[test]
+    fn an_invalid_quota_degrades_to_unpaced_not_to_an_error() {
+        assert!(shared_pacer("cred-zero", 0.0, 5000.0).is_none());
+        assert!(shared_pacer("cred-neg", 0.7, -1.0).is_none());
+    }
+
     /// N contexts sharing one pacer spend ONE budget, not N budgets.
     ///
     /// This is the property that makes pacing and sharding compose. With
