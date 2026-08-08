@@ -1489,6 +1489,21 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
 
         let mut kept_instances: Vec<StateInstance> = Vec::new();
         for inst in resource.instances {
+            // PACE THE REFRESH. `refresh_state` reads EVERY instance in the
+            // workspace on EVERY cycle, so it is the dominant consumer of the
+            // provider's hourly budget — far larger than the mutations the
+            // pacer was originally built for. It ran unpaced while its own
+            // sibling `refresh_named` paced the identical RPC, so a bulk
+            // refresh could exhaust the budget before the apply it precedes
+            // ever dispatched a single write.
+            //
+            // Measured 2026-08-08 on pleme-io-opensource: 4,786 instances
+            // against GitHub's 5,000 req/hr, so the refresh alone consumed the
+            // hour and every apply died on `403 API rate limit of 5000 still
+            // exceeded` — three approvals, zero completed applies.
+            if let Some(p) = ctx.pacer.as_deref() {
+                let _ = p.acquire().await;
+            }
             // STRUCTURAL DROP, and the one principled exception to the
             // "never delete because a read failed" rule above.
             //
@@ -1553,7 +1568,7 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
                 }
             };
             match rpc_retry!(
-                None::<&LeakyBucket>,
+                ctx.pacer.as_deref(),
                 lp.conn.read_resource(&type_name, &prior_dv)
             ) {
                 Ok(None) => {
@@ -6102,13 +6117,14 @@ mod tests {
     ///
     /// # Scope — what this does NOT cover
     ///
-    /// The **mutation** path only. `refresh_state` reads pass
-    /// `None::<&LeakyBucket>` and are genuinely unpaced today; this test would
-    /// not notice. Closing that needs a type — a `Paced<'_>` witness the
-    /// mutating provider methods demand, which would make "forgot the pacer"
-    /// a compile error instead of a reviewer's job — and that is NOT built.
-    /// So the honest statement is: the mutation path's pacing is *tested*, the
-    /// refresh path's absence of pacing is *known and unsealed*.
+    /// The **mutation** path only. The refresh path is now paced too
+    /// (2026-08-08) and is covered by `every_provider_rpc_is_paced` below
+    /// rather than by this test, which still would not notice.
+    ///
+    /// The `Paced<'_>` witness — a type the provider methods demand, making
+    /// "forgot the pacer" a compile error rather than a reviewer's job — is
+    /// still NOT built. So the class is CI-caught, not unrepresentable, and
+    /// the source-level gate is what stands in for the type.
     ///
     /// # Tier
     ///
@@ -6116,6 +6132,41 @@ mod tests {
     /// true safe rate is an external-world fact discovered from response
     /// headers. What is sealed here is that the rate the engine was *told* to
     /// hold is actually held — the plumbing, not the number.
+    /// Every provider RPC in this engine goes through the pacer.
+    ///
+    /// `refresh_state` shipped unpaced while its own sibling `refresh_named`
+    /// paced the identical `read_resource` call — one character of difference
+    /// (`None::<&LeakyBucket>` vs `pacer.as_deref()`), invisible in review and
+    /// invisible at runtime, since an unpaced read succeeds. It just spends
+    /// budget nobody accounted for: 4,786 reads per cycle against GitHub's
+    /// 5,000 req/hr, which is why three approvals produced zero applies.
+    ///
+    /// Until the `Paced<'_>` witness exists this is the seal, and it is a
+    /// SOURCE-level one on purpose — the defect is a missing argument, so no
+    /// behavioural test can see it. A new RPC that forgets the pacer fails
+    /// here instead of quietly eating the budget.
+    #[test]
+    fn every_provider_rpc_is_paced() {
+        let src = include_str!("engine.rs");
+        // Split so this detector is not its own offender — the literal must
+        // not appear on any line of the search itself.
+        let needle = concat!("None::<&", "LeakyBucket>");
+        let offenders: Vec<usize> = src
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains(needle))
+            // The doc prose above quotes the token; only real arguments count.
+            .filter(|(_, l)| !l.trim_start().starts_with("///"))
+            .map(|(i, _)| i + 1)
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "unpaced provider RPC at line(s) {offenders:?} — pass the pacer \
+             (`ctx.pacer.as_deref()`), never `None`. An unpaced RPC still \
+             succeeds; it just spends budget nobody accounted for."
+        );
+    }
+
     #[tokio::test]
     async fn the_configured_rate_bound_is_enforced_not_hoped() {
         let dir = tempfile::tempdir().expect("tempdir");
