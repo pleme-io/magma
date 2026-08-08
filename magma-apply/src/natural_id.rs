@@ -138,6 +138,24 @@ pub const CATALOG: &[NaturalIdRule] = &[
         parts: &[IdPart::ParentName("repository"), IdPart::Attr("name")],
         sep: ':',
     },
+    // The one rule in this table whose separator is NOT ':'. The provider
+    // imports a repo file as `<repo>/<path>` (`:<branch>` optional, default
+    // branch assumed) — `mado/.github/workflows/auto-release.yml`. A ':' here
+    // would build a plausible-looking id that resolves to nothing, which is
+    // the silent-wrong case this table exists to prevent, so the per-rule
+    // `sep` is load-bearing rather than decorative.
+    //
+    // Without this row the type falls through to the no-catalog branch and is
+    // (correctly) refused rather than guessed — but refusal means the file is
+    // CREATED instead of adopted, and a create against a path that already
+    // holds different content conflicts. Measured 2026-08-08 on the
+    // pleme-io-opensource shards: 1,036 refusals in a single import prepass
+    // against 33 dispatched, essentially all of them CI-shim workflow files.
+    NaturalIdRule {
+        resource_type: "github_repository_file",
+        parts: &[IdPart::ParentName("repository"), IdPart::Attr("file")],
+        sep: '/',
+    },
     // Types whose import key is a SPECIFIC own attribute — not `name`. Without
     // a row these fall through to the no-catalog `name` branch, which is
     // exactly the silent-wrong case: `github_team` carries BOTH `name` and
@@ -359,7 +377,6 @@ pub fn declared_map(changes: &[ResourceChange]) -> HashMap<String, Value> {
     m
 }
 
-
 /// The attributes whose PLANNED value the imported resource must agree with.
 ///
 /// A successful `ImportResourceState` answers *"something exists under this
@@ -456,6 +473,37 @@ mod tests {
             serde_json::json!({ resource_name: { "name": real_name, "node_id": "R_kgDOabc" } }),
         );
         sm
+    }
+
+    /// A repo file imports as `<repo>/<path>`, not `<repo>:<path>`.
+    ///
+    /// This is the only rule in CATALOG with a non-':' separator, so it is the
+    /// one a copy-pasted row would silently get wrong — and wrong here is not a
+    /// refusal, it is a plausible id that adopts nothing.
+    ///
+    /// Measured 2026-08-08 on the pleme-io-opensource shards: with no row at
+    /// all, 1,036 import ids were refused in one prepass against 33
+    /// dispatched, essentially all CI-shim workflow files, each falling
+    /// through to a Create that conflicts wherever the path already holds
+    /// content.
+    #[test]
+    fn a_repository_file_imports_by_slash_not_colon() {
+        let f = mk(
+            "github_repository_file",
+            "mado-auto-release",
+            serde_json::json!({
+                "repository": "${github_repository.mado.name}",
+                "file": ".github/workflows/auto-release.yml"
+            }),
+        );
+        let declared = state_with_repo("mado", "mado");
+        let got = derive(&f, None, &HashMap::new(), &declared).unwrap();
+        assert_eq!(got.confidence, Confidence::Catalog);
+        assert!(got.confidence.is_exact(), "adoption must be allowed");
+        assert_eq!(
+            got.id, "mado/.github/workflows/auto-release.yml",
+            "a ':' separator here builds a plausible id that adopts nothing"
+        );
     }
 
     /// THE pleme-io-opensource regression, both halves.
@@ -600,6 +648,18 @@ mod tests {
                     })
                 },
                 expect: "tag-forge:prod",
+            },
+            Row {
+                ty: "github_repository_file",
+                after: || {
+                    serde_json::json!({
+                        "repository": "${github_repository.tag_forge.name}",
+                        "file": ".github/workflows/auto-release.yml"
+                    })
+                },
+                // '/' not ':' — the only row in the table that differs, and the
+                // reason `sep` is per-rule.
+                expect: "tag-forge/.github/workflows/auto-release.yml",
             },
             Row {
                 ty: "github_issue_label",

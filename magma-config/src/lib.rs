@@ -774,11 +774,13 @@ pub fn split_resource_body(
             // the same typed error the whole block used to raise, so nothing
             // magma cannot honour is silently dropped.
             "lifecycle" => {
-                let obj = value.as_object().ok_or_else(|| ConfigError::MalformedMeta {
-                    address: address.to_string(),
-                    key: "lifecycle",
-                    detail: format!("expected an object, got {value}"),
-                })?;
+                let obj = value
+                    .as_object()
+                    .ok_or_else(|| ConfigError::MalformedMeta {
+                        address: address.to_string(),
+                        key: "lifecycle",
+                        detail: format!("expected an object, got {value}"),
+                    })?;
                 for (sub, sub_value) in obj {
                     if let Some((k, consequence)) = MetaCatalog::LIFECYCLE_UNIMPLEMENTED
                         .iter()
@@ -1654,8 +1656,8 @@ mod tests {
             "name": "/concentrator/hub-public-key",
             "value": "placeholder",
         });
-        let (meta, attrs) =
-            split_resource_body("aws_ssm_parameter.hub", &body).expect("ignore_changes is honoured");
+        let (meta, attrs) = split_resource_body("aws_ssm_parameter.hub", &body)
+            .expect("ignore_changes is honoured");
         assert_eq!(meta.ignore_changes, vec!["value".to_string()]);
         // The meta-argument itself must never reach the provider.
         assert!(
@@ -1663,7 +1665,10 @@ mod tests {
             "`lifecycle` leaked into the attributes: {attrs}"
         );
         // …but the attribute it NAMES is still a real attribute.
-        assert_eq!(attrs.get("value").and_then(|v| v.as_str()), Some("placeholder"));
+        assert_eq!(
+            attrs.get("value").and_then(|v| v.as_str()),
+            Some("placeholder")
+        );
     }
 
     /// Terraform's bare `all` keyword is refused rather than guessed at:

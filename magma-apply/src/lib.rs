@@ -228,9 +228,8 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
     // managed resource this pass creates, so nothing it needs can be
     // ordered after it. Relative order WITHIN the reads is left to
     // `dependency_ordered` so data-to-data references still order.
-    let (reads, mutations): (Vec<&ResourceChange>, Vec<&ResourceChange>) = reals
-        .iter()
-        .partition(|c| matches!(c.action, Action::Read));
+    let (reads, mutations): (Vec<&ResourceChange>, Vec<&ResourceChange>) =
+        reals.iter().partition(|c| matches!(c.action, Action::Read));
 
     for change in dependency_ordered(&reads) {
         match apply_one(change, state, &mut state_map) {

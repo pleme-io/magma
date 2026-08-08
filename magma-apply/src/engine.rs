@@ -2064,7 +2064,12 @@ pub(crate) enum Adoption {
     /// original apply error stands.
     Absent,
     /// Something exists under that id but it is NOT the planned resource.
-    Mismatch { attr: String, planned: String, imported: String, id: String },
+    Mismatch {
+        attr: String,
+        planned: String,
+        imported: String,
+        id: String,
+    },
 }
 
 /// Adopt-on-conflict for a create half that failed — the reaction magma has
@@ -2831,12 +2836,7 @@ mod replace_routing_tests {
     /// handed to adoption, which would report an unchanged object as success.
     #[test]
     fn actions_that_never_create_have_no_create_half() {
-        for a in [
-            Action::NoOp,
-            Action::Delete,
-            Action::Read,
-            Action::Forget,
-        ] {
+        for a in [Action::NoOp, Action::Delete, Action::Read, Action::Forget] {
             assert!(!has_create_half(a), "{a:?} cannot reach a create");
         }
     }
