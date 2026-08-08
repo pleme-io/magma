@@ -30,6 +30,14 @@ use magma_types::{
 };
 use samba::LeakyBucket;
 
+/// Re-exported so a consumer can name the pacer type without taking its own
+/// `samba` dependency. Two crates depending on samba SEPARATELY can resolve
+/// different versions, and then `Arc<LeakyBucket>` from one is simply not the
+/// type the other's `with_shared_pacer` accepts — a confusing mismatch for
+/// what is meant to be a shared handle. magma owns the pacing concept, so it
+/// owns the type its callers pass back in.
+pub use samba::LeakyBucket as Pacer;
+
 use crate::checkpoint::CheckpointSink;
 use crate::cursor::{ApplyCursor, CycleOutcome, CycleStats, Progress, Quantum, Resume};
 use crate::{AppliedChange, ApplyOutcome, FailedChange, insert_resource, remove_resource};
