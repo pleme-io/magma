@@ -348,6 +348,26 @@ impl ApplyContext {
         self.pacer = None;
         self
     }
+
+    /// Share ONE pacer across several contexts — the only form that bounds a
+    /// CREDENTIAL's total spend rather than one context's burst.
+    ///
+    /// [`Self::with_pace_rph`] builds a fresh bucket per context, so N
+    /// contexts pace at N × the rate. That is the right shape for the
+    /// provider's SECONDARY (burst) limit, which is per-connection, and the
+    /// wrong shape for a PRIMARY hourly budget, which is per-credential and
+    /// shared by every workspace using that credential.
+    ///
+    /// Measured 2026-08-08: pangea-operator builds a fresh `ApplyContext` at
+    /// four call sites, so one template's plan and apply already paced
+    /// independently; splitting an estate into 5 shards then multiplied the
+    /// same credential's ceiling to ~18,000 req/hr against a 5,000 req/hr
+    /// budget. Sharding and pacing only compose through a shared bucket.
+    #[must_use]
+    pub fn with_shared_pacer(mut self, pacer: Arc<LeakyBucket>) -> Self {
+        self.pacer = Some(pacer);
+        self
+    }
 }
 
 /// A spawned + configured provider held for the apply's lifetime (so
@@ -6132,6 +6152,44 @@ mod tests {
     /// true safe rate is an external-world fact discovered from response
     /// headers. What is sealed here is that the rate the engine was *told* to
     /// hold is actually held — the plumbing, not the number.
+    /// N contexts sharing one pacer spend ONE budget, not N budgets.
+    ///
+    /// This is the property that makes pacing and sharding compose. With
+    /// `with_pace_rph` each context builds its own bucket, so five shards pace
+    /// at five times the rate against a budget the credential holds once —
+    /// which is how a per-credential ceiling silently becomes N× itself.
+    ///
+    /// Asserted as elapsed WALL-CLOCK across two contexts, because that is the
+    /// thing the credential actually experiences. A test that only checked
+    /// `Arc::ptr_eq` would pass on a shared handle that still handed out
+    /// tokens independently.
+    #[tokio::test]
+    async fn contexts_sharing_a_pacer_share_one_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // 36_000 rph = 10/s = one token per ~100ms.
+        let shared = build_pacer(36_000.0).expect("pacer");
+        let a = ApplyContext::new(dir.path().to_path_buf()).with_shared_pacer(shared.clone());
+        let b = ApplyContext::new(dir.path().to_path_buf()).with_shared_pacer(shared.clone());
+
+        let started = std::time::Instant::now();
+        // Six acquires alternating across the two contexts. If each context
+        // had its own bucket they would interleave freely and finish in about
+        // half the time; sharing forces them into one queue.
+        for _ in 0..3 {
+            let _ = a.pacer.as_deref().expect("a paced").acquire().await;
+            let _ = b.pacer.as_deref().expect("b paced").acquire().await;
+        }
+        let elapsed = started.elapsed();
+
+        // 6 tokens at ~100ms spacing, minus the first (immediate) and a
+        // generous jitter allowance.
+        assert!(
+            elapsed >= std::time::Duration::from_millis(300),
+            "two contexts sharing a pacer must share its budget; 6 acquires \
+             took {elapsed:?}, which is faster than one bucket allows"
+        );
+    }
+
     /// Every provider RPC in this engine goes through the pacer.
     ///
     /// `refresh_state` shipped unpaced while its own sibling `refresh_named`
