@@ -53,9 +53,50 @@ const FORBIDDEN_NAMES: &[&str] = &[
     "dev.akeyless.io",
 ];
 
-/// The AWS account this repo is developed against. Not a credential, but it
-/// belongs to a host whose ground we are borrowing.
-const FORBIDDEN_ACCOUNT: &str = "376129857990";
+/// Twelve-digit runs that are allowed to look like an AWS account id. Anything
+/// else matching `\d{12}` is treated as a real one.
+///
+/// This used to be a single `FORBIDDEN_ACCOUNT` literal naming the host's real
+/// account. That is self-defeating on a public repo: a gate that detects a
+/// string by carrying it publishes the very thing it exists to keep out, and
+/// the literal was in fact the last occurrence of that account left in this
+/// repo after the 2026-08-17 sweep. Inverting it to "no unrecognised 12-digit
+/// run" publishes nothing and is a strictly stronger check — it catches ANY
+/// account id, including the ones nobody thought to add to a list.
+const ALLOWED_ACCOUNT_IDS: &[&str] = &["000000000000", "123456789012", "111122223333"];
+
+/// Is this a 12-digit run standing on its own, rather than a slice of a longer
+/// number (a timestamp in nanos, a hash, a size)?
+fn is_standalone_12_digits(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].chars().next_back();
+    let after = text[end..].chars().next();
+    !before.is_some_and(|c| c.is_ascii_digit()) && !after.is_some_and(|c| c.is_ascii_digit())
+}
+
+/// Every unrecognised standalone 12-digit run in `text`.
+fn account_like_runs(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let run = &text[start..i];
+        if run.len() == 12
+            && is_standalone_12_digits(text, start, i)
+            && !ALLOWED_ACCOUNT_IDS.contains(&run)
+        {
+            out.push(run.to_string());
+        }
+    }
+    out
+}
 
 /// Real AWS resource-id prefixes. A genuine id is 8–17 hex chars; the
 /// canonical placeholders (`0123456789abcdef0`, `0a1b2c3d`) are allowed
@@ -119,9 +160,37 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Paths git actually tracks, as absolute paths.
+///
+/// Publishability is a property of what git SHIPS, so the walk has to be
+/// filtered by that and not by what happens to be on this disk. Measured
+/// 2026-08-17: without this the gate reported four "AWS account ids" out of
+/// `Cargo.build-spec.json`, a gitignored local build artifact that no consumer
+/// of this repo will ever see — a false positive that would fire differently on
+/// every machine. The same hole runs the other way and matters more: an
+/// untracked file is invisible to a reader of the repo but a tracked one is
+/// not, and only git knows which is which.
+fn tracked() -> std::collections::HashSet<PathBuf> {
+    let root = repo_root();
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["ls-files", "-z"])
+        .output()
+        .expect("git ls-files must run — this gate is meaningless without it");
+    assert!(out.status.success(), "git ls-files failed in {root:?}");
+    String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(|rel| root.join(rel))
+        .collect()
+}
+
 fn sources() -> Vec<PathBuf> {
     let mut v = Vec::new();
     walk(&repo_root(), &mut v);
+    let tracked = tracked();
+    v.retain(|p| tracked.contains(p));
     assert!(
         v.len() > 50,
         "publishability scan found only {} files — the walk is broken, and a \
@@ -204,15 +273,19 @@ fn no_real_deployment_names() {
 }
 
 #[test]
-fn no_host_account_id() {
-    let hits: Vec<String> = scannable_units()
-        .into_iter()
-        .filter(|(_, text)| text.contains(FORBIDDEN_ACCOUNT))
-        .map(|(where_, _)| where_)
-        .collect();
+fn no_aws_account_ids() {
+    let mut hits = Vec::new();
+    for (where_, text) in scannable_units() {
+        for run in account_like_runs(&text) {
+            hits.push(format!("{where_}: {run}"));
+        }
+    }
     assert!(
         hits.is_empty(),
-        "the host's AWS account id appears in:\n  {}",
+        "these look like real AWS account ids:\n  {}\n\nUse one of the reserved \
+         placeholders (000000000000, 123456789012, 111122223333). An account id \
+         is never the point of an example, and this repo is meant to be \
+         publishable.",
         hits.join("\n  ")
     );
 }
