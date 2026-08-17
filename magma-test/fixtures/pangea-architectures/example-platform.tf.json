@@ -9,7 +9,7 @@
     "aws_route53_zone": {
       "example_dev": {
         "name":    "dev.example.com",
-        "comment": "Akeyless development zone — managed by Pangea"
+        "comment": "Development zone — managed by Pangea"
       }
     },
     "aws_acm_certificate": {

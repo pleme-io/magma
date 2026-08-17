@@ -1,4 +1,4 @@
-//! Reproduction: the example-eks-concentrator-concentrator preflight failure.
+//! Reproduction: the example-eks-vpn-concentrator preflight failure.
 //!
 //! Live symptom (2026-08-02 07:32Z, example-eks, operator image
 //! sha256:8a85100f…, magma pinned at 5b159e3): the InfrastructureTemplate sits
@@ -7,7 +7,7 @@
 //!   Magma execution failed: substrate preflight violations:
 //!   workspace::assert_all_laws: Workspace law violated: apply didn't converge
 //!   — re-plan has 1 non-NoOp changes: [... aws_security_group
-//!     "concentrator-concentrator-example-sg", action: Update,
+//!     "vpn-concentrator-example-sg", action: Update,
 //!     reasons: [AttributeDrift]]
 //!
 //! and the printed `before` / `after` are BYTE-IDENTICAL, which is what makes

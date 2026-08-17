@@ -213,7 +213,7 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
     //
     // Because no edge exists, ordering fell back to plan order —
     // alphabetical by (type_id, name) — and `aws_security_group` sorts
-    // before `aws_vpc`. So on example-eks-concentrator-concentrator the SG was
+    // before `aws_vpc`. So on example-eks-vpn-concentrator the SG was
     // applied while `data.aws_vpc.example_eks` was still absent from
     // `state_map`; `resolve_for_structural_apply` failed, fell back to the
     // RAW value, and state recorded the literal

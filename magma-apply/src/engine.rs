@@ -1703,7 +1703,7 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
 /// `github_repository` resources they depend on — both the literal
 /// `repository` field value (the repo NAME, e.g. `"kanchi"`) and any
 /// `${github_repository.X.*}` reference target (the resource NAME, e.g.
-/// `"akeyless_stack"`). These are the phantom-parent candidates: when a
+/// `"vendor_stack"`). These are the phantom-parent candidates: when a
 /// child (label / branch-protection) is a create but its parent repo is a
 /// NoOp in state, the parent is a likely phantom (in state, not in cloud).
 #[must_use]
@@ -4212,8 +4212,8 @@ mod tests {
     }
 
     /// COMPOSITE-KEY IMPORT IDS (2026-07-07): the github sub-resource adopt
-    /// fix. Without composite ids, `github_branch_protection.akeyless_stack_main`
-    /// would adopt by the WRONG id "akeyless_stack_main" (its address name) →
+    /// fix. Without composite ids, `github_branch_protection.vendor_stack_main`
+    /// would adopt by the WRONG id "vendor_stack_main" (its address name) →
     /// import_resource_state fails → the create-that-exists never adopts (the
     /// pleme-io-opensource 8-stuck-creates / all-422 wedge). Name-keyed
     /// (github_repository) and non-github types are unchanged.
@@ -4291,10 +4291,10 @@ mod tests {
         assert_eq!(
             natural_import_id(&mk(
                 "github_branch_protection",
-                "akeyless_stack_main",
-                serde_json::json!({ "repository_id": "akeyless_stack", "pattern": "main" })
+                "vendor_stack_main",
+                serde_json::json!({ "repository_id": "vendor_stack", "pattern": "main" })
             )),
-            Some("akeyless_stack:main".to_string())
+            Some("vendor_stack:main".to_string())
         );
         assert_eq!(
             natural_import_id(&mk(
@@ -5333,8 +5333,8 @@ mod tests {
             ),
             mkfail(
                 "github_branch_protection",
-                "akeyless_stack_main",
-                "Could not resolve to a node with the global id of '${github_repository.akeyless_stack.node_id}'",
+                "vendor_stack_main",
+                "Could not resolve to a node with the global id of '${github_repository.vendor_stack.node_id}'",
             ),
         ];
         let parents = collect_phantom_parents(&failed);
@@ -5343,7 +5343,7 @@ mod tests {
             "repo name from /repos/owner/kanchi/labels 404"
         );
         assert!(
-            parents.contains("akeyless_stack"),
+            parents.contains("vendor_stack"),
             "resource name from the ${{github_repository.X}} ref"
         );
 
@@ -5389,13 +5389,13 @@ mod tests {
             lineage: uuid::Uuid::nil(),
             outputs: Default::default(),
             resources: vec![
-                mkrepo("kanchi", "kanchi"),                 // phantom → dropped
-                mkrepo("akeyless_stack", "akeyless-stack"), // phantom (addr-name match) → dropped
-                mkrepo("galho", "galho"),                   // not implicated → kept
+                mkrepo("kanchi", "kanchi"),             // phantom → dropped
+                mkrepo("vendor_stack", "vendor-stack"), // phantom (addr-name match) → dropped
+                mkrepo("galho", "galho"),               // not implicated → kept
             ],
         };
         let dropped = drop_repos_from_state(&mut state, &parents);
-        assert_eq!(dropped, 2, "kanchi + akeyless_stack dropped");
+        assert_eq!(dropped, 2, "kanchi + vendor_stack dropped");
         assert_eq!(state.resources.len(), 1);
         assert_eq!(
             state.resources[0].address.name, "galho",

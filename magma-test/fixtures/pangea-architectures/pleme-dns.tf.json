@@ -12,12 +12,12 @@
   "resource": {
     "aws_route53_zone": {
       "pleme_lol":  { "name": "pleme.lol" },
-      "ben_kar_com":{ "name": "ben-kar.com" }
+      "example_com":{ "name": "example.com" }
     },
     "aws_route53_record": {
       "k8s_seph": {
-        "zone_id": "${aws_route53_zone.ben_kar_com.id}",
-        "name":    "api.seph.1.k8s.ben-kar.com",
+        "zone_id": "${aws_route53_zone.example_com.id}",
+        "name":    "api.seph.1.k8s.example.com",
         "type":    "CNAME",
         "ttl":     60,
         "records": ["nlb-x.elb.us-east-1.amazonaws.com"]
