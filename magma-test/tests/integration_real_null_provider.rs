@@ -148,18 +148,28 @@ async fn real_null_provider_handshake() {
     drop(plugin);
 }
 
-// The mTLS code path in magma-plugin is fully implemented (rcgen +
-// rustls 0.23 + custom peer verifier + UDS-wrapped TlsStream). Against
-// the real null provider, the TLS handshake currently fails with a
-// generic transport error — likely a rustls-vs-Go-tls interop issue
-// around webpki's strict cert validation (Basic Constraints, Key
-// Usage, AKI/SKI, signing scheme). The cert exchange + handshake
-// parsing + protocol negotiation are all proven correct by the
-// real_null_provider_handshake test above.
+// ── CORRECTED 2026-08-18: this was NOT a TLS problem. ────────────────
 //
-// Run these tests once the rustls/Go-tls interop is debugged:
-//   cargo test --test integration_real_null_provider -- --ignored
-#[ignore = "rustls↔Go-tls interop debug needed (cert exchange + TLS scaffold proven)"]
+// This test was `#[ignore]`d with the note "rustls↔Go-tls interop debug needed
+// … the TLS handshake currently fails with a generic transport error". That
+// diagnosis was wrong, and it kept a working capability shelved.
+//
+// The measured failure was:
+//
+//   Status { code: Unimplemented, message: "unknown service tfplugin6.Provider" }
+//
+// A gRPC *status* is a reply. Receiving one proves the mTLS handshake
+// SUCCEEDED — rcgen + rustls 0.23 + the custom peer verifier all work against a
+// real Go provider. What failed is one line above: the test built a
+// `tfplugin6::ProviderClient` and pointed it at null v3.2.4, which speaks
+// tfplugin5 — as this file's own comment says twelve lines earlier.
+//
+// The fix is to stop bypassing magma's own abstraction. `ProviderConn::new`
+// takes the negotiated `PluginProtocol` precisely so a caller does not have to
+// know which wire the provider speaks, and `get_schema()` dispatches to v5's
+// `GetSchema` or v6's `GetProviderSchema` accordingly. Verified green against
+// hashicorp/null v3.2.4 (v5, 1 resource + 1 data source) and against
+// Lucky3028/discord v2.7.0 (v5, 19 resources + 7 data sources).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_null_provider_schema() {
     let Some(binary) = skip_if_missing() else {
@@ -173,13 +183,34 @@ async fn real_null_provider_schema() {
     };
 
     let mut plugin = Plugin::spawn(spec).await.expect("spawn");
+    let protocol = plugin.handshake().app_protocol;
     let channel = plugin.dial().await.expect("dial gRPC").clone();
-    let mut client = ProviderClient::new(channel);
 
-    let resp = client
-        .get_provider_schema(tfplugin6::get_provider_schema::Request {})
+    // Through ProviderConn, not a hardcoded protocol client.
+    let mut conn = magma_plugin::provider::ProviderConn::new(channel.clone(), protocol);
+    let schema = conn
+        .get_schema()
         .await
-        .expect("GetProviderSchema against real null provider")
+        .expect("get_schema against real null provider");
+    assert!(
+        schema.resources.contains_key("null_resource"),
+        "null_resource present via ProviderConn, got: {:?}",
+        schema.resources.keys().collect::<Vec<_>>(),
+    );
+    assert!(
+        schema.data_sources.contains_key("null_data_source"),
+        "null_data_source present via ProviderConn, got: {:?}",
+        schema.data_sources.keys().collect::<Vec<_>>(),
+    );
+
+    // The raw v5 surface still answers too — this is what a schema DUMP needs,
+    // because ProviderConn returns implied cty types and drops the
+    // required/optional/computed flags and descriptions a generator wants.
+    let mut v5 = magma_protocol::tfplugin5::provider_client::ProviderClient::new(channel);
+    let resp = v5
+        .get_schema(magma_protocol::tfplugin5::get_provider_schema::Request {})
+        .await
+        .expect("v5 GetSchema against real null provider")
         .into_inner();
 
     eprintln!(
@@ -220,7 +251,21 @@ async fn real_null_provider_schema() {
     );
 }
 
-#[ignore = "rustls↔Go-tls interop debug needed (cert exchange + TLS scaffold proven)"]
+// Still ignored, but NOT for the reason previously recorded here. The old note
+// blamed "rustls↔Go-tls interop"; the sibling schema test above now runs green
+// un-ignored, which proves mTLS to a real Go provider works. The actual blocker
+// is the same one that shelved that test: this body drives `tfplugin6`'s client
+// and v6 request types (`configure_provider`, `ClientCapabilities`) against null
+// v3.2.4, which speaks tfplugin5. Every RPC below therefore answers
+// `Unimplemented: unknown service tfplugin6.Provider`.
+//
+// Unlike the schema test, this one cannot be fixed by swapping in
+// `ProviderConn`: it exercises the full configure→plan→apply lifecycle, and the
+// v5 request/response types differ field-by-field from the v6 ones written
+// here, so it needs a rewrite rather than a redirect. Left ignored with an
+// accurate reason instead of a wrong one — a stale diagnosis costs the next
+// reader more than an open TODO does.
+#[ignore = "written against tfplugin6 types; null v3.2.4 speaks tfplugin5 — needs a v5 rewrite, NOT a TLS fix"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_null_provider_lifecycle() {
     let Some(binary) = skip_if_missing() else {
