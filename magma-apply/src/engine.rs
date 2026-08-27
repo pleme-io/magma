@@ -484,7 +484,7 @@ impl ApplyContext {
 /// turn an opaque "channel closed" into a named cause. A provider that
 /// cannot crash independently of the operator has no such cause to
 /// report, and `None` is the honest answer rather than a fabricated one.
-pub trait ProviderTransport: Send {
+pub trait ProviderTransport: Send + Sync {
     /// A crash/panic summary if the provider died on its own.
     fn crash_summary(&self) -> Option<ProviderCrash> {
         None

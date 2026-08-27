@@ -247,6 +247,15 @@ fn fmt_diags(diags: &[Diag]) -> String {
 /// provider tractable at all — the cost of a provider is its API
 /// bindings, never its protocol.
 ///
+/// ── `Send + Sync`, AND `Sync` IS NOT DECORATION ─────────────────────
+/// A `LiveProvider` is held across `.await` points inside futures that
+/// pangea-operator requires to be `Sync`, so a `Box<dyn Provider>` that
+/// is merely `Send` fails to compile at the CONSUMER — six E0277s in
+/// another repo, pointing at the operator's own functions rather than at
+/// this line. The concrete `ProviderConn` this replaced was `Sync`
+/// incidentally, so the bound was being satisfied by accident and
+/// erasing it to a trait object is what exposed the requirement.
+///
 /// ── `&mut self`, NOT `&self` ─────────────────────────────────────────
 /// Deliberate, and it constrains the shape downstream. The tonic clients
 /// behind `ProviderConn` need `&mut` per call, so a `&self` trait would
@@ -266,7 +275,7 @@ fn fmt_diags(diags: &[Diag]) -> String {
 /// the engine's ordering holds. `dial_configured_provider` is the one
 /// place that establishes it.
 #[async_trait::async_trait]
-pub trait Provider: Send {
+pub trait Provider: Send + Sync {
     /// The provider's schema, reduced to implied cty types.
     async fn get_schema(&mut self) -> Result<ProviderSchema, ProviderError>;
 
@@ -404,6 +413,21 @@ mod tests {
         ) -> Result<DynamicValue, ProviderError> {
             Err(ProviderError::NoNewState)
         }
+    }
+
+    /// ★ THE `Sync` BOUND IS PINNED HERE, because losing it fails
+    /// SOMEWHERE ELSE.
+    ///
+    /// `LiveProvider` is held across `.await` in futures pangea-operator
+    /// requires to be `Sync`. Weaken this bound and this crate still
+    /// compiles, magma still compiles, every magma test still passes — and
+    /// the operator fails with six E0277s pointing at ITS functions, in
+    /// another repository, on a pin bump. Measured exactly that way: the
+    /// bound started as `Send` alone and that is how it surfaced.
+    #[test]
+    fn the_contract_is_send_and_sync() {
+        const fn require<T: Send + Sync + ?Sized>() {}
+        require::<dyn Provider>();
     }
 
     /// ★ OBJECT SAFETY IS LOAD-BEARING, so it is pinned rather than assumed.
