@@ -588,6 +588,136 @@ impl ProviderFactory for GrpcProviderFactory {
     }
 }
 
+impl LiveProvider {
+    /// The provider's schema.
+    ///
+    /// `LiveProvider` is a public type returned by a public function, but
+    /// its fields are `pub(crate)` so the engine can restructure them —
+    /// which left an external composer able to DIAL a provider and unable
+    /// to ask it anything. These accessors close that gap without freezing
+    /// the layout.
+    #[must_use]
+    pub fn schema(&self) -> &ProviderSchema {
+        &self.schema
+    }
+
+    /// The provider itself, for driving the contract's operations.
+    pub fn provider_mut(&mut self) -> &mut dyn Provider {
+        self.conn.as_mut()
+    }
+
+    /// Transport-level failure signals. Both are `None` for an in-process
+    /// provider — see [`ProviderTransport`].
+    #[must_use]
+    pub fn transport(&self) -> &dyn ProviderTransport {
+        self.transport.as_ref()
+    }
+}
+
+/// Builds a native, in-process provider on demand.
+///
+/// A constructor rather than a value because `LiveProvider` owns its
+/// provider exclusively (`Box<dyn Provider>`, `&mut self` methods) — two
+/// concurrently-dialed instances of one provider must not share state.
+pub type NativeProviderCtor = Arc<dyn Fn() -> Box<dyn Provider> + Send + Sync>;
+
+/// Routes a provider NAME to a native implementation when one is
+/// registered, and to the subprocess path otherwise.
+///
+/// ── ★ WHY THE REGISTRY TAKES A CONSTRUCTOR, NOT A FACTORY ────────────
+/// The obvious design has each provider crate implement
+/// `ProviderFactory`. It inverts the layering: `ProviderFactory` returns
+/// `Result<LiveProvider, EngineError>`, both of which live in the ENGINE,
+/// so every provider crate would have to depend on `magma-apply` — and a
+/// provider is supposed to be a leaf that knows only the contract.
+///
+/// So a native provider supplies a `Box<dyn Provider>` and nothing else.
+/// This type performs the lifecycle around it (schema, configure) and
+/// wraps it in a `LiveProvider`. `magma-provider-random` therefore
+/// depends on `magma-provider-api` alone, and could not depend on the
+/// engine even by accident.
+///
+/// Migration is per-provider and reversible: registering a name routes it
+/// natively, removing the registration puts it straight back on the Go
+/// binary. There is no flag day.
+pub struct RoutingProviderFactory {
+    native: BTreeMap<String, NativeProviderCtor>,
+    fallback: Arc<dyn ProviderFactory>,
+}
+
+impl RoutingProviderFactory {
+    /// Route everything to the subprocess path until told otherwise.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            native: BTreeMap::new(),
+            fallback: Arc::new(GrpcProviderFactory),
+        }
+    }
+
+    /// Serve `name` (the bare local name, e.g. `"random"`) in-process.
+    #[must_use]
+    pub fn with_native(
+        mut self,
+        name: impl Into<String>,
+        ctor: impl Fn() -> Box<dyn Provider> + Send + Sync + 'static,
+    ) -> Self {
+        self.native.insert(name.into(), Arc::new(ctor));
+        self
+    }
+
+    /// Replace what unregistered providers fall back to.
+    #[must_use]
+    pub fn with_fallback(mut self, fallback: Arc<dyn ProviderFactory>) -> Self {
+        self.fallback = fallback;
+        self
+    }
+
+    /// Is this provider served in-process?
+    #[must_use]
+    pub fn serves_natively(&self, name: &str) -> bool {
+        self.native.contains_key(name)
+    }
+}
+
+impl Default for RoutingProviderFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderFactory for RoutingProviderFactory {
+    async fn dial(&self, req: DialRequest<'_>) -> Result<LiveProvider, EngineError> {
+        let name = req.instance.name().to_string();
+        let Some(ctor) = self.native.get(&name) else {
+            return self.fallback.dial(req).await;
+        };
+
+        let mut conn = ctor();
+        // The SAME lifecycle the subprocess path runs: schema first, then
+        // Configure. The tfplugin ordering rule is not a property of the
+        // transport, so an in-process provider observes it too — and a
+        // native provider written against that rule keeps working if it is
+        // ever moved out of process.
+        let schema = conn
+            .get_schema()
+            .await
+            .map_err(|e| EngineError::Rpc(name.clone(), format!("get_schema: {e}")))?;
+        let config_dv = DynamicValue::from_json(req.config_json, &schema.provider_config)
+            .map_err(|e| EngineError::Cty(e.to_string()))?;
+        conn.configure(&config_dv, req.terraform_version)
+            .await
+            .map_err(|e| EngineError::Rpc(name.clone(), format!("configure: {e}")))?;
+
+        Ok(LiveProvider {
+            transport: Box::new(InProcessTransport),
+            conn,
+            schema,
+        })
+    }
+}
+
 /// Spawn + fully configure a provider by its local name, over go-plugin.
 async fn grpc_dial(req: DialRequest<'_>) -> Result<LiveProvider, EngineError> {
     let DialRequest {

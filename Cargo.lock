@@ -2007,6 +2007,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "magma-provider-random"
+version = "0.1.29"
+dependencies = [
+ "async-trait",
+ "base64",
+ "hex",
+ "magma-apply",
+ "magma-cty",
+ "magma-provider-api",
+ "magma-types 0.1.29",
+ "rand 0.8.6",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "magma-provider-registry"
 version = "0.1.29"
 dependencies = [

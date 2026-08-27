@@ -1,0 +1,28 @@
+[package]
+name        = "magma-provider-random"
+description = "magma — a NATIVE Rust implementation of the terraform `random` provider, running in-process. Replaces terraform-provider-random, whose Go dependency closure carried 36 of the operator image's 190 CVE findings while making no network calls at all."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+homepage.workspace     = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+magma-provider-api = { workspace = true }
+magma-cty          = { workspace = true }
+async-trait        = { workspace = true }
+serde_json         = { workspace = true }
+rand               = { workspace = true }
+base64             = { workspace = true }
+hex                = { workspace = true }
+
+[dev-dependencies]
+tokio       = { workspace = true }
+tempfile    = { workspace = true }
+magma-apply = { workspace = true }
+magma-types = { workspace = true }

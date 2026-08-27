@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "539aa3eed7990ec01268214b0d4ab1088b0443992dc7a0c4ef3e5093028a03b7",
+  "cargo_lock_sha256": "8926907262b2390883291166ea9cca062e160b7430c9b7109eaea8a6a4b4a2e4",
   "manifest_sha256": {
-    "Cargo.toml": "12e3a46bee8b0531087147e76c8e3253872c91e879e5517fe024f3c2d0be956c",
+    "Cargo.toml": "1d4d086f8651c59cce71f742c490bbd21b96d1cf52e20d8911034597893b7f15",
     "magma-apply/Cargo.toml": "9565c0f59a4499b4620c11ec1e8f3cc90629fe6f626e14256b529ce3742c5311",
     "magma-arch-test/Cargo.toml": "9c75271183cdc70bb256ae0265490500f1753b18b87caa9bcd76afeffaa58cc5",
     "magma-attest/Cargo.toml": "e77f0414566d26f73556049e4b3d4b7cfc449e73eac3ded69d7f935b06cf6433",
@@ -30,6 +30,7 @@
     "magma-plugin/Cargo.toml": "491ca5358ced20ea4d3ac353a7c67c7de29a456d0a2bc39aa87591d74de16d42",
     "magma-protocol/Cargo.toml": "0330f604d2038f7f84830ca6aad5af27bb49b35db0eb34252d17f5972d3a65f8",
     "magma-provider-api/Cargo.toml": "ad1450cc8f5737e3477140058893fdf9180c72be07ce6496f79fd95e245ca891",
+    "magma-provider-random/Cargo.toml": "04c98ef1d89ee7eb5e4673a09efe52411eee45a63ccaca24c328f1cf829c3374",
     "magma-provider-registry/Cargo.toml": "e7c2dd7120b69ddb12757908b2cf46c2dd67dbc18dcd2391a6af43a8c5079c62",
     "magma-providers/Cargo.toml": "60151e9c546439b89cd9e986eb7c177ba5c77a53eeb9412dc647421de6d5fa9d",
     "magma-replay/Cargo.toml": "7ef002e473a4b97a2bfaa15ad23ad022b381c50c054905ae9571d50589b7899f",
@@ -1816,7 +1817,9 @@
           }
         ],
         "build_dependencies": [],
-        "features": []
+        "features": [
+          "std"
+        ]
       },
       "getrandom-0.3.4": {
         "runtime_dependencies": [
@@ -6096,6 +6099,82 @@
         "build_dependencies": [],
         "features": []
       },
+      "magma-provider-random-0.1.29": {
+        "runtime_dependencies": [
+          {
+            "name": "async_trait",
+            "package_key": "async-trait-0.1.89",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "base64",
+            "package_key": "base64-0.22.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hex",
+            "package_key": "hex-0.4.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "magma_cty",
+            "package_key": "magma-cty-0.1.29",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "magma_provider_api",
+            "package_key": "magma-provider-api-0.1.29",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rand",
+            "package_key": "rand-0.8.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "magma-provider-registry-0.1.29": {
         "runtime_dependencies": [
           {
@@ -8690,6 +8769,50 @@
           "proc-macro"
         ]
       },
+      "rand-0.8.6": {
+        "runtime_dependencies": [
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": "cfg(unix)",
+            "tree": "target"
+          },
+          {
+            "name": "rand_chacha",
+            "package_key": "rand_chacha-0.3.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rand_core",
+            "package_key": "rand_core-0.6.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "alloc",
+          "default",
+          "getrandom",
+          "libc",
+          "rand_chacha",
+          "std",
+          "std_rng"
+        ]
+      },
       "rand-0.9.4": {
         "runtime_dependencies": [
           {
@@ -8724,6 +8847,36 @@
           "thread_rng"
         ]
       },
+      "rand_chacha-0.3.1": {
+        "runtime_dependencies": [
+          {
+            "name": "ppv_lite86",
+            "package_key": "ppv-lite86-0.2.21",
+            "kind": "normal",
+            "features": [
+              "simd"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rand_core",
+            "package_key": "rand_core-0.6.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "std"
+        ]
+      },
       "rand_chacha-0.9.0": {
         "runtime_dependencies": [
           {
@@ -8751,6 +8904,26 @@
         ],
         "build_dependencies": [],
         "features": [
+          "std"
+        ]
+      },
+      "rand_core-0.6.4": {
+        "runtime_dependencies": [
+          {
+            "name": "getrandom",
+            "package_key": "getrandom-0.2.17",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "alloc",
+          "getrandom",
           "std"
         ]
       },
@@ -15846,6 +16019,13 @@
         "path": "src/lib.rs"
       }
     },
+    "magma-provider-random-0.1.29": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "magma_provider_random",
+        "path": "src/lib.rs"
+      }
+    },
     "magma-provider-registry-0.1.29": {
       "edition": "2024",
       "lib_target": {
@@ -16106,11 +16286,20 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
+    "rand-0.8.6": {
+      "edition": "2018"
+    },
     "rand-0.9.4": {
       "edition": "2021"
     },
+    "rand_chacha-0.3.1": {
+      "edition": "2018"
+    },
     "rand_chacha-0.9.0": {
       "edition": "2021"
+    },
+    "rand_core-0.6.4": {
+      "edition": "2018"
     },
     "rand_core-0.9.5": {
       "edition": "2021"
