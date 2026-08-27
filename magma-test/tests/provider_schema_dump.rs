@@ -78,11 +78,10 @@ fn block_to_json(b: &tfplugin5::schema::Block, version: i64) -> Value {
 }
 
 fn schema_to_json(s: &tfplugin5::Schema) -> Value {
-    s.block
-        .as_ref()
-        .map_or_else(|| json!({"version": s.version}), |b| {
-            block_to_json(b, s.version)
-        })
+    s.block.as_ref().map_or_else(
+        || json!({"version": s.version}),
+        |b| block_to_json(b, s.version),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

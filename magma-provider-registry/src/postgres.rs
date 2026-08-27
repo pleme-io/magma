@@ -2,9 +2,8 @@
 //! gated behind the `postgres` feature so the crate compiles without a
 //! live database or libpq.
 //!
-//! Resolves a provider binary from the `magma_providers` table (see
-//! `migrations/001_providers_table.sql`), keyed by `(source, version,
-//! os, arch)`. On a hit it:
+//! Resolves a provider binary from the `magma_meta.providers` table,
+//! keyed by `(source, version, platform)`. On a hit it:
 //!
 //! 1. reads `(binary, content_hash)`;
 //! 2. **BLAKE3-verifies** the binary against the recorded `content_hash`
@@ -19,7 +18,40 @@
 //!
 //! Queries use runtime SQL (`sqlx::query_as`), **not** the compile-time
 //! `query!` macros — so building the crate needs no `DATABASE_URL` and
-//! no live Postgres. The schema contract lives in the migration file.
+//! no live Postgres.
+//!
+//! ── ★ THE SCHEMA IS ENSURED HERE, NOT IN A `migrations/` DIRECTORY ────
+//! There used to be a `migrations/001_providers_table.sql` that **nothing
+//! ever executed** — it was referenced only from a doc comment, so
+//! `resolve` would have failed with `relation "magma_providers" does not
+//! exist` on the first real call. Deleted, and replaced with
+//! [`PgRegistry::ensure_schema`].
+//!
+//! That follows the house pattern rather than inventing one:
+//! `theory/MAGMA-POSTGRES-LIFECYCLE.md` §1 chose `sqlx_embedded` **over** a
+//! `migrations/*.sql` directory, and pangea-operator's `ArtifactStore`
+//! (`pangea_meta.artifacts` — the same BYTEA + content-hash shape this
+//! table mirrors) does exactly this: `CREATE SCHEMA/TABLE IF NOT EXISTS`,
+//! lazily self-healed behind an `AtomicBool` and re-runnable as an
+//! explicit one-shot.
+//!
+//! **This is an interim owner, and it is worth saying so.** The fleet rule
+//! is that every schema concern is a `keifu::Change` through one renderer
+//! and one applier. keifu was extracted for exactly that
+//! (`pleme-io/shinka` → `keifu-core`), but it cannot be consumed here yet:
+//! shinka is a PRIVATE repo, magma is PUBLIC, and the publish path is
+//! deliberately withheld for private sources. When keifu-core lands in a
+//! public home, [`ensure_schema`] is the seam that swaps — the table shape
+//! below is already what the changeset will render.
+//!
+//! ── SCHEMA, and one deliberate deviation from the spec ────────────────
+//! `theory/MAGMA-PROVIDER-PLANE.md` §III declares `protocol INT NOT NULL`.
+//! It is **nullable** here. The tfplugin protocol version is discovered
+//! from the go-plugin handshake at load (`magma-apply` engine.rs), so the
+//! column is a RECORD of what was seen, never the source of truth — and a
+//! `NOT NULL` would make it impossible to seed a row from a Nix-baked
+//! mirror, where the binary has not been run and the protocol is genuinely
+//! unknown. A column that forces a guess is worse than one that admits it.
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -43,7 +75,18 @@ impl From<sqlx::Error> for RegistryError {
 pub struct PgRegistry {
     pool: PgPool,
     cache_dir: PathBuf,
+    /// Has the schema been ensured on this pool yet?
+    ///
+    /// `Arc` so clones share one flag — the ensure is per-DATABASE, not
+    /// per-handle, and a clone that re-ran it would be pure noise. Ordering
+    /// is `Relaxed` deliberately: the DDL itself is `IF NOT EXISTS`, so a
+    /// race between two tasks costs one redundant statement, never a
+    /// conflict. The flag is an optimisation, not a lock.
+    ensured: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
+
+/// The table this registry resolves against, qualified. Spec §III.
+pub(crate) const PROVIDERS_TABLE: &str = "magma_meta.providers";
 
 impl PgRegistry {
     /// Construct from a live pool + the exec-cache directory. The
@@ -53,7 +96,63 @@ impl PgRegistry {
         Self {
             pool,
             cache_dir: cache_dir.into(),
+            ensured: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Terraform's platform spelling for an `(os, arch)` pair: `linux_amd64`.
+    ///
+    /// The [`ProviderRegistry`] trait takes `os` and `arch` separately
+    /// because that is what a caller naturally has; the TABLE keys on the
+    /// joined form because that is what terraform, the registry protocol and
+    /// the release artifacts all use. Joining here keeps the seam honest in
+    /// both directions instead of forcing one convention on the other.
+    #[must_use]
+    pub fn platform_of(os: &str, arch: &str) -> String {
+        format!("{os}_{arch}")
+    }
+
+    /// Create the schema + table if absent. Idempotent, safe to call
+    /// concurrently, and safe to call on a database that already has them.
+    ///
+    /// # Errors
+    /// [`RegistryError::Backend`] if the DDL cannot be applied — e.g. the
+    /// role cannot `CREATE`.
+    pub async fn ensure_schema(&self) -> Result<(), RegistryError> {
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS magma_meta")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(&format!(
+            "CREATE TABLE IF NOT EXISTS {PROVIDERS_TABLE} (
+                 source        TEXT        NOT NULL,
+                 version       TEXT        NOT NULL,
+                 platform      TEXT        NOT NULL,
+                 protocol      INT,
+                 content_hash  CHAR(64)    NOT NULL,
+                 binary        BYTEA       NOT NULL,
+                 fetched_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                 PRIMARY KEY (source, version, platform)
+             )"
+        ))
+        .execute(&self.pool)
+        .await?;
+        self.ensured
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Ensure once, then get out of the way.
+    ///
+    /// Lazy rather than constructor-time because `new` is sync and infallible
+    /// and should stay that way; and self-healing rather than one-shot because
+    /// a registry whose database was reset mid-life should recover on its next
+    /// call instead of failing until the process restarts. Same shape as
+    /// pangea-operator's `ArtifactStore::ensure_ready`.
+    async fn ensure_ready(&self) -> Result<(), RegistryError> {
+        if self.ensured.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+        self.ensure_schema().await
     }
 
     /// The exec-cache path for one provider coordinate:
@@ -99,14 +198,19 @@ impl ProviderRegistry for PgRegistry {
         os: &str,
         arch: &str,
     ) -> Result<Option<ProviderHandle>, RegistryError> {
-        let row = sqlx::query(
-            "SELECT binary, content_hash FROM magma_providers \
-             WHERE source = $1 AND version = $2 AND os = $3 AND arch = $4",
-        )
+        // The table has to exist before the first SELECT can miss rather
+        // than error. A missing relation is not a "no such provider" — it is
+        // a broken deployment, and conflating the two would make the chain
+        // fall through to the dir tier and report a clean miss.
+        self.ensure_ready().await?;
+
+        let row = sqlx::query(&format!(
+            "SELECT binary, content_hash FROM {PROVIDERS_TABLE} \
+             WHERE source = $1 AND version = $2 AND platform = $3"
+        ))
         .bind(source)
         .bind(version)
-        .bind(os)
-        .bind(arch)
+        .bind(Self::platform_of(os, arch))
         .fetch_optional(&self.pool)
         .await?;
 

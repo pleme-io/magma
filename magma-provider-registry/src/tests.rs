@@ -271,3 +271,52 @@ fn content_hash_mismatch_is_a_typed_error() {
         other => panic!("expected ContentHashMismatch, got {other:?}"),
     }
 }
+
+// ── The Postgres tier: what is testable without a live database ──────
+//
+// The census that preceded this work found `PgRegistry::resolve` had NO
+// test at all — `content_hash_mismatch_is_a_typed_error` above
+// REIMPLEMENTS the verify logic inline rather than exercising it, so it
+// would stay green if `resolve` stopped verifying entirely. These do not
+// fix that (it needs a live Postgres), but they pin the two pure decisions
+// `resolve` makes before it ever touches the pool, and those are exactly
+// the two that were silently wrong before.
+
+#[cfg(feature = "postgres")]
+mod pg_pure {
+    use crate::PgRegistry;
+
+    /// The table is SCHEMA-QUALIFIED. It used to be a bare
+    /// `magma_providers` in the public schema, which diverged from
+    /// `theory/MAGMA-PROVIDER-PLANE.md` §III (`magma_meta.providers`) — and
+    /// nothing caught it because the table was never created at all.
+    #[test]
+    fn the_table_is_schema_qualified_per_the_spec() {
+        assert_eq!(
+            super::super::postgres::PROVIDERS_TABLE,
+            "magma_meta.providers"
+        );
+    }
+
+    /// `(os, arch)` join to terraform's platform spelling. The trait takes
+    /// them apart because a caller has them apart; the table keys on the
+    /// joined form because terraform, the registry protocol and the release
+    /// artifacts all use it.
+    #[test]
+    fn platform_is_terraforms_spelling() {
+        assert_eq!(PgRegistry::platform_of("linux", "amd64"), "linux_amd64");
+        assert_eq!(PgRegistry::platform_of("darwin", "arm64"), "darwin_arm64");
+    }
+
+    /// The old key was `(source, version, os, arch)`; the spec's is
+    /// `(source, version, platform)`. Joining is what makes those the same
+    /// key — so a round-trip through `platform_of` must not lose the
+    /// distinction between two different arches.
+    #[test]
+    fn different_arches_do_not_collide_into_one_key() {
+        assert_ne!(
+            PgRegistry::platform_of("linux", "amd64"),
+            PgRegistry::platform_of("linux", "arm64")
+        );
+    }
+}

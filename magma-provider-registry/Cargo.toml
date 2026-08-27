@@ -16,8 +16,13 @@ workspace = true
 # Default is dir-only resolution — compiles with zero DB deps so the
 # crate builds (and tests) without a live Postgres or libpq.
 default = []
-# `postgres` pulls in sqlx + the PgRegistry impl. The migration in
-# migrations/001_providers_table.sql is the schema it SELECTs against.
+# `postgres` pulls in sqlx + the PgRegistry impl. The schema it SELECTs
+# against is ensured by PgRegistry::ensure_schema (CREATE SCHEMA/TABLE IF
+# NOT EXISTS) — the house pattern per theory/MAGMA-POSTGRES-LIFECYCLE.md §1,
+# which chose sqlx_embedded over a migrations/*.sql directory. The old
+# migrations/001_providers_table.sql was deleted because NOTHING executed
+# it: it was referenced from a doc comment only, so the first real resolve
+# would have failed with `relation "magma_providers" does not exist`.
 postgres = ["dep:sqlx"]
 
 [dependencies]
