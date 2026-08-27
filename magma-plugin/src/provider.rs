@@ -27,7 +27,7 @@ use magma_cty::{CtyType, DynamicValue};
 use magma_protocol::{PluginProtocol, tfplugin5, tfplugin6};
 
 use crate::H2Channel;
-use crate::schema::{self, SchemaError};
+use crate::schema;
 
 type Client5 = tfplugin5::provider_client::ProviderClient<H2Channel>;
 type Client6 = tfplugin6::provider_client::ProviderClient<H2Channel>;
@@ -68,196 +68,22 @@ pub struct ProviderConn {
     client: Client,
 }
 
-/// A provider's schema reduced to the implied cty types the apply codec
-/// needs: the provider-config type + each managed resource's type.
-#[derive(Debug, Clone)]
-pub struct ProviderSchema {
-    pub provider_config: CtyType,
-    pub resources: BTreeMap<String, CtyType>,
-    /// Data-source implied types (`data.<type>`), needed to encode a
-    /// ReadDataSource config + decode its result. Without these the apply
-    /// engine cannot evaluate `${data.*}` references (the rio-drive leak).
-    pub data_sources: BTreeMap<String, CtyType>,
-    /// Each managed resource type's CURRENT schema version, as declared by
-    /// the provider's `GetProviderSchema`/`GetSchema` response (the
-    /// `Schema.version` field sibling to the `Schema.block` that
-    /// [`crate::schema::block_implied_type`] turns into `resources`'
-    /// implied types). The terraform plugin protocol requires
-    /// `UpgradeResourceState` to run whenever a stored `StateInstance`'s
-    /// `schema_version` is older than this — otherwise its raw attribute
-    /// JSON (persisted under the OLD schema) gets decoded straight against
-    /// the NEW implied type, which a schema change can silently
-    /// misinterpret or fail to marshal. See
-    /// [`ProviderConn::upgrade_resource_state`] + [`ProviderSchema::resource_version`].
-    pub resource_versions: BTreeMap<String, i64>,
-}
-
-impl ProviderSchema {
-    pub fn resource(&self, type_name: &str) -> Option<&CtyType> {
-        self.resources.get(type_name)
-    }
-
-    pub fn data_source(&self, type_name: &str) -> Option<&CtyType> {
-        self.data_sources.get(type_name)
-    }
-
-    /// The provider's CURRENT schema version for `type_name`. `0` both for
-    /// a genuinely version-0 schema AND for a type the provider never
-    /// declared — matching Terraform's own convention that an
-    /// un-versioned schema is version 0, so an unknown type never looks
-    /// artificially "newer" than a stored instance and never triggers a
-    /// spurious upgrade.
-    #[must_use]
-    pub fn resource_version(&self, type_name: &str) -> i64 {
-        self.resource_versions.get(type_name).copied().unwrap_or(0)
-    }
-
-    /// [`Self::resource_version`] clamped into `magma_types::StateInstance`'s
-    /// `u64` `schema_version` field. Real provider schema versions are
-    /// always small non-negative integers in practice; this only differs
-    /// from the wire `i64` for a malformed negative version (never
-    /// observed from a real provider), which clamps to `0` rather than
-    /// wrapping to a huge `u64`.
-    #[must_use]
-    pub fn resource_version_u64(&self, type_name: &str) -> u64 {
-        u64::try_from(self.resource_version(type_name)).unwrap_or(0)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Diag {
-    pub severity: Severity,
-    pub summary: String,
-    pub detail: String,
-}
-
-/// The provider's full response to `PlanResourceChange`: the normalized
-/// planned state PLUS the attribute paths the provider says force a
-/// destroy+create instead of an in-place update ("requires replace").
+/// ── THE PROTOCOL DATA MODEL MOVED TO `magma-provider-api` ────────────
+/// `ProviderSchema`, `PlannedChange`, `Diag`, `Severity`, `ProviderError`
+/// and `is_retryable` were defined here. They describe what a provider
+/// SAYS, not how it is reached, so they now live in the contract crate —
+/// which depends on `magma-cty` alone, so a native provider can implement
+/// the contract without dragging in tonic.
 ///
-/// Terraform core reads this exact signal — computed by the provider
-/// inside this SAME RPC — to decide Update vs Replace; it is not
-/// something the schema or config can determine on their own (a
-/// provider's `ForceNew` decision can be dynamic, e.g. via
-/// `CustomizeDiff`). Prior to this type existing, [`ProviderConn::plan_resource_change`]
-/// returned only the bare planned [`DynamicValue`], silently discarding
-/// `requires_replace` — the ONE authoritative signal a provider gives
-/// for immutable/ForceNew attributes — before it ever reached
-/// magma-apply's business logic.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlannedChange {
-    pub state: DynamicValue,
-    /// Provider-reported attribute paths requiring replace, rendered as
-    /// dotted diagnostic strings (`"instance_types"`, `"tags.name"`,
-    /// `"rules[2].port"`). Empty ⇒ the provider says an in-place update
-    /// is sufficient. Diagnostic-only shape: callers only need to know
-    /// whether this is non-empty to trigger destroy+create orchestration
-    /// (see `magma-apply::engine::apply_one`); the strings make
-    /// `requires_replace` legible in logs/errors without threading a
-    /// full typed attribute-path AST through every consumer.
-    pub requires_replace: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Severity {
-    Error,
-    Warning,
-    Unknown,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ProviderError {
-    #[error("provider RPC transport: {0}")]
-    Transport(String),
-    #[error("provider returned {} error diagnostic(s): {}", .0.len(), fmt_diags(.0))]
-    Diagnostics(Vec<Diag>),
-    #[error("provider returned no new_state from apply")]
-    NoNewState,
-    /// The provider returned an error diagnostic AND a `new_state` — the
-    /// resource IS (at least partially) committed provider-side.
-    ///
-    /// This is not a rare edge: it is how the tfplugin contract expresses a
-    /// partial apply, and how Terraform core knows to persist a
-    /// half-created resource. AWS EIP is the canonical shape —
-    /// `AllocateAddress` commits, a follow-up call (tagging, association, the
-    /// post-create read) fails, and the provider returns the allocation id
-    /// together with an error.
-    ///
-    /// Before this variant existed, `check_diags(...)?` ran BEFORE
-    /// `new_state` was read, so that state was thrown away and the caller
-    /// recorded nothing. The next reconcile re-planned a CREATE and allocated
-    /// a SECOND resource. Measured 2026-08-01: two orphaned EIPs
-    /// (3.151.179.36, 18.227.192.150), each billable, neither in state, while
-    /// the run reported `created: 0`.
-    ///
-    /// Carrying the state in the ERROR — rather than returning `Ok` — keeps
-    /// the apply correctly failed while making the committed resource
-    /// impossible to drop on the floor: a caller must destructure this
-    /// variant to handle the error at all.
-    #[error("provider returned {} error diagnostic(s) WITH a new_state (partial apply — resource is committed): {}", .diags.len(), fmt_diags(.diags))]
-    PartiallyApplied {
-        diags: Vec<Diag>,
-        state: Box<DynamicValue>,
-    },
-    #[error("schema: {0}")]
-    Schema(#[from] SchemaError),
-}
-
-/// Is this provider error worth retrying with backoff? True for transient
-/// conditions — chiefly provider-side RATE LIMITING (github/cloud secondary
-/// rate limits surface as error diagnostics or transport errors) and
-/// transient transport faults. The tfplugin Diagnostic carries no status
-/// code, so detection is text-pattern matching on the diagnostic + transport
-/// strings. Permanent errors (bad config, schema, auth-denied) return false
-/// so they fail fast instead of looping.
-#[must_use]
-pub fn is_retryable(e: &ProviderError) -> bool {
-    const TRANSIENT: &[&str] = &[
-        "rate limit",
-        "secondary rate",
-        "too many request",
-        "abuse",
-        "quota",
-        "try again",
-        "retry",
-        "429",
-        "503",
-        "resource_exhausted",
-        "unavailable",
-        "timeout",
-        "timed out",
-        "connection reset",
-        "broken pipe",
-        "tls",
-        "transport",
-        "h2 protocol",
-        "eof",
-    ];
-    let hit = |s: &str| {
-        let l = s.to_ascii_lowercase();
-        TRANSIENT.iter().any(|p| l.contains(p))
-    };
-    match e {
-        ProviderError::Transport(s) => hit(s),
-        ProviderError::Diagnostics(diags) => {
-            diags.iter().any(|d| hit(&d.summary) || hit(&d.detail))
-        }
-        // NEVER retryable, whatever the diagnostic text says. The resource is
-        // already committed provider-side; re-issuing a create without an
-        // idempotency key allocates a SECOND one. Retrying a partial apply is
-        // strictly worse than failing it.
-        ProviderError::PartiallyApplied { .. } => false,
-        ProviderError::NoNewState | ProviderError::Schema(_) => false,
-    }
-}
-
-fn fmt_diags(diags: &[Diag]) -> String {
-    diags
-        .iter()
-        .map(|d| format!("{}: {}", d.summary, d.detail))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
+/// The edge had to point this way: `magma-provider-api` declares the
+/// `Provider` trait, and THIS crate implements it, so the types could not
+/// stay in the crate the trait crate would have had to depend on.
+///
+/// Re-exported unchanged, so every `magma_plugin::provider::<T>` path
+/// still resolves. Relocation, not redesign.
+pub use magma_provider_api::{
+    Diag, PlannedChange, Provider, ProviderError, ProviderSchema, Severity, is_retryable,
+};
 
 impl ProviderConn {
     /// Wrap a dialed channel, selecting the client by the handshake's
@@ -1076,5 +902,90 @@ mod tests {
         };
         assert!(no_replace.requires_replace.is_empty());
         assert!(!must_replace.requires_replace.is_empty());
+    }
+}
+
+/// The gRPC/tfplugin implementation of the provider contract.
+///
+/// Pure delegation to the inherent methods above — this adds no
+/// behaviour, it only makes the EXISTING transport one implementation of
+/// a contract rather than the only thing an engine can hold.
+///
+/// ── ★ WHY EVERY BODY IS FULLY QUALIFIED ──────────────────────────────
+/// `ProviderConn::get_schema(self)`, not `self.get_schema()`. Both
+/// resolve to the inherent method — inherent wins over trait — so the
+/// short form compiles and works today. But it is one refactor away from
+/// disaster: delete or rename the inherent method and `self.get_schema()`
+/// silently rebinds to the TRAIT method, which is this function, and the
+/// result is unbounded recursion at runtime rather than an error at
+/// compile time. The qualified form cannot rebind: if the inherent method
+/// stops existing, this stops compiling.
+#[async_trait::async_trait]
+impl Provider for ProviderConn {
+    async fn get_schema(&mut self) -> Result<ProviderSchema, ProviderError> {
+        ProviderConn::get_schema(self).await
+    }
+
+    async fn configure(
+        &mut self,
+        config: &DynamicValue,
+        terraform_version: &str,
+    ) -> Result<(), ProviderError> {
+        ProviderConn::configure(self, config, terraform_version).await
+    }
+
+    async fn plan_resource_change(
+        &mut self,
+        type_name: &str,
+        prior_state: &DynamicValue,
+        proposed_new_state: &DynamicValue,
+        config: &DynamicValue,
+    ) -> Result<PlannedChange, ProviderError> {
+        ProviderConn::plan_resource_change(self, type_name, prior_state, proposed_new_state, config)
+            .await
+    }
+
+    async fn apply_resource_change(
+        &mut self,
+        type_name: &str,
+        prior_state: &DynamicValue,
+        planned_state: &DynamicValue,
+        config: &DynamicValue,
+    ) -> Result<DynamicValue, ProviderError> {
+        ProviderConn::apply_resource_change(self, type_name, prior_state, planned_state, config)
+            .await
+    }
+
+    async fn read_resource(
+        &mut self,
+        type_name: &str,
+        current_state: &DynamicValue,
+    ) -> Result<Option<DynamicValue>, ProviderError> {
+        ProviderConn::read_resource(self, type_name, current_state).await
+    }
+
+    async fn read_data_source(
+        &mut self,
+        type_name: &str,
+        config: &DynamicValue,
+    ) -> Result<Option<DynamicValue>, ProviderError> {
+        ProviderConn::read_data_source(self, type_name, config).await
+    }
+
+    async fn import_resource_state(
+        &mut self,
+        type_name: &str,
+        id: &str,
+    ) -> Result<Option<DynamicValue>, ProviderError> {
+        ProviderConn::import_resource_state(self, type_name, id).await
+    }
+
+    async fn upgrade_resource_state(
+        &mut self,
+        type_name: &str,
+        stored_version: i64,
+        raw_json: &[u8],
+    ) -> Result<DynamicValue, ProviderError> {
+        ProviderConn::upgrade_resource_state(self, type_name, stored_version, raw_json).await
     }
 }

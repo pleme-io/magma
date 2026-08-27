@@ -17,17 +17,9 @@ use std::collections::BTreeMap;
 use magma_cty::CtyType;
 use magma_protocol::tfplugin6::schema::{self, Attribute, Block, NestedBlock, Object};
 
-#[derive(Debug, thiserror::Error)]
-pub enum SchemaError {
-    #[error("attribute {0:?} has neither a type nor a nested_type")]
-    AttributeNoType(String),
-    #[error("cty type decode for {0:?}: {1}")]
-    Cty(String, magma_cty::CtyError),
-    #[error("invalid nesting mode {0} for {1:?}")]
-    BadNesting(i32, String),
-    #[error("nested block {0:?} has no inner block")]
-    EmptyNestedBlock(String),
-}
+/// Moved to `magma-provider-api` — see that crate's header. Re-exported
+/// so `magma_plugin::schema::SchemaError` still resolves.
+pub use magma_provider_api::SchemaError;
 
 /// The implied cty object type of a resource / provider / data-source
 /// `Block` — attributes plus nested blocks, in a single object type.

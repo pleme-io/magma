@@ -16,6 +16,7 @@ workspace = true
 magma-types    = { workspace = true }
 magma-protocol = { workspace = true }
 magma-cty      = { workspace = true }
+magma-provider-api = { workspace = true }
 serde_json     = { workspace = true }
 tonic          = { workspace = true }
 tokio          = { workspace = true }

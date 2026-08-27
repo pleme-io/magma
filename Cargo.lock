@@ -1966,6 +1966,7 @@ dependencies = [
  "hyper-util",
  "magma-cty",
  "magma-protocol",
+ "magma-provider-api",
  "magma-types 0.1.28",
  "rcgen",
  "rustls",
@@ -1992,6 +1993,17 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "magma-provider-api"
+version = "0.1.28"
+dependencies = [
+ "async-trait",
+ "magma-cty",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "33de4f020871a1fe2d0ea8a64f33e12819935abb6e282fd7facafa6c8fa38284",
+  "cargo_lock_sha256": "3877bb893c957a55faad134cb0bc994ab910b8411e655ada11037fbf494f47a3",
   "manifest_sha256": {
-    "Cargo.toml": "d529d9e8047f2ec318ad2845802576da03079f910a2c8d4d90449243b2e6b2a0",
+    "Cargo.toml": "75a3832d4dbc686bc639d2c808ad483586fcd59eaf60d7c7eb1504d94e71c7c2",
     "magma-apply/Cargo.toml": "9565c0f59a4499b4620c11ec1e8f3cc90629fe6f626e14256b529ce3742c5311",
     "magma-arch-test/Cargo.toml": "9c75271183cdc70bb256ae0265490500f1753b18b87caa9bcd76afeffaa58cc5",
     "magma-attest/Cargo.toml": "e77f0414566d26f73556049e4b3d4b7cfc449e73eac3ded69d7f935b06cf6433",
@@ -27,8 +27,9 @@
     "magma-operator-backend/Cargo.toml": "118b77d28025e824cbe69df3abccff0c9251abb604526b7ad883a937bbb08418",
     "magma-pangea/Cargo.toml": "7a20dc74593a7d6978df22613f7c73f44ce93de61a59be257876144b3d3b4724",
     "magma-plan/Cargo.toml": "8d9200a4ffe02b9455646c5f43c20a18d3cb2eb58c6a7dc700ae2f6794772ce0",
-    "magma-plugin/Cargo.toml": "200202a5f8bb0f30ddec14634f47d0597d32756386388882258c71844aacff4e",
+    "magma-plugin/Cargo.toml": "491ca5358ced20ea4d3ac353a7c67c7de29a456d0a2bc39aa87591d74de16d42",
     "magma-protocol/Cargo.toml": "0330f604d2038f7f84830ca6aad5af27bb49b35db0eb34252d17f5972d3a65f8",
+    "magma-provider-api/Cargo.toml": "ad1450cc8f5737e3477140058893fdf9180c72be07ce6496f79fd95e245ca891",
     "magma-provider-registry/Cargo.toml": "e7c2dd7120b69ddb12757908b2cf46c2dd67dbc18dcd2391a6af43a8c5079c62",
     "magma-providers/Cargo.toml": "60151e9c546439b89cd9e986eb7c177ba5c77a53eeb9412dc647421de6d5fa9d",
     "magma-replay/Cargo.toml": "7ef002e473a4b97a2bfaa15ad23ad022b381c50c054905ae9571d50589b7899f",
@@ -5815,6 +5816,16 @@
             "tree": "target"
           },
           {
+            "name": "magma_provider_api",
+            "package_key": "magma-provider-api-0.1.28",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "magma_types",
             "package_key": "magma-types-0.1.28",
             "kind": "normal",
@@ -6047,6 +6058,42 @@
             "tree": "host"
           }
         ],
+        "features": []
+      },
+      "magma-provider-api-0.1.28": {
+        "runtime_dependencies": [
+          {
+            "name": "async_trait",
+            "package_key": "async-trait-0.1.89",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "magma_cty",
+            "package_key": "magma-cty-0.1.28",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
         "features": []
       },
       "magma-provider-registry-0.1.28": {
@@ -15789,6 +15836,13 @@
       "build_script": "build.rs",
       "lib_target": {
         "name": "magma_protocol",
+        "path": "src/lib.rs"
+      }
+    },
+    "magma-provider-api-0.1.28": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "magma_provider_api",
         "path": "src/lib.rs"
       }
     },

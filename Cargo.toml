@@ -41,6 +41,7 @@ members = [
     "magma-tfmod",
     "magma-repo",
     "magma-provider-registry",
+    "magma-provider-api",
 ]
 
 [workspace.package]
@@ -108,6 +109,7 @@ magma-nix       = { path = "magma-nix", version = "0.1.28" }
 magma-tfmod     = { path = "magma-tfmod", version = "0.1.28" }
 magma-repo      = { path = "magma-repo", version = "0.1.28" }
 magma-provider-registry = { path = "magma-provider-registry", version = "0.1.28" }
+magma-provider-api      = { path = "magma-provider-api", version = "0.1.28" }
 
 # ── Pleme-io primitives — crates.io, NOT git ──
 # A bare git dep makes this workspace structurally unpublishable: cargo
