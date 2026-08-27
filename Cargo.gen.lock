@@ -29,7 +29,7 @@
     "magma-plan/Cargo.toml": "8d9200a4ffe02b9455646c5f43c20a18d3cb2eb58c6a7dc700ae2f6794772ce0",
     "magma-plugin/Cargo.toml": "200202a5f8bb0f30ddec14634f47d0597d32756386388882258c71844aacff4e",
     "magma-protocol/Cargo.toml": "0330f604d2038f7f84830ca6aad5af27bb49b35db0eb34252d17f5972d3a65f8",
-    "magma-provider-registry/Cargo.toml": "9aa906e0905beddf27ad43057ba28df5fbd5cb052c1b514aa984518ca0e07ad7",
+    "magma-provider-registry/Cargo.toml": "e7c2dd7120b69ddb12757908b2cf46c2dd67dbc18dcd2391a6af43a8c5079c62",
     "magma-providers/Cargo.toml": "60151e9c546439b89cd9e986eb7c177ba5c77a53eeb9412dc647421de6d5fa9d",
     "magma-replay/Cargo.toml": "7ef002e473a4b97a2bfaa15ad23ad022b381c50c054905ae9571d50589b7899f",
     "magma-repo/Cargo.toml": "771fada32122c27b193d6a2000bdf4c499772e579fc1b81b2725cba3db38d4b9",
