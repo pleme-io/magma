@@ -153,11 +153,25 @@ pub fn schema() -> ProviderSchema {
 
     let mut resource_versions = BTreeMap::new();
     for k in resources.keys() {
-        // Upstream random_password/random_string are schema version 1
-        // (the 3.3 bcrypt migration); the rest are 0. Declaring the
-        // version upstream declares is what keeps the engine from
-        // demanding an UpgradeResourceState that never needed to happen.
-        let v = i64::from(k == "random_password" || k == "random_string");
+        // ── ★ MEASURED FROM THE REAL BINARY, NOT READ OFF A CHANGELOG ──
+        // These were first written as 1/1/0, reasoned from upstream's 3.3
+        // bcrypt migration. The schema oracle
+        // (tests/schema_oracle.rs, against terraform-provider-random
+        // 3.7.2) says otherwise: random_password is 3 and random_string
+        // is 2.
+        //
+        // The number is load-bearing, which is why guessing it was a bug.
+        // The engine compares a stored instance's schema_version against
+        // the provider's CURRENT version to decide whether to run
+        // UpgradeResourceState. Declaring 1 while real state carries 3
+        // makes the stored version look NEWER than the provider — a
+        // downgrade, not an upgrade — and nothing in the plan or apply
+        // would have said so.
+        let v: i64 = match k.as_str() {
+            "random_password" => 3,
+            "random_string" => 2,
+            _ => 0,
+        };
         resource_versions.insert(k.clone(), v);
     }
 

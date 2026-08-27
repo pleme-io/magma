@@ -2015,6 +2015,7 @@ dependencies = [
  "hex",
  "magma-apply",
  "magma-cty",
+ "magma-plugin",
  "magma-provider-api",
  "magma-types 0.1.30",
  "rand 0.8.6",

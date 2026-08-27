@@ -26,3 +26,4 @@ tokio       = { workspace = true }
 tempfile    = { workspace = true }
 magma-apply = { workspace = true }
 magma-types = { workspace = true }
+magma-plugin = { workspace = true }

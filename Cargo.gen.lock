@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "b51f4828978f62a86512b281226e2802d146dec936f66bf3f8b6a4c34bee71ab",
+  "cargo_lock_sha256": "80744cfcbb46760317e0b9818fc6dbe370a7e656b27bbdd889ae03f5a15f25ac",
   "manifest_sha256": {
     "Cargo.toml": "fd81644d57a45f113d5b759c6650a3c18ced30af5cccec2360b48bdc1a5cf286",
     "magma-apply/Cargo.toml": "9565c0f59a4499b4620c11ec1e8f3cc90629fe6f626e14256b529ce3742c5311",
@@ -30,7 +30,7 @@
     "magma-plugin/Cargo.toml": "491ca5358ced20ea4d3ac353a7c67c7de29a456d0a2bc39aa87591d74de16d42",
     "magma-protocol/Cargo.toml": "0330f604d2038f7f84830ca6aad5af27bb49b35db0eb34252d17f5972d3a65f8",
     "magma-provider-api/Cargo.toml": "ad1450cc8f5737e3477140058893fdf9180c72be07ce6496f79fd95e245ca891",
-    "magma-provider-random/Cargo.toml": "04c98ef1d89ee7eb5e4673a09efe52411eee45a63ccaca24c328f1cf829c3374",
+    "magma-provider-random/Cargo.toml": "2bcf90e8eec97630a6b3e7b1e671d2677c76c7ce686db180c2c1bf944ffa3ef5",
     "magma-provider-registry/Cargo.toml": "e7c2dd7120b69ddb12757908b2cf46c2dd67dbc18dcd2391a6af43a8c5079c62",
     "magma-providers/Cargo.toml": "60151e9c546439b89cd9e986eb7c177ba5c77a53eeb9412dc647421de6d5fa9d",
     "magma-replay/Cargo.toml": "7ef002e473a4b97a2bfaa15ad23ad022b381c50c054905ae9571d50589b7899f",
