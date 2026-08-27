@@ -34,6 +34,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod mirror;
+
 mod dir;
 pub use dir::DirRegistry;
 
@@ -237,4 +239,33 @@ where
 #[must_use]
 pub fn blake3_hex(bytes: &[u8]) -> String {
     hex::encode(blake3::hash(bytes).as_bytes())
+}
+
+/// What a seed run did. The DENOMINATOR travels with the result.
+///
+/// `scanned` is here because "inserted 0" has two very different causes —
+/// the registry was already complete, or the mirror was empty and nothing
+/// was ever going to be inserted. A caller that only sees `inserted`
+/// cannot tell a healthy no-op from a broken deployment, which is the same
+/// shape as an empty resolve rendering a successful plan of nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeedReport {
+    /// Provider binaries found in the mirror.
+    pub scanned: usize,
+    /// Rows newly written.
+    pub inserted: usize,
+    /// Rows already present at the same coordinate — re-seeding is free.
+    pub already_present: usize,
+}
+
+impl SeedReport {
+    /// Did the mirror contain anything at all?
+    ///
+    /// Deliberately not an error inside the seeder: a magma with no bake is
+    /// a legitimate configuration once the DB is the source of truth. It is
+    /// a question the CALLER has to answer, so it is exposed as one.
+    #[must_use]
+    pub const fn mirror_was_empty(&self) -> bool {
+        self.scanned == 0
+    }
 }

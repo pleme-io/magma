@@ -141,6 +141,65 @@ impl PgRegistry {
         Ok(())
     }
 
+    /// Seed the registry from a Nix-baked mirror — the bake's demotion from
+    /// mechanism to seed (spec §II, §VI).
+    ///
+    /// Idempotent by construction: the key is a content coordinate, and a
+    /// row already at that coordinate is left alone (`ON CONFLICT DO
+    /// NOTHING`). Re-seeding on every boot is therefore free, which is what
+    /// makes it safe to call unconditionally rather than gating it on a
+    /// "have we seeded?" flag that could itself be wrong.
+    ///
+    /// Reads coordinates from the PATH — see [`crate::mirror`] — so adding a
+    /// provider to the image is a one-line flake edit with no manifest to
+    /// keep in sync.
+    ///
+    /// # Errors
+    /// [`RegistryError::Backend`] if the schema cannot be ensured or a row
+    /// cannot be written; [`RegistryError::Io`] if a binary cannot be read.
+    pub async fn seed_from_mirror(
+        &self,
+        root: &std::path::Path,
+    ) -> Result<crate::SeedReport, RegistryError> {
+        self.ensure_ready().await?;
+
+        let entries = crate::mirror::scan(root);
+        let mut report = crate::SeedReport {
+            scanned: entries.len(),
+            ..Default::default()
+        };
+
+        for e in entries {
+            let bytes = std::fs::read(&e.path)?;
+            let hash = crate::blake3_hex(&bytes);
+            // The hash is computed HERE from the bytes being stored, so the
+            // row is self-consistent by construction — `resolve` re-verifies
+            // on the way out, and the two can only disagree if the row was
+            // changed by something other than this path.
+            let done = sqlx::query(&format!(
+                "INSERT INTO {PROVIDERS_TABLE}
+                     (source, version, platform, content_hash, binary)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (source, version, platform) DO NOTHING"
+            ))
+            .bind(&e.source)
+            .bind(&e.version)
+            .bind(&e.platform)
+            .bind(&hash)
+            .bind(&bytes)
+            .execute(&self.pool)
+            .await?;
+
+            if done.rows_affected() == 0 {
+                report.already_present += 1;
+            } else {
+                report.inserted += 1;
+            }
+        }
+
+        Ok(report)
+    }
+
     /// Ensure once, then get out of the way.
     ///
     /// Lazy rather than constructor-time because `new` is sync and infallible
