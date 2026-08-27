@@ -22,7 +22,7 @@ use chrono::Utc;
 use magma_config::resolve_reference;
 use magma_cty::{CtyType, DynamicValue};
 use magma_graph::ResourceGraph;
-use magma_plugin::provider::{ProviderConn, ProviderError, ProviderSchema, is_retryable};
+use magma_plugin::provider::{Provider, ProviderConn, ProviderError, ProviderSchema, is_retryable};
 use magma_plugin::{Plugin, PluginSpec, ProviderCrash};
 use magma_types::{
     Action, Plan, ProviderInstance, ResourceAddress, ResourceChange, ResourceKind, State,
@@ -214,8 +214,8 @@ fn rpc_error(
 /// Read the crash summary + h2 close reason off a [`LiveProvider`]'s
 /// plugin handle. Both are best-effort enrichment; either may be `None`.
 fn provider_failure_signals(lp: &LiveProvider) -> (Option<ProviderCrash>, Option<String>) {
-    let crash = lp._plugin.crash_summary();
-    let close = lp._plugin.channel().and_then(|c| c.close_reason());
+    let crash = lp.transport.crash_summary();
+    let close = lp.transport.close_reason();
     (crash, close)
 }
 
@@ -239,6 +239,15 @@ pub struct ApplyContext {
     /// a bulk apply (e.g. 50 GitHub creates) can't burst past the provider's
     /// secondary rate limit. `None` = unpaced. NoOps never acquire.
     pub pacer: Option<Arc<LeakyBucket>>,
+    /// How providers are brought up. Defaults to [`GrpcProviderFactory`],
+    /// so every existing caller keeps today's behaviour byte-for-byte.
+    ///
+    /// `Arc<dyn _>` rather than a generic parameter deliberately:
+    /// `ApplyContext` is constructed in a dozen places across three repos
+    /// and threaded through most of this module, so a type parameter
+    /// would propagate into every one of those signatures to buy static
+    /// dispatch on a call that spawns a process.
+    pub provider_factory: Arc<dyn ProviderFactory>,
 }
 
 /// Default mutation pace: 1 request/second — GitHub's documented minimum
@@ -324,7 +333,19 @@ impl ApplyContext {
             terraform_version: "1.9.0".to_string(),
             provider_configs: BTreeMap::new(),
             pacer: build_pacer(DEFAULT_PACE_RPH),
+            provider_factory: Arc::new(GrpcProviderFactory),
         }
+    }
+
+    /// Supply a different way of bringing providers up — a native Rust
+    /// provider, or a test double.
+    ///
+    /// The point of the whole seam: the engine stops deciding what a
+    /// provider IS, and starts being told.
+    #[must_use]
+    pub fn with_provider_factory(mut self, factory: Arc<dyn ProviderFactory>) -> Self {
+        self.provider_factory = factory;
+        self
     }
 
     /// Configure the DEFAULT instance of a provider by its bare local
@@ -444,9 +465,61 @@ impl ApplyContext {
 /// [`dial_configured_provider`] without duplicating the spawn →
 /// handshake → dial → schema → configure lifecycle [`Registry::spawn`]
 /// used to own exclusively.
+/// Whatever keeps a provider RUNNING, plus the failure signals only the
+/// transport can see.
+///
+/// ── ★ THIS TRAIT OWNS A LIFETIME, NOT JUST DIAGNOSTICS ───────────────
+/// The field this replaces was called `_plugin`, and the underscore made
+/// it look like an unused handle being parked to silence a warning. It
+/// was not: dropping a `Plugin` KILLS the provider subprocess. Its job
+/// was ownership first and diagnostics second, and the name said neither.
+///
+/// So an implementation must hold whatever must outlive the calls —
+/// subprocess, channel, connection pool — for as long as the
+/// `LiveProvider` does. An implementation that reports signals but owns
+/// nothing is only correct when there is genuinely nothing to own, which
+/// is exactly the in-process case below.
+///
+/// Both signals default to `None` because both are *enrichment*: they
+/// turn an opaque "channel closed" into a named cause. A provider that
+/// cannot crash independently of the operator has no such cause to
+/// report, and `None` is the honest answer rather than a fabricated one.
+pub trait ProviderTransport: Send {
+    /// A crash/panic summary if the provider died on its own.
+    fn crash_summary(&self) -> Option<ProviderCrash> {
+        None
+    }
+    /// Why the transport closed, if it closed.
+    fn close_reason(&self) -> Option<String> {
+        None
+    }
+}
+
+/// The go-plugin subprocess transport — owns the child process.
+impl ProviderTransport for Plugin {
+    fn crash_summary(&self) -> Option<ProviderCrash> {
+        Plugin::crash_summary(self)
+    }
+    fn close_reason(&self) -> Option<String> {
+        self.channel()
+            .and_then(magma_plugin::H2Channel::close_reason)
+    }
+}
+
+/// A provider running INSIDE this process: no subprocess to outlive the
+/// calls, no channel to close, and therefore nothing to own.
+///
+/// It cannot crash independently — a panic here takes the operator with
+/// it — so both signals are genuinely absent rather than merely
+/// unavailable.
+pub struct InProcessTransport;
+
+impl ProviderTransport for InProcessTransport {}
+
 pub struct LiveProvider {
-    pub(crate) _plugin: Plugin,
-    pub(crate) conn: ProviderConn,
+    /// Owns the provider's lifetime. See [`ProviderTransport`].
+    pub(crate) transport: Box<dyn ProviderTransport>,
+    pub(crate) conn: Box<dyn Provider>,
     pub(crate) schema: ProviderSchema,
 }
 
@@ -471,20 +544,64 @@ pub struct LiveProvider {
 /// apply engine's own `Registry`, and the import prepass's
 /// `ConfiguredImportEnvironment` — shares this ONE lifecycle instead of
 /// each re-implementing spawn/handshake/dial/configure.
-pub async fn dial_configured_provider(
-    ctx: &ApplyContext,
-    instance: &ProviderInstance,
-) -> Result<LiveProvider, EngineError> {
-    // Resolve the `Configure` payload FIRST, before spawning anything.
-    // It is a pure lookup, and doing it up front means an unconfigured
-    // alias reports the real problem instead of whatever the spawn
-    // happens to fail on — and is checkable without a provider binary.
-    let config_json = resolve_provider_config(ctx, instance)?;
+/// Everything a factory needs to bring up ONE provider instance.
+///
+/// Deliberately NOT `&ApplyContext`: the context owns the factory, so
+/// passing it back in would make the two mutually recursive and would
+/// hand every implementation the whole world when it needs four values.
+/// A borrowed request also means a test factory can be driven without
+/// constructing a context at all.
+pub struct DialRequest<'a> {
+    pub workspace_dir: &'a std::path::Path,
+    pub terraform_version: &'a str,
+    pub instance: &'a ProviderInstance,
+    /// The already-resolved `Configure` payload.
+    pub config_json: &'a serde_json::Value,
+}
+
+/// How a provider is brought up — THE injection point.
+///
+/// ── ★ WHY THIS EXISTS ────────────────────────────────────────────────
+/// Until now the engine spawned a Go subprocess directly, so "which kind
+/// of provider is this?" had exactly one answer and no place to ask the
+/// question. A factory makes the transport a CHOICE the caller supplies:
+/// the gRPC one below is the default and preserves today's behaviour
+/// exactly, a native Rust provider is another, and a test double is a
+/// third.
+#[async_trait::async_trait]
+pub trait ProviderFactory: Send + Sync {
+    async fn dial(&self, req: DialRequest<'_>) -> Result<LiveProvider, EngineError>;
+}
+
+/// The go-plugin/tfplugin factory: locate the binary, spawn it,
+/// negotiate the handshake, dial, fetch schema, configure.
+///
+/// This is the code that used to be `dial_configured_provider`'s body,
+/// moved wholesale rather than rewritten — so the default path is the
+/// same path, not a re-implementation of it.
+pub struct GrpcProviderFactory;
+
+#[async_trait::async_trait]
+impl ProviderFactory for GrpcProviderFactory {
+    async fn dial(&self, req: DialRequest<'_>) -> Result<LiveProvider, EngineError> {
+        grpc_dial(req).await
+    }
+}
+
+/// Spawn + fully configure a provider by its local name, over go-plugin.
+async fn grpc_dial(req: DialRequest<'_>) -> Result<LiveProvider, EngineError> {
+    let DialRequest {
+        workspace_dir,
+        terraform_version,
+        instance,
+        config_json,
+    } = req;
+    let config_json = config_json.clone();
     // The BINARY is selected by the bare local name: every instance of a
     // provider is served by the same plugin. What differs per instance is
     // the `Configure` payload — which is exactly what an alias is.
     let name = instance.name();
-    let binary = magma_providers::locate_provider(&ctx.workspace_dir, name)
+    let binary = magma_providers::locate_provider(workspace_dir, name)
         .map_err(|e| EngineError::Locate(name.into(), e.to_string()))?;
     let mut plugin = Plugin::spawn(PluginSpec {
         binary,
@@ -528,15 +645,41 @@ pub async fn dial_configured_provider(
 
     let config_dv = DynamicValue::from_json(&config_json, &schema.provider_config)
         .map_err(|e| EngineError::Cty(e.to_string()))?;
-    conn.configure(&config_dv, &ctx.terraform_version)
+    conn.configure(&config_dv, terraform_version)
         .await
         .map_err(|e| spawn_err("configure", e.to_string()))?;
 
     Ok(LiveProvider {
-        _plugin: plugin,
-        conn,
+        // The Plugin moves in HERE, and that is what keeps the subprocess
+        // alive for the life of the LiveProvider — see ProviderTransport.
+        transport: Box::new(plugin),
+        conn: Box::new(conn),
         schema,
     })
+}
+
+/// Spawn + fully configure a provider instance, through whichever
+/// factory `ctx` carries.
+///
+/// The signature and the meaning are unchanged; only the decision of WHAT
+/// to bring up moved behind [`ApplyContext::provider_factory`]. Resolving
+/// the `Configure` payload stays here, above the factory, because it is a
+/// pure lookup that is checkable without a provider binary — so an
+/// unconfigured alias still reports the real problem instead of whatever
+/// the spawn happens to fail on.
+pub async fn dial_configured_provider(
+    ctx: &ApplyContext,
+    instance: &ProviderInstance,
+) -> Result<LiveProvider, EngineError> {
+    let config_json = resolve_provider_config(ctx, instance)?;
+    ctx.provider_factory
+        .dial(DialRequest {
+            workspace_dir: &ctx.workspace_dir,
+            terraform_version: &ctx.terraform_version,
+            instance,
+            config_json: &config_json,
+        })
+        .await
 }
 
 /// The `ConfigureProvider` payload for one provider instance.
@@ -6383,6 +6526,170 @@ mod tests {
             out.stats().pacer_wait_ms_total,
             0,
             "no pacer configured must mean no pacer wait"
+        );
+    }
+}
+
+/// Proof that the provider seam is LOAD-BEARING rather than decorative.
+#[cfg(test)]
+mod provider_factory_tests {
+    use super::*;
+    use magma_cty::CtyType;
+
+    /// A provider with no subprocess, no channel, and no Go.
+    struct StubProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for StubProvider {
+        async fn get_schema(&mut self) -> Result<ProviderSchema, ProviderError> {
+            Ok(ProviderSchema {
+                provider_config: CtyType::Object(BTreeMap::new()),
+                resources: BTreeMap::new(),
+                data_sources: BTreeMap::new(),
+                resource_versions: BTreeMap::new(),
+            })
+        }
+        async fn configure(&mut self, _: &DynamicValue, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        async fn plan_resource_change(
+            &mut self,
+            _: &str,
+            _: &DynamicValue,
+            _: &DynamicValue,
+            _: &DynamicValue,
+        ) -> Result<magma_plugin::provider::PlannedChange, ProviderError> {
+            Err(ProviderError::NoNewState)
+        }
+        async fn apply_resource_change(
+            &mut self,
+            _: &str,
+            _: &DynamicValue,
+            _: &DynamicValue,
+            _: &DynamicValue,
+        ) -> Result<DynamicValue, ProviderError> {
+            Err(ProviderError::NoNewState)
+        }
+        async fn read_resource(
+            &mut self,
+            _: &str,
+            _: &DynamicValue,
+        ) -> Result<Option<DynamicValue>, ProviderError> {
+            Ok(None)
+        }
+        async fn read_data_source(
+            &mut self,
+            _: &str,
+            _: &DynamicValue,
+        ) -> Result<Option<DynamicValue>, ProviderError> {
+            Ok(None)
+        }
+        async fn import_resource_state(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<DynamicValue>, ProviderError> {
+            Ok(None)
+        }
+        async fn upgrade_resource_state(
+            &mut self,
+            _: &str,
+            _: i64,
+            _: &[u8],
+        ) -> Result<DynamicValue, ProviderError> {
+            Err(ProviderError::NoNewState)
+        }
+    }
+
+    struct StubFactory;
+
+    #[async_trait::async_trait]
+    impl ProviderFactory for StubFactory {
+        async fn dial(&self, _req: DialRequest<'_>) -> Result<LiveProvider, EngineError> {
+            Ok(LiveProvider {
+                transport: Box::new(InProcessTransport),
+                conn: Box::new(StubProvider),
+                schema: ProviderSchema {
+                    provider_config: CtyType::Object(BTreeMap::new()),
+                    resources: BTreeMap::new(),
+                    data_sources: BTreeMap::new(),
+                    resource_versions: BTreeMap::new(),
+                },
+            })
+        }
+    }
+
+    fn aws() -> ProviderInstance {
+        ProviderInstance::default_instance("aws").expect("valid name")
+    }
+
+    /// ★ THE ANTI-VACUITY HALF, and it runs FIRST.
+    ///
+    /// The test below claims an injected factory brings a provider up in a
+    /// workspace that has no provider binary. That claim is worthless
+    /// unless the workspace really has none — otherwise the stub could be
+    /// doing nothing and the default path could be quietly succeeding.
+    ///
+    /// So: assert the DEFAULT factory FAILS here, and fails for the stated
+    /// reason. This is also a live guard on the error text pangea-operator
+    /// classifies by substring (`anomaly.rs`'s ProviderUnavailable): reword
+    /// `ProviderLocateError` and this test says so.
+    #[tokio::test]
+    async fn the_default_factory_cannot_dial_without_a_binary() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let ctx = ApplyContext::new(td.path().to_path_buf());
+        // `expect_err` would demand `LiveProvider: Debug`, and it holds
+        // trait objects — matching says the same thing without forcing a
+        // derive onto the type just to satisfy a test.
+        let msg = match dial_configured_provider(&ctx, &aws()).await {
+            Ok(_) => panic!("a workspace with no providers must not dial"),
+            Err(e) => e.to_string(),
+        };
+        // pangea-operator raises ApplyAnomaly::ProviderUnavailable by
+        // SUBSTRING on this text — src/controller/anomaly.rs:217-220, an
+        // OR over "locate provider" / "no .terraform/providers" /
+        // "run `init` first" / "provider binary for". The coupling is
+        // string-based, not type-based, so a reword here silently disables
+        // anomaly classification over there and the operator degrades to a
+        // generic failure with no Hold. Assert every substring this
+        // message actually carries, so a partial reword is caught too.
+        for needle in [
+            "locate provider",
+            "no .terraform/providers",
+            "run `init` first",
+        ] {
+            assert!(
+                msg.contains(needle),
+                "pangea-operator anomaly.rs:217 classifies on {needle:?}; \
+                 rewording breaks ProviderUnavailable. got: {msg}"
+            );
+        }
+    }
+
+    /// The same call, the same empty workspace — but the caller supplies
+    /// the transport. It succeeds, and nothing was spawned.
+    #[tokio::test]
+    async fn an_injected_factory_dials_where_the_default_cannot() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let ctx =
+            ApplyContext::new(td.path().to_path_buf()).with_provider_factory(Arc::new(StubFactory));
+        let mut lp = dial_configured_provider(&ctx, &aws())
+            .await
+            .expect("an injected factory needs no binary on disk");
+
+        // It is genuinely the stub: the schema is the stub's, and the
+        // transport reports no crash because there is no process to crash.
+        assert!(lp.schema.resources.is_empty());
+        assert!(lp.transport.crash_summary().is_none());
+        assert!(lp.transport.close_reason().is_none());
+        // And the contract is callable through the box.
+        assert!(
+            lp.conn
+                .get_schema()
+                .await
+                .expect("stub schema")
+                .resources
+                .is_empty()
         );
     }
 }
