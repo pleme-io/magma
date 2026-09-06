@@ -46,7 +46,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.31"
+version = "0.1.32"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT"
@@ -66,52 +66,52 @@ must_use_candidate = "allow"
 # Aliased: the package is `magma-core` on crates.io (the bare name is
 # RustCrypto's), but it stays `magma` to every consumer in this workspace, so
 # no `use magma::…` had to change for the rename.
-magma           = { path = "magma", version = "0.1.31", package = "magma-core" }
-magma-types     = { path = "magma-types", version = "0.1.31" }
-magma-cty       = { path = "magma-cty", version = "0.1.31" }
+magma           = { path = "magma", version = "0.1.32", package = "magma-core" }
+magma-types     = { path = "magma-types", version = "0.1.32" }
+magma-cty       = { path = "magma-cty", version = "0.1.32" }
 
 # Gen-platform — typed-dispatcher catalog integration
 # (theory/UNIFIED-COMPUTING-MODEL.md §VI).
 gen-platform = "0.1.34"
 gen-types = "0.1.34"
-magma-config    = { path = "magma-config", version = "0.1.31" }
-magma-pangea    = { path = "magma-pangea", version = "0.1.31" }
-magma-protocol  = { path = "magma-protocol", version = "0.1.31" }
-magma-plugin    = { path = "magma-plugin", version = "0.1.31" }
-magma-providers = { path = "magma-providers", version = "0.1.31" }
-magma-state     = { path = "magma-state", version = "0.1.31" }
-magma-backend   = { path = "magma-backend", version = "0.1.31" }
-magma-graph     = { path = "magma-graph", version = "0.1.31" }
-magma-plan      = { path = "magma-plan", version = "0.1.31" }
-magma-apply     = { path = "magma-apply", version = "0.1.31" }
-magma-attest    = { path = "magma-attest", version = "0.1.31" }
-magma-mcp       = { path = "magma-mcp", version = "0.1.31" }
-magma-arch-test = { path = "magma-arch-test", version = "0.1.31" }
-magma-migrate   = { path = "magma-migrate", version = "0.1.31" }
-magma-flow      = { path = "magma-flow", version = "0.1.31" }
-magma-tatara    = { path = "magma-tatara", version = "0.1.31" }
-magma-fixtures  = { path = "magma-fixtures", version = "0.1.31" }
-magma-operator-backend = { path = "magma-operator-backend", version = "0.1.31" }
-magma-converge  = { path = "magma-converge", version = "0.1.31" }
-magma-drift     = { path = "magma-drift", version = "0.1.31" }
-magma-spec      = { path = "magma-spec", version = "0.1.31" }
-magma-stream    = { path = "magma-stream", version = "0.1.31" }
-magma-fsm       = { path = "magma-fsm", version = "0.1.31" }
-magma-test-laws = { path = "magma-test-laws", version = "0.1.31" }
-magma-discover  = { path = "magma-discover", version = "0.1.31" }
-magma-replay    = { path = "magma-replay", version = "0.1.31" }
-magma-bundle    = { path = "magma-bundle", version = "0.1.31" }
-magma-budget    = { path = "magma-budget", version = "0.1.31" }
-magma-metrics   = { path = "magma-metrics", version = "0.1.31" }
-magma-controller = { path = "magma-controller", version = "0.1.31" }
-magma-test      = { path = "magma-test", version = "0.1.31" }
-magma-rubygems  = { path = "magma-rubygems", version = "0.1.31" }
-magma-nix       = { path = "magma-nix", version = "0.1.31" }
-magma-tfmod     = { path = "magma-tfmod", version = "0.1.31" }
-magma-repo      = { path = "magma-repo", version = "0.1.31" }
-magma-provider-registry = { path = "magma-provider-registry", version = "0.1.31" }
-magma-provider-api      = { path = "magma-provider-api", version = "0.1.31" }
-magma-provider-random   = { path = "magma-provider-random", version = "0.1.31" }
+magma-config    = { path = "magma-config", version = "0.1.32" }
+magma-pangea    = { path = "magma-pangea", version = "0.1.32" }
+magma-protocol  = { path = "magma-protocol", version = "0.1.32" }
+magma-plugin    = { path = "magma-plugin", version = "0.1.32" }
+magma-providers = { path = "magma-providers", version = "0.1.32" }
+magma-state     = { path = "magma-state", version = "0.1.32" }
+magma-backend   = { path = "magma-backend", version = "0.1.32" }
+magma-graph     = { path = "magma-graph", version = "0.1.32" }
+magma-plan      = { path = "magma-plan", version = "0.1.32" }
+magma-apply     = { path = "magma-apply", version = "0.1.32" }
+magma-attest    = { path = "magma-attest", version = "0.1.32" }
+magma-mcp       = { path = "magma-mcp", version = "0.1.32" }
+magma-arch-test = { path = "magma-arch-test", version = "0.1.32" }
+magma-migrate   = { path = "magma-migrate", version = "0.1.32" }
+magma-flow      = { path = "magma-flow", version = "0.1.32" }
+magma-tatara    = { path = "magma-tatara", version = "0.1.32" }
+magma-fixtures  = { path = "magma-fixtures", version = "0.1.32" }
+magma-operator-backend = { path = "magma-operator-backend", version = "0.1.32" }
+magma-converge  = { path = "magma-converge", version = "0.1.32" }
+magma-drift     = { path = "magma-drift", version = "0.1.32" }
+magma-spec      = { path = "magma-spec", version = "0.1.32" }
+magma-stream    = { path = "magma-stream", version = "0.1.32" }
+magma-fsm       = { path = "magma-fsm", version = "0.1.32" }
+magma-test-laws = { path = "magma-test-laws", version = "0.1.32" }
+magma-discover  = { path = "magma-discover", version = "0.1.32" }
+magma-replay    = { path = "magma-replay", version = "0.1.32" }
+magma-bundle    = { path = "magma-bundle", version = "0.1.32" }
+magma-budget    = { path = "magma-budget", version = "0.1.32" }
+magma-metrics   = { path = "magma-metrics", version = "0.1.32" }
+magma-controller = { path = "magma-controller", version = "0.1.32" }
+magma-test      = { path = "magma-test", version = "0.1.32" }
+magma-rubygems  = { path = "magma-rubygems", version = "0.1.32" }
+magma-nix       = { path = "magma-nix", version = "0.1.32" }
+magma-tfmod     = { path = "magma-tfmod", version = "0.1.32" }
+magma-repo      = { path = "magma-repo", version = "0.1.32" }
+magma-provider-registry = { path = "magma-provider-registry", version = "0.1.32" }
+magma-provider-api      = { path = "magma-provider-api", version = "0.1.32" }
+magma-provider-random   = { path = "magma-provider-random", version = "0.1.32" }
 
 # ── Pleme-io primitives — crates.io, NOT git ──
 # A bare git dep makes this workspace structurally unpublishable: cargo
