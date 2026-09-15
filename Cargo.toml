@@ -117,10 +117,17 @@ magma-provider-random   = { path = "magma-provider-random", version = "0.1.33" }
 # A bare git dep makes this workspace structurally unpublishable: cargo
 # refuses to package a dependency with no version requirement. It also
 # duplicates each crate in every consumer, since cargo never unifies
-# registry+git even at an identical version. magma-lava below is the one
-# remaining git dep and it is a genuine cycle, not an oversight: magma-lava
-# depends on magma-config, which is a member of THIS workspace. It flips as
-# soon as magma-config is on the registry.
+# registry+git even at an identical version.
+#
+# magma-lava is a REGISTRY dep now (0.2.7), no longer git -- but the cycle this
+# comment used to describe is still real, it just moved into the resolver:
+# magma-lava 0.2.7 requires magma-config ^0.1.20 from crates.io, while
+# magma-config is also a member of THIS workspace at the current version.
+# Without the [patch.crates-io] at the bottom of this file, Cargo.lock carried
+# registry copies of magma-config and magma-types 0.1.20 beside the workspace
+# members, and packaging magma-cli failed with "failed to select a version for
+# magma-config ... all possible versions conflict". The patch makes the
+# registry requirement resolve to the workspace crate.
 shikumi          = "0.1.496"
 shigoto          = "0.1.15"
 shigoto-types    = "0.1.15"
@@ -270,3 +277,11 @@ codegen-units = 1
 lto           = true
 opt-level     = "z"
 strip         = true
+
+# magma-lava (crates.io) depends back on magma-config / magma-types, which are
+# members of this workspace. Point those registry requirements at the local
+# crates so the graph holds ONE copy of each -- see the comment above
+# magma-lava in [workspace.dependencies].
+[patch.crates-io]
+magma-config = { path = "magma-config" }
+magma-types  = { path = "magma-types" }

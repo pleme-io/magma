@@ -1494,14 +1494,14 @@ dependencies = [
  "futures",
  "hex",
  "magma-attest",
- "magma-config 0.1.33",
+ "magma-config",
  "magma-cty",
  "magma-graph",
  "magma-plan",
  "magma-plugin",
  "magma-providers",
  "magma-state",
- "magma-types 0.1.33",
+ "magma-types",
  "samba",
  "serde",
  "serde_json",
@@ -1520,12 +1520,12 @@ version = "0.1.33"
 dependencies = [
  "chrono",
  "hex",
- "magma-config 0.1.33",
+ "magma-config",
  "magma-pangea",
  "magma-plan",
  "magma-state",
  "magma-test-laws",
- "magma-types 0.1.33",
+ "magma-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -1540,7 +1540,7 @@ dependencies = [
  "blake3",
  "chrono",
  "hex",
- "magma-types 0.1.33",
+ "magma-types",
  "proptest",
  "serde",
  "serde_json",
@@ -1553,7 +1553,7 @@ version = "0.1.33"
 dependencies = [
  "async-trait",
  "magma-state",
- "magma-types 0.1.33",
+ "magma-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -1591,7 +1591,7 @@ dependencies = [
  "magma-fsm",
  "magma-stream",
  "magma-test-laws",
- "magma-types 0.1.33",
+ "magma-types",
  "proptest",
  "serde",
  "serde_json",
@@ -1627,22 +1627,9 @@ dependencies = [
 
 [[package]]
 name = "magma-config"
-version = "0.1.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0be05859d5b67d1b276ff0b3df56f046ea90362cc3f3ca257b73680bf14a5a2c"
-dependencies = [
- "magma-types 0.1.20",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "magma-config"
 version = "0.1.33"
 dependencies = [
- "magma-types 0.1.33",
+ "magma-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1683,10 +1670,10 @@ dependencies = [
  "hex",
  "magma-apply",
  "magma-backend",
- "magma-config 0.1.33",
+ "magma-config",
  "magma-plan",
  "magma-state",
- "magma-types 0.1.33",
+ "magma-types",
  "proptest",
  "serde",
  "serde_json",
@@ -1703,7 +1690,7 @@ dependencies = [
  "magma-apply",
  "magma-attest",
  "magma-backend",
- "magma-config 0.1.33",
+ "magma-config",
  "magma-graph",
  "magma-mcp",
  "magma-pangea",
@@ -1712,7 +1699,7 @@ dependencies = [
  "magma-protocol",
  "magma-providers",
  "magma-state",
- "magma-types 0.1.33",
+ "magma-types",
 ]
 
 [[package]]
@@ -1760,7 +1747,7 @@ name = "magma-fixtures"
 version = "0.1.33"
 dependencies = [
  "magma-state",
- "magma-types 0.1.33",
+ "magma-types",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1773,11 +1760,11 @@ version = "0.1.33"
 dependencies = [
  "hex",
  "magma-backend",
- "magma-config 0.1.33",
+ "magma-config",
  "magma-fixtures",
  "magma-pangea",
  "magma-plan",
- "magma-types 0.1.33",
+ "magma-types",
  "proptest",
  "serde",
  "serde_json",
@@ -1803,7 +1790,7 @@ dependencies = [
 name = "magma-graph"
 version = "0.1.33"
 dependencies = [
- "magma-types 0.1.33",
+ "magma-types",
  "petgraph 0.6.5",
  "proptest",
  "serde",
@@ -1822,7 +1809,7 @@ dependencies = [
  "lava-eval",
  "lava-runtime",
  "lava-schema",
- "magma-config 0.1.20",
+ "magma-config",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1837,14 +1824,14 @@ dependencies = [
  "magma-apply",
  "magma-arch-test",
  "magma-backend",
- "magma-config 0.1.33",
+ "magma-config",
  "magma-fixtures",
  "magma-flow",
  "magma-migrate",
  "magma-pangea",
  "magma-plan",
  "magma-state",
- "magma-types 0.1.33",
+ "magma-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -1875,7 +1862,7 @@ dependencies = [
  "chrono",
  "hex",
  "magma-state",
- "magma-types 0.1.33",
+ "magma-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -1904,7 +1891,7 @@ dependencies = [
  "magma-backend",
  "magma-fixtures",
  "magma-state",
- "magma-types 0.1.33",
+ "magma-types",
  "proptest",
  "serde",
  "serde_json",
@@ -1919,10 +1906,10 @@ name = "magma-pangea"
 version = "0.1.33"
 dependencies = [
  "async-trait",
- "magma-config 0.1.33",
+ "magma-config",
  "magma-plan",
  "magma-state",
- "magma-types 0.1.33",
+ "magma-types",
  "petgraph 0.6.5",
  "serde",
  "serde_json",
@@ -1939,11 +1926,11 @@ dependencies = [
  "async-trait",
  "chrono",
  "magma-attest",
- "magma-config 0.1.33",
+ "magma-config",
  "magma-graph",
  "magma-plugin",
  "magma-state",
- "magma-types 0.1.33",
+ "magma-types",
  "proptest",
  "serde",
  "serde_json",
@@ -1967,7 +1954,7 @@ dependencies = [
  "magma-cty",
  "magma-protocol",
  "magma-provider-api",
- "magma-types 0.1.33",
+ "magma-types",
  "rcgen",
  "rustls",
  "serde_json",
@@ -2017,7 +2004,7 @@ dependencies = [
  "magma-cty",
  "magma-plugin",
  "magma-provider-api",
- "magma-types 0.1.33",
+ "magma-types",
  "rand 0.8.6",
  "serde_json",
  "tempfile",
@@ -2031,7 +2018,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "hex",
- "magma-types 0.1.33",
+ "magma-types",
  "serde",
  "serde_json",
  "sqlx",
@@ -2046,7 +2033,7 @@ name = "magma-providers"
 version = "0.1.33"
 dependencies = [
  "magma-plugin",
- "magma-types 0.1.33",
+ "magma-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -2122,7 +2109,7 @@ dependencies = [
  "base64",
  "chrono",
  "cofre-fs",
- "magma-types 0.1.33",
+ "magma-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -2172,7 +2159,7 @@ dependencies = [
  "insta",
  "magma-apply",
  "magma-arch-test",
- "magma-config 0.1.33",
+ "magma-config",
  "magma-core",
  "magma-cty",
  "magma-pangea",
@@ -2181,7 +2168,7 @@ dependencies = [
  "magma-protocol",
  "magma-state",
  "magma-test-laws",
- "magma-types 0.1.33",
+ "magma-types",
  "proptest",
  "prost",
  "prost-types",
@@ -2207,14 +2194,14 @@ dependencies = [
  "chrono",
  "magma-apply",
  "magma-backend",
- "magma-config 0.1.33",
+ "magma-config",
  "magma-converge",
  "magma-flow",
  "magma-fsm",
  "magma-plan",
  "magma-state",
  "magma-stream",
- "magma-types 0.1.33",
+ "magma-types",
  "proptest",
  "serde",
  "serde_json",
@@ -2229,22 +2216,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "magma-types"
-version = "0.1.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c858b841f119fcd5cd51b199c79d7bc657b9ac32fbeabd0d5e952b2db51ca14f"
-dependencies = [
- "chrono",
- "gen-platform",
- "gen-types",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uuid",
 ]
 
 [[package]]

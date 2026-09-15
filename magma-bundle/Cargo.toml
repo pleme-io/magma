@@ -28,4 +28,12 @@ hex            = { workspace = true }
 [dev-dependencies]
 tokio           = { workspace = true }
 proptest        = { workspace = true }
-magma-test-laws = { workspace = true, features = ["strategies"] }
+# path-only, NOT `workspace = true`. A dev-dependency that carries a version is
+# kept by `cargo package` and resolved against crates.io, and the root pins
+# magma-test-laws with a version -- so `workspace = true` makes this a
+# published edge. magma-test-laws's `strategies` feature pulls magma-stream,
+# which depends on magma-drift: drift -> test-laws -> stream -> drift, a cycle
+# no publish order can satisfy. It held 12 crates off crates.io from 2026-08-27
+# (cargo package exit 101). A versionless path dev-dep is stripped at package
+# time, so the edge cannot close the cycle again.
+magma-test-laws = { path = "../magma-test-laws", features = ["strategies"] }
