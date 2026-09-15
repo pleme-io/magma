@@ -81,12 +81,38 @@
 //!     a live non-empty fixture — no provider available in this
 //!     environment happened to populate it. The empty case (omitted
 //!     field) *is* empirically verified.
-//!   * **Byte-for-byte whitespace** is matched as a side effect of using
-//!     compact (non-pretty) JSON here — the same choice OpenTofu/
-//!     Terraform make — but is not the actual compatibility bar: JSON
-//!     *value* equality is what `tofu show -json` (and every real
-//!     consumer) cares about, not text equality against a differently
-//!     indented file.
+//! # Whitespace — CORRECTED 2026-09-15, this used to be wrong
+//!
+//! This section previously read: *"Byte-for-byte whitespace is matched
+//! as a side effect of using compact (non-pretty) JSON here — the same
+//! choice OpenTofu/Terraform make — but is not the actual
+//! compatibility bar."* Both halves were false, and the second half is
+//! what kept the first from being checked.
+//!
+//! OpenTofu does not make *a* choice; it makes **two**, selected by
+//! destination (`internal/states/statefile/version4.go`):
+//!
+//! | plane | shape | emitted by | used by |
+//! |---|---|---|---|
+//! | remote | compact `json.Marshal` (`:528`) | `statefile.Write` | every remote backend — `states/remote/state.go:236` |
+//! | local | 2-space `json.MarshalIndent` (`:526`) | `statefile.WriteIndent` | the file on disk — `statemgr/filesystem.go:227,272` |
+//!
+//! and `:539` — `src = append(src, '\n')` — sits *after* that branch,
+//! so **both** planes end in a newline. This module emitted compact
+//! with no newline for everything, which was accidentally right for
+//! remote and wrong for local, and wrong by one byte everywhere.
+//!
+//! Whitespace IS a compatibility bar wherever the bytes are the stored
+//! artifact rather than a rendering of it: on a remote backend the
+//! payload's MD5 is what `RemoteClient.Get` compares, and for a
+//! checked-in local file the first magma write otherwise reformats
+//! every line of somebody's `git diff`.
+//!
+//! [`encode`] is the remote plane, [`encode_indent`] the local one.
+//! The defect hid for as long as it did because the byte-exact
+//! fixtures are real tofu output whose trailing newline was lost in
+//! the paste into a Rust raw string — so the assertion was blind to
+//! precisely the byte it claimed to check.
 //!
 //! Per `theory/MAGMA.md` §II.2 ("State file | JSON, schema version 4 |
 //! OpenTofu `internal/states/statefile/`") and §II.6 (byte-exact test
@@ -190,11 +216,58 @@ pub fn decode(bytes: &[u8]) -> Result<State, StateError> {
 }
 
 /// Encode magma's typed `State` into real `terraform.tfstate` v4
-/// bytes — compact JSON (no pretty-printing), matching tofu/
-/// terraform's own on-disk shape for every field this module models.
+/// bytes in the **REMOTE** shape: compact JSON plus the trailing
+/// newline, byte-for-byte what `statefile.Write` emits.
+///
+/// ── THERE ARE TWO PLANES, AND THEY ARE NOT INTERCHANGEABLE ─────────
+/// OpenTofu serializes state two different ways and picks by
+/// destination, not by preference (`internal/states/statefile/`):
+///
+///   `statefile.Write`       compact  `json.Marshal`        version4.go:528
+///     └─ every REMOTE backend — `states/remote/state.go:236`
+///   `statefile.WriteIndent` 2-space  `json.MarshalIndent`  version4.go:526
+///     └─ the LOCAL file    — `statemgr/filesystem.go:227,272`
+///
+/// Use this for a remote backend; use [`encode_indent`] for a file on
+/// disk. magma emitted compact for BOTH until 2026-09-15, which was
+/// accidentally right for remote and wrong for local.
+///
+/// ── THE TRAILING NEWLINE ───────────────────────────────────────────
+/// `version4.go:539` is `src = append(src, '\n')`, placed AFTER the
+/// indent/compact branch, so it applies to both planes. magma omitted
+/// it, so every state magma ever wrote differed from tofu's by exactly
+/// one byte.
+///
+/// It hid because the `*_round_trips_byte_exact` fixtures are real
+/// tofu output pasted into Rust raw strings — and the paste dropped
+/// the trailing newline. The fixture lost the only byte under test, so
+/// a byte-exact assertion passed while being blind to it. The fixtures
+/// now carry the `\n` (`magma-state/tests/tfstate_v4_fixtures.rs`).
+///
+/// It is not cosmetic: on a remote backend these bytes are the stored
+/// payload, so the byte changes the MD5 that OpenTofu's
+/// `RemoteClient.Get` computes and compares.
 pub fn encode(state: &State) -> Result<Vec<u8>, StateError> {
     let wire = typed_to_wire(state)?;
-    Ok(serde_json::to_vec(&wire)?)
+    let mut src = serde_json::to_vec(&wire)?;
+    src.push(b'\n');
+    Ok(src)
+}
+
+/// Encode into the **LOCAL** shape: 2-space-indented JSON plus the
+/// trailing newline — byte-for-byte what `statefile.WriteIndent`
+/// emits, and therefore what belongs in a `terraform.tfstate` file on
+/// disk.
+///
+/// See [`encode`] for the two-plane split and why picking the wrong
+/// one is silent. The practical cost of emitting compact here: the
+/// first magma write reformats a checked-in state file entirely, so
+/// `git diff` shows every line changed.
+pub fn encode_indent(state: &State) -> Result<Vec<u8>, StateError> {
+    let wire = typed_to_wire(state)?;
+    let mut src = serde_json::to_vec_pretty(&wire)?;
+    src.push(b'\n');
+    Ok(src)
 }
 
 // ── wire → typed ──────────────────────────────────────────────────

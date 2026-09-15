@@ -115,7 +115,12 @@ impl Backend for LocalBackend {
 
     async fn write_state(&self, state: &State) -> Result<(), BackendError> {
         let tmp = self.state_path.with_extension("tfstate.tmp");
-        let bytes = tfstate_v4::encode(state)?;
+        // `encode_indent`, not `encode`: this is a FILE, and OpenTofu's local
+        // state manager writes files through `statefile.WriteIndent` (2-space)
+        // while only REMOTE backends get compact `statefile.Write`. Using the
+        // compact form here reformats a checked-in tfstate on first write.
+        // See `magma_state::tfstate_v4::encode` for the full two-plane note.
+        let bytes = tfstate_v4::encode_indent(state)?;
         if let Some(parent) = self.state_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
