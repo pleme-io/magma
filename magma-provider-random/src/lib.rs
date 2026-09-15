@@ -14,7 +14,7 @@
 //!
 //! ── WHAT IS ACTUALLY IN USE, so the port is aimed ────────────────────
 //! One live consumer across every architecture in the fleet
-//! (`pangea-architectures/workspaces/camelot-eks-shaar-concentrator`):
+//! (a VPN-concentrator workspace in `pangea-architectures`):
 //!
 //! ```json
 //! "random_password": { "…-webhook-creds-seed": { "length": 48, "special": false } }
@@ -685,11 +685,11 @@ mod tests {
     }
 
     /// The LIVE fleet config, verbatim:
-    /// `pangea-architectures/workspaces/camelot-eks-shaar-concentrator` →
+    /// a VPN-concentrator workspace in `pangea-architectures` →
     /// `{ "length": 48, "special": false }`. If this stops working the
-    /// shaar-concentrator webhook credential stops being generated.
+    /// concentrator's webhook credential stops being generated.
     #[tokio::test]
-    async fn the_live_shaar_concentrator_config_generates() {
+    async fn the_live_vpn_concentrator_config_generates() {
         let mut p = RandomProvider::new();
         let cfg = serde_json::json!({ "length": 48, "special": false });
         let plan = p

@@ -70,7 +70,7 @@ async fn random_is_served_in_process_with_no_binary_on_disk() {
 /// than by calling the provider directly — so the schema round-trip and
 /// the Configure step are exercised, not just the generation logic.
 #[tokio::test]
-async fn the_live_shaar_config_works_through_the_engine_seam() {
+async fn the_live_vpn_concentrator_config_works_through_the_engine_seam() {
     let td = tempfile::tempdir().expect("tempdir");
     let ctx = ApplyContext::new(td.path().to_path_buf()).with_provider_factory(Arc::new(
         RoutingProviderFactory::new().with_native("random", || Box::new(RandomProvider::new())),
