@@ -232,7 +232,11 @@ fn moved_address(raw: &str) -> Result<ResourceAddress, ConfigError> {
     let mut parts = raw.split('.');
     match (parts.next(), parts.next(), parts.next()) {
         (Some(ty), Some(name), None)
-            if !ty.is_empty() && !name.is_empty() && ty != "data" && ty != "module" && !name.contains('[') =>
+            if !ty.is_empty()
+                && !name.is_empty()
+                && ty != "data"
+                && ty != "module"
+                && !name.contains('[') =>
         {
             Ok(ResourceAddress {
                 module: Default::default(),
@@ -473,17 +477,24 @@ impl Config {
     /// configuration declares, and no `from` may still be declared, so a
     /// move can never point state at nothing or shadow a live resource.
     pub fn moves(&self) -> Result<Vec<magma_types::Moved>, ConfigError> {
-        let declared: std::collections::HashSet<ResourceAddress> = self.resource_addresses().collect();
+        let declared: std::collections::HashSet<ResourceAddress> =
+            self.resource_addresses().collect();
         self.moved
             .iter()
             .map(|b| {
                 let from = moved_address(&b.from)?;
                 let to = moved_address(&b.to)?;
                 if !declared.contains(&to) {
-                    return Err(ConfigError::Moved(format!("target `{}` is not declared", b.to)));
+                    return Err(ConfigError::Moved(format!(
+                        "target `{}` is not declared",
+                        b.to
+                    )));
                 }
                 if declared.contains(&from) {
-                    return Err(ConfigError::Moved(format!("source `{}` is still declared", b.from)));
+                    return Err(ConfigError::Moved(format!(
+                        "source `{}` is still declared",
+                        b.from
+                    )));
                 }
                 Ok(magma_types::Moved { from, to })
             })

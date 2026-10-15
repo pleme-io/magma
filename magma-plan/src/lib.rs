@@ -2700,18 +2700,37 @@ mod tests {
     #[test]
     fn a_moved_rename_plans_an_update_in_place_and_no_destroy() {
         let p = plan(&rename_config(true), &renamed_state()).unwrap();
-        let changed: Vec<_> = p.resource_changes.iter().filter(|c| c.action != Action::NoOp).collect();
+        let changed: Vec<_> = p
+            .resource_changes
+            .iter()
+            .filter(|c| c.action != Action::NoOp)
+            .collect();
         assert_eq!(changed.len(), 1, "{:?}", p.resource_changes);
-        assert_eq!(changed[0].address.to_string(), "github_repository.ensaio_akeyless");
+        assert_eq!(
+            changed[0].address.to_string(),
+            "github_repository.ensaio_akeyless"
+        );
         assert_eq!(changed[0].action, Action::Update);
-        assert!(p.resource_changes.iter().all(|c| c.action != Action::Delete && c.action != Action::Create));
+        assert!(
+            p.resource_changes
+                .iter()
+                .all(|c| c.action != Action::Delete && c.action != Action::Create)
+        );
     }
 
     #[test]
     fn without_moved_the_same_rename_is_a_destroy_and_a_create() {
         let p = plan(&rename_config(false), &renamed_state()).unwrap();
-        assert!(p.resource_changes.iter().any(|c| c.action == Action::Delete));
-        assert!(p.resource_changes.iter().any(|c| c.action == Action::Create));
+        assert!(
+            p.resource_changes
+                .iter()
+                .any(|c| c.action == Action::Delete)
+        );
+        assert!(
+            p.resource_changes
+                .iter()
+                .any(|c| c.action == Action::Create)
+        );
     }
 
     #[test]
@@ -2727,7 +2746,11 @@ mod tests {
     #[test]
     fn a_moved_onto_an_occupied_address_is_refused() {
         let mut st = renamed_state();
-        st.resources.push(mk_state_resource("github_repository", "ensaio_akeyless", json!({ "id": "x" })));
+        st.resources.push(mk_state_resource(
+            "github_repository",
+            "ensaio_akeyless",
+            json!({ "id": "x" }),
+        ));
         let err = plan(&rename_config(true), &st).unwrap_err();
         assert!(matches!(err, PlanError::Moved(_)), "{err}");
     }
@@ -2738,6 +2761,9 @@ mod tests {
         let mut st = renamed_state();
         assert_eq!(st.apply_moved(&moves).unwrap().len(), 1);
         assert!(st.apply_moved(&moves).unwrap().is_empty());
-        assert_eq!(st.resources[0].address.to_string(), "github_repository.ensaio_akeyless");
+        assert_eq!(
+            st.resources[0].address.to_string(),
+            "github_repository.ensaio_akeyless"
+        );
     }
 }

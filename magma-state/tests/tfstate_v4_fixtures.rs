@@ -263,7 +263,10 @@ fn both_planes_end_in_exactly_one_newline() {
 
     for (plane, bytes) in [
         ("encode (remote/compact)", encode(&state).unwrap()),
-        ("encode_indent (local/2-space)", encode_indent(&state).unwrap()),
+        (
+            "encode_indent (local/2-space)",
+            encode_indent(&state).unwrap(),
+        ),
     ] {
         assert_eq!(
             bytes.last().copied(),
