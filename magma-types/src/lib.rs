@@ -1171,6 +1171,67 @@ pub struct State {
     pub resources: Vec<StateResource>,
 }
 
+/// A refactoring move: the resource state recorded at `from` now belongs to
+/// `to`, so the plan diffs `to` against what `from` held instead of planning
+/// a destroy of one and a create of the other.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Moved {
+    pub from: ResourceAddress,
+    pub to: ResourceAddress,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MovedError {
+    #[error("moved block from `{0}` to itself")]
+    SelfMove(String),
+    #[error("moved from `{from}` to `{to}`, but state already holds `{to}`")]
+    TargetOccupied { from: String, to: String },
+    #[error("`{0}` is the source of more than one moved block")]
+    DuplicateSource(String),
+}
+
+impl State {
+    /// Rewrite state addresses per `moves`, in order, and rewrite every
+    /// instance dependency that named a moved address. A move whose `from`
+    /// is absent is a no-op, so applying the same moves twice is the same
+    /// as applying them once. Returns the moves that changed state.
+    pub fn apply_moved(&mut self, moves: &[Moved]) -> Result<Vec<Moved>, MovedError> {
+        let mut sources = std::collections::HashSet::new();
+        for m in moves {
+            if m.from == m.to {
+                return Err(MovedError::SelfMove(m.from.to_string()));
+            }
+            if !sources.insert(&m.from) {
+                return Err(MovedError::DuplicateSource(m.from.to_string()));
+            }
+        }
+        let mut done = Vec::new();
+        for m in moves {
+            let Some(i) = self.resources.iter().position(|r| r.address == m.from) else {
+                continue;
+            };
+            if self.resources.iter().any(|r| r.address == m.to) {
+                return Err(MovedError::TargetOccupied {
+                    from: m.from.to_string(),
+                    to: m.to.to_string(),
+                });
+            }
+            self.resources[i].address = m.to.clone();
+            for r in &mut self.resources {
+                for inst in &mut r.instances {
+                    for d in &mut inst.dependencies {
+                        if *d == m.from {
+                            *d = m.to.clone();
+                        }
+                    }
+                }
+            }
+            done.push(m.clone());
+        }
+        Ok(done)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateResource {
     pub address: ResourceAddress,

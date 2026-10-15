@@ -2226,6 +2226,7 @@ pub async fn refresh_then_plan(
     state: &mut State,
     ctx: Option<&ApplyContext>,
 ) -> Result<(Plan, Option<RefreshReport>), magma_plan::PlanError> {
+    state.apply_moved(&cfg.moves()?)?;
     let report = match ctx {
         Some(ctx) => Some(refresh_state(state, ctx).await),
         None => None,

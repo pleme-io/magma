@@ -38,6 +38,8 @@ pub enum ConfigError {
     UnknownReference(String),
     #[error("serialization: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("moved block: {0}")]
+    Moved(String),
     /// A `provider = …` meta-argument magma cannot read. See
     /// [`magma_types::ProviderInstanceError`] — a malformed reference,
     /// not a valid one magma declines to honour.
@@ -214,6 +216,36 @@ pub struct Config {
     /// the degradation is in the typing, never in the graph.
     #[serde(skip)]
     typed_refs: HashMap<String, Vec<Ref>>,
+    /// Top-level `moved` blocks: `[{"from": "type.old", "to": "type.new"}]`.
+    /// Read through [`Config::moves`], which types and validates them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moved: Vec<MovedBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MovedBlock {
+    pub from: String,
+    pub to: String,
+}
+
+fn moved_address(raw: &str) -> Result<ResourceAddress, ConfigError> {
+    let mut parts = raw.split('.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(ty), Some(name), None)
+            if !ty.is_empty() && !name.is_empty() && ty != "data" && ty != "module" && !name.contains('[') =>
+        {
+            Ok(ResourceAddress {
+                module: Default::default(),
+                kind: ResourceKind::Managed,
+                type_id: ResourceTypeId(ty.to_string()),
+                name: name.to_string(),
+                key: None,
+            })
+        }
+        _ => Err(ConfigError::Moved(format!(
+            "`{raw}` is not a root-module managed resource address (type.name)"
+        ))),
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -432,7 +464,30 @@ impl Config {
     /// `Config`. Accepts the top-level shape that Pangea's renderer +
     /// `tofu show -json` both emit.
     pub fn from_json(v: serde_json::Value) -> Result<Self, ConfigError> {
-        serde_json::from_value(v).map_err(ConfigError::from)
+        let config: Self = serde_json::from_value(v).map_err(ConfigError::from)?;
+        config.moves()?;
+        Ok(config)
+    }
+
+    /// The typed `moved` blocks. Each `to` must be a resource this
+    /// configuration declares, and no `from` may still be declared, so a
+    /// move can never point state at nothing or shadow a live resource.
+    pub fn moves(&self) -> Result<Vec<magma_types::Moved>, ConfigError> {
+        let declared: std::collections::HashSet<ResourceAddress> = self.resource_addresses().collect();
+        self.moved
+            .iter()
+            .map(|b| {
+                let from = moved_address(&b.from)?;
+                let to = moved_address(&b.to)?;
+                if !declared.contains(&to) {
+                    return Err(ConfigError::Moved(format!("target `{}` is not declared", b.to)));
+                }
+                if declared.contains(&from) {
+                    return Err(ConfigError::Moved(format!("source `{}` is still declared", b.from)));
+                }
+                Ok(magma_types::Moved { from, to })
+            })
+            .collect()
     }
 
     /// Iterate all `ResourceAddress`es declared by this config.

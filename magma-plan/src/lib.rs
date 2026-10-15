@@ -91,6 +91,8 @@ use thiserror::Error;
 pub enum PlanError {
     #[error("config error: {0}")]
     Config(#[from] magma_config::ConfigError),
+    #[error("moved: {0}")]
+    Moved(#[from] magma_types::MovedError),
     #[error("serde: {0}")]
     Serde(#[from] serde_json::Error),
     #[error("compliance violation — refusing to plan:\n{}", .0.iter().map(|v| format!("  - {v}")).collect::<Vec<_>>().join("\n"))]
@@ -255,6 +257,17 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
     if !violations.is_empty() {
         return Err(PlanError::Compliance(violations));
     }
+
+    let moves = config.moves()?;
+    let moved_state;
+    let state = if moves.is_empty() {
+        state
+    } else {
+        let mut s = state.clone();
+        s.apply_moved(&moves)?;
+        moved_state = s;
+        &moved_state
+    };
 
     let config_addrs: HashSet<ResourceAddress> = config.resource_addresses().collect();
     let state_addrs: HashSet<ResourceAddress> =
@@ -2658,5 +2671,73 @@ mod tests {
             msg.contains("aws_instance.web") && msg.contains("account or region"),
             "must name the row and the consequence: {msg}"
         );
+    }
+
+    fn rename_config(with_moved: bool) -> Config {
+        let mut v = json!({
+            "resource": {
+                "github_repository": {
+                    "ensaio_akeyless": { "name": "ensaio-akeyless" }
+                }
+            }
+        });
+        if with_moved {
+            v["moved"] = json!([{ "from": "github_repository.ensaio", "to": "github_repository.ensaio_akeyless" }]);
+        }
+        Config::from_json(v).unwrap()
+    }
+
+    fn renamed_state() -> State {
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(
+            "github_repository",
+            "ensaio",
+            json!({ "id": "ensaio", "name": "ensaio" }),
+        ));
+        st
+    }
+
+    #[test]
+    fn a_moved_rename_plans_an_update_in_place_and_no_destroy() {
+        let p = plan(&rename_config(true), &renamed_state()).unwrap();
+        let changed: Vec<_> = p.resource_changes.iter().filter(|c| c.action != Action::NoOp).collect();
+        assert_eq!(changed.len(), 1, "{:?}", p.resource_changes);
+        assert_eq!(changed[0].address.to_string(), "github_repository.ensaio_akeyless");
+        assert_eq!(changed[0].action, Action::Update);
+        assert!(p.resource_changes.iter().all(|c| c.action != Action::Delete && c.action != Action::Create));
+    }
+
+    #[test]
+    fn without_moved_the_same_rename_is_a_destroy_and_a_create() {
+        let p = plan(&rename_config(false), &renamed_state()).unwrap();
+        assert!(p.resource_changes.iter().any(|c| c.action == Action::Delete));
+        assert!(p.resource_changes.iter().any(|c| c.action == Action::Create));
+    }
+
+    #[test]
+    fn a_moved_target_that_is_not_declared_is_refused_at_load() {
+        let err = Config::from_json(json!({
+            "resource": { "github_repository": { "a": { "name": "a" } } },
+            "moved": [{ "from": "github_repository.old", "to": "github_repository.b" }]
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("not declared"), "{err}");
+    }
+
+    #[test]
+    fn a_moved_onto_an_occupied_address_is_refused() {
+        let mut st = renamed_state();
+        st.resources.push(mk_state_resource("github_repository", "ensaio_akeyless", json!({ "id": "x" })));
+        let err = plan(&rename_config(true), &st).unwrap_err();
+        assert!(matches!(err, PlanError::Moved(_)), "{err}");
+    }
+
+    #[test]
+    fn moves_are_idempotent_on_state() {
+        let moves = rename_config(true).moves().unwrap();
+        let mut st = renamed_state();
+        assert_eq!(st.apply_moved(&moves).unwrap().len(), 1);
+        assert!(st.apply_moved(&moves).unwrap().is_empty());
+        assert_eq!(st.resources[0].address.to_string(), "github_repository.ensaio_akeyless");
     }
 }
