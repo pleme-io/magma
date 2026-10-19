@@ -256,6 +256,7 @@ pub struct ApplyContext {
     /// would propagate into every one of those signatures to buy static
     /// dispatch on a call that spawns a process.
     pub provider_factory: Arc<dyn ProviderFactory>,
+    pub rpc_guard: Option<Arc<crate::guard::RpcGuard>>,
 }
 
 /// Default mutation pace: 1 request/second — GitHub's documented minimum
@@ -342,7 +343,19 @@ impl ApplyContext {
             provider_configs: BTreeMap::new(),
             pacer: build_pacer(DEFAULT_PACE_RPH),
             provider_factory: Arc::new(GrpcProviderFactory),
+            rpc_guard: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_rpc_guard(mut self, guard: Arc<crate::guard::RpcGuard>) -> Self {
+        self.rpc_guard = Some(guard);
+        self
+    }
+
+    #[must_use]
+    pub fn progress(&self) -> Option<&crate::guard::ProgressBeacon> {
+        self.rpc_guard.as_deref().map(|g| g.beacon.as_ref())
     }
 
     /// Supply a different way of bringing providers up — a native Rust
@@ -501,6 +514,10 @@ pub trait ProviderTransport: Send + Sync {
     fn close_reason(&self) -> Option<String> {
         None
     }
+    fn death_watch(&self) -> Option<tokio::sync::watch::Receiver<Option<String>>> {
+        None
+    }
+    fn retire(&self) {}
 }
 
 /// The go-plugin subprocess transport — owns the child process.
@@ -511,6 +528,9 @@ impl ProviderTransport for Plugin {
     fn close_reason(&self) -> Option<String> {
         self.channel()
             .and_then(magma_plugin::H2Channel::close_reason)
+    }
+    fn death_watch(&self) -> Option<tokio::sync::watch::Receiver<Option<String>>> {
+        Some(Plugin::death_watch(self))
     }
 }
 
@@ -529,6 +549,7 @@ pub struct LiveProvider {
     pub(crate) transport: Box<dyn ProviderTransport>,
     pub(crate) conn: Box<dyn Provider>,
     pub(crate) schema: ProviderSchema,
+    pub(crate) abandoned: Option<crate::guard::Abandonment>,
 }
 
 /// Spawn + fully configure a provider by its local name (e.g.
@@ -619,6 +640,13 @@ impl LiveProvider {
     #[must_use]
     pub fn transport(&self) -> &dyn ProviderTransport {
         self.transport.as_ref()
+    }
+
+    #[must_use]
+    pub fn abandoned(&self) -> Option<String> {
+        self.abandoned
+            .as_ref()
+            .and_then(|a| a.lock().ok().and_then(|g| g.clone()))
     }
 }
 
@@ -722,6 +750,7 @@ impl ProviderFactory for RoutingProviderFactory {
             transport: Box::new(InProcessTransport),
             conn,
             schema,
+            abandoned: None,
         })
     }
 }
@@ -793,6 +822,7 @@ async fn grpc_dial(req: DialRequest<'_>) -> Result<LiveProvider, EngineError> {
         transport: Box::new(plugin),
         conn: Box::new(conn),
         schema,
+        abandoned: None,
     })
 }
 
@@ -810,14 +840,37 @@ pub async fn dial_configured_provider(
     instance: &ProviderInstance,
 ) -> Result<LiveProvider, EngineError> {
     let config_json = resolve_provider_config(ctx, instance)?;
-    ctx.provider_factory
-        .dial(DialRequest {
-            workspace_dir: &ctx.workspace_dir,
-            terraform_version: &ctx.terraform_version,
-            instance,
-            config_json: &config_json,
-        })
-        .await
+    let dial = ctx.provider_factory.dial(DialRequest {
+        workspace_dir: &ctx.workspace_dir,
+        terraform_version: &ctx.terraform_version,
+        instance,
+        config_json: &config_json,
+    });
+    let Some(guard) = ctx.rpc_guard.as_ref() else {
+        return dial.await;
+    };
+    let name = instance.to_string();
+    let deadline = guard.deadlines.dial;
+    let Ok(dialed) = tokio::time::timeout(deadline, dial).await else {
+        let fault = crate::guard::ProviderFault {
+            provider: name.clone(),
+            op: "dial".to_string(),
+            type_name: String::new(),
+            subject: guard.beacon.subject(),
+            cause: magma_plugin::provider::UnresponsiveCause::deadline(deadline),
+        };
+        let msg = fault.to_string();
+        guard.beacon.record_fault(fault);
+        return Err(EngineError::Spawn(name, msg));
+    };
+    let mut lp = dialed?;
+    guard.beacon.touch();
+    let death = lp.transport.death_watch();
+    let (conn, abandoned) =
+        crate::guard::GuardedProvider::new(lp.conn, name, Arc::clone(guard), death);
+    lp.conn = Box::new(conn);
+    lp.abandoned = Some(abandoned);
+    Ok(lp)
 }
 
 /// The `ConfigureProvider` payload for one provider instance.
@@ -845,6 +898,8 @@ fn resolve_provider_config(
     }
 }
 
+const MAX_RESPAWNS: u32 = 3;
+
 /// The providers dialed for one apply, one per provider INSTANCE.
 ///
 /// Keyed by [`ProviderInstance`], not by bare name: `aws` and
@@ -854,6 +909,7 @@ fn resolve_provider_config(
 struct Registry<'a> {
     ctx: &'a ApplyContext,
     live: HashMap<ProviderInstance, LiveProvider>,
+    respawns: HashMap<ProviderInstance, (u32, String)>,
 }
 
 impl<'a> Registry<'a> {
@@ -861,10 +917,39 @@ impl<'a> Registry<'a> {
         Self {
             ctx,
             live: HashMap::new(),
+            respawns: HashMap::new(),
         }
     }
 
     async fn get(&mut self, instance: &ProviderInstance) -> Result<&mut LiveProvider, EngineError> {
+        if let Some(earlier) = self.live.get(instance).and_then(LiveProvider::abandoned) {
+            if let Some(abandoned) = self.live.remove(instance) {
+                abandoned.transport.retire();
+            }
+            let entry = self
+                .respawns
+                .entry(instance.clone())
+                .or_insert((0, String::new()));
+            entry.0 += 1;
+            entry.1 = earlier;
+            tracing::warn!(
+                provider = %instance,
+                abandoned = entry.0,
+                earlier = %entry.1,
+                "magma: replacing an unresponsive provider process"
+            );
+        }
+        if let Some((count, earlier)) = self.respawns.get(instance) {
+            if *count > MAX_RESPAWNS {
+                return Err(EngineError::Spawn(
+                    instance.to_string(),
+                    format!(
+                        "{count} provider processes abandoned this pass, more than the \
+                         {MAX_RESPAWNS} replacements allowed; not dialing again (last: {earlier})"
+                    ),
+                ));
+            }
+        }
         if !self.live.contains_key(instance) {
             let lp = self.spawn(instance).await?;
             self.live.insert(instance.clone(), lp);
@@ -1822,6 +1907,9 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
 
     for resource in std::mem::take(&mut state.resources) {
         let type_name = resource.address.type_id.0.clone();
+        if let Some(b) = ctx.progress() {
+            b.note_subject(resource.address.to_string());
+        }
         // Select from the ROW's own provider reference, so an aliased
         // resource is read back through the instance that holds it.
         let provider_instance = match refresh_instance_for(ctx, &resource) {
@@ -2070,6 +2158,9 @@ pub async fn refresh_named(
             continue;
         }
         targeted += 1;
+        if let Some(b) = ctx.progress() {
+            b.note_subject(resource.address.to_string());
+        }
 
         let type_name = resource.address.type_id.0.clone();
         // Select from the ROW's own provider reference, so an aliased
@@ -2763,6 +2854,9 @@ async fn apply_one(
     reg: &mut Registry<'_>,
 ) -> Result<AppliedChange, EngineError> {
     let started = std::time::Instant::now();
+    if let Some(b) = reg.ctx.progress() {
+        b.note_subject(change.address.to_string());
+    }
     let out = apply_one_inner(change, adoption, rec, reg).await;
     let total = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     // Whatever was not spent waiting on the rate limiter was spent in (or
@@ -6752,6 +6846,7 @@ mod provider_factory_tests {
                     data_sources: BTreeMap::new(),
                     resource_versions: BTreeMap::new(),
                 },
+                abandoned: None,
             })
         }
     }
@@ -6827,6 +6922,252 @@ mod provider_factory_tests {
                 .expect("stub schema")
                 .resources
                 .is_empty()
+        );
+    }
+}
+
+#[cfg(test)]
+mod guard_engine_tests {
+    use super::*;
+    use crate::guard::{ProgressBeacon, RpcDeadlines, RpcGuard};
+    use magma_cty::CtyType;
+    use magma_types::{
+        InstanceStatus, ModulePath, ProviderReference, ResourceAddress, ResourceKind,
+        ResourceTypeId, StateInstance, StateResource,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    fn schema() -> ProviderSchema {
+        let mut attrs = BTreeMap::new();
+        attrs.insert("id".to_string(), CtyType::String);
+        attrs.insert("name".to_string(), CtyType::String);
+        let mut resources = BTreeMap::new();
+        resources.insert("github_repository".to_string(), CtyType::Object(attrs));
+        ProviderSchema {
+            provider_config: CtyType::Object(BTreeMap::new()),
+            resources,
+            data_sources: BTreeMap::new(),
+            resource_versions: BTreeMap::new(),
+        }
+    }
+
+    struct Reader {
+        hang: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Reader {
+        async fn get_schema(&mut self) -> Result<ProviderSchema, ProviderError> {
+            Ok(schema())
+        }
+        async fn configure(&mut self, _: &DynamicValue, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        async fn plan_resource_change(
+            &mut self,
+            _: &str,
+            _: &DynamicValue,
+            _: &DynamicValue,
+            _: &DynamicValue,
+        ) -> Result<magma_plugin::provider::PlannedChange, ProviderError> {
+            Err(ProviderError::NoNewState)
+        }
+        async fn apply_resource_change(
+            &mut self,
+            _: &str,
+            _: &DynamicValue,
+            _: &DynamicValue,
+            _: &DynamicValue,
+        ) -> Result<DynamicValue, ProviderError> {
+            Err(ProviderError::NoNewState)
+        }
+        async fn read_resource(
+            &mut self,
+            _: &str,
+            current: &DynamicValue,
+        ) -> Result<Option<DynamicValue>, ProviderError> {
+            if self.hang {
+                std::future::pending::<()>().await;
+            }
+            Ok(Some(current.clone()))
+        }
+        async fn read_data_source(
+            &mut self,
+            _: &str,
+            _: &DynamicValue,
+        ) -> Result<Option<DynamicValue>, ProviderError> {
+            Ok(None)
+        }
+        async fn import_resource_state(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<DynamicValue>, ProviderError> {
+            Ok(None)
+        }
+        async fn upgrade_resource_state(
+            &mut self,
+            _: &str,
+            _: i64,
+            _: &[u8],
+        ) -> Result<DynamicValue, ProviderError> {
+            Err(ProviderError::NoNewState)
+        }
+    }
+
+    struct CountingFactory {
+        dials: Arc<AtomicUsize>,
+        hanging_dials: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderFactory for CountingFactory {
+        async fn dial(&self, _req: DialRequest<'_>) -> Result<LiveProvider, EngineError> {
+            let n = self.dials.fetch_add(1, Ordering::SeqCst);
+            Ok(LiveProvider {
+                transport: Box::new(InProcessTransport),
+                conn: Box::new(Reader {
+                    hang: n < self.hanging_dials,
+                }),
+                schema: schema(),
+                abandoned: None,
+            })
+        }
+    }
+
+    fn repo(name: &str) -> StateResource {
+        StateResource {
+            address: ResourceAddress {
+                module: ModulePath::root(),
+                kind: ResourceKind::Managed,
+                type_id: ResourceTypeId("github_repository".into()),
+                name: name.into(),
+                key: None,
+            },
+            provider: ProviderReference {
+                source: "integrations/github".into(),
+                name: "github".into(),
+                alias: None,
+            },
+            instances: vec![StateInstance {
+                index_key: None,
+                schema_version: 0,
+                attributes: serde_json::json!({"id": name, "name": name}),
+                sensitive_attribute_paths: Vec::new(),
+                private: vec![],
+                dependencies: vec![],
+                status: InstanceStatus::Ready,
+            }],
+        }
+    }
+
+    fn state(names: &[&str]) -> State {
+        State {
+            version: 4,
+            terraform_version: "1.9.0".into(),
+            serial: 1,
+            lineage: uuid::Uuid::nil(),
+            outputs: Default::default(),
+            resources: names.iter().map(|n| repo(n)).collect(),
+        }
+    }
+
+    fn ctx(
+        dir: &std::path::Path,
+        hanging_dials: usize,
+    ) -> (ApplyContext, Arc<AtomicUsize>, Arc<RpcGuard>) {
+        let dials = Arc::new(AtomicUsize::new(0));
+        let guard = Arc::new(RpcGuard::new(
+            RpcDeadlines {
+                dial: Duration::from_secs(5),
+                read: Duration::from_millis(100),
+                mutate: Duration::from_secs(5),
+            },
+            Arc::new(ProgressBeacon::new()),
+        ));
+        let ctx = ApplyContext::new(dir.to_path_buf())
+            .without_pacer()
+            .with_provider_factory(Arc::new(CountingFactory {
+                dials: Arc::clone(&dials),
+                hanging_dials,
+            }))
+            .with_rpc_guard(Arc::clone(&guard));
+        (ctx, dials, guard)
+    }
+
+    #[tokio::test]
+    async fn a_hung_provider_is_replaced_and_the_refresh_carries_on() {
+        let td = tempfile::tempdir().unwrap();
+        let (ctx, dials, guard) = ctx(td.path(), 1);
+        let mut st = state(&["a", "b", "c"]);
+        let started = std::time::Instant::now();
+        let report = refresh_state(&mut st, &ctx).await;
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(dials.load(Ordering::SeqCst), 2);
+        assert_eq!(report.kept_on_error, 1);
+        assert_eq!(report.refreshed, 2);
+        assert_eq!(
+            st.resources.len(),
+            3,
+            "a read that never answered drops nothing"
+        );
+        let faults = guard.beacon.faults();
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0].subject.as_deref(), Some("github_repository.a"));
+    }
+
+    #[tokio::test]
+    async fn a_hung_pooled_process_is_stopped_and_not_leased_again() {
+        let td = tempfile::tempdir().unwrap();
+        let (ctx, dials, _) = ctx(td.path(), 1);
+        let pool = Arc::new(
+            crate::provider_pool::PooledProviderFactory::new(
+                Arc::clone(&ctx.provider_factory),
+                crate::provider_pool::ProviderPoolConfig::enabled(),
+            )
+            .with_version_resolver(Arc::new(|_| Some("1".to_string()))),
+        );
+        let ctx = ctx.with_provider_factory(Arc::clone(&pool) as Arc<dyn ProviderFactory>);
+        let mut st = state(&["a", "b", "c"]);
+        let report = refresh_state(&mut st, &ctx).await;
+        assert_eq!(dials.load(Ordering::SeqCst), 2);
+        assert_eq!(report.kept_on_error, 1);
+        assert_eq!(report.refreshed, 2);
+        assert_eq!(pool.stats().spawned, 2);
+    }
+
+    #[tokio::test]
+    async fn a_fault_in_a_targeted_refresh_names_the_row_it_was_reading() {
+        let td = tempfile::tempdir().unwrap();
+        let (ctx, _, guard) = ctx(td.path(), 1);
+        guard.beacon.note_subject("github_repository.earlier");
+        let mut st = state(&["a"]);
+        let names = HashSet::from(["a".to_string()]);
+        let report = refresh_named(&mut st, "github_repository", &names, &ctx).await;
+        assert_eq!(report.kept_on_error, 1);
+        assert_eq!(
+            guard.beacon.faults()[0].subject.as_deref(),
+            Some("github_repository.a")
+        );
+    }
+
+    #[tokio::test]
+    async fn replacements_are_bounded_so_a_dead_upstream_cannot_cost_one_deadline_per_resource() {
+        let td = tempfile::tempdir().unwrap();
+        let (ctx, dials, _) = ctx(td.path(), usize::MAX);
+        let names: Vec<String> = (0..20).map(|i| format!("r{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut st = state(&refs);
+        let started = std::time::Instant::now();
+        let report = refresh_state(&mut st, &ctx).await;
+        assert_eq!(dials.load(Ordering::SeqCst), MAX_RESPAWNS as usize + 1);
+        assert_eq!(report.kept_on_error, 20);
+        assert_eq!(st.resources.len(), 20);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
         );
     }
 }

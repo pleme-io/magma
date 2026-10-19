@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -114,13 +114,14 @@ pub struct PoolStats {
 struct Slot {
     conn: Box<dyn Provider>,
     transport: Arc<dyn ProviderTransport>,
+    retired: Arc<AtomicBool>,
     schema: ProviderSchema,
     idle_since: Instant,
 }
 
 impl Slot {
     fn alive(&self) -> bool {
-        is_alive(self.transport.as_ref())
+        !self.retired.load(Ordering::SeqCst) && is_alive(self.transport.as_ref())
     }
 }
 
@@ -307,13 +308,17 @@ impl PooledProviderFactory {
     fn lease(&self, key: PoolKey, slot: Slot) -> LiveProvider {
         let schema = slot.schema.clone();
         LiveProvider {
-            transport: Box::new(SharedTransport(Arc::clone(&slot.transport))),
+            transport: Box::new(SharedTransport {
+                process: Arc::clone(&slot.transport),
+                retired: Arc::clone(&slot.retired),
+            }),
             conn: Box::new(Leased {
                 key: Some(key),
                 slot: Some(slot),
                 pool: Arc::downgrade(&self.shared),
             }),
             schema,
+            abandoned: None,
         }
     }
 }
@@ -335,22 +340,21 @@ impl ProviderFactory for PooledProviderFactory {
                 Plan::Lease(slot) => return Ok(self.lease(key, slot)),
                 Plan::Dial(evicted) => {
                     drop(evicted);
-                    return match self.inner.dial(req).await {
-                        Ok(lp) => {
-                            self.shared.spawned.fetch_add(1, Ordering::SeqCst);
-                            let slot = Slot {
-                                conn: lp.conn,
-                                transport: Arc::from(lp.transport),
-                                schema: lp.schema,
-                                idle_since: Instant::now(),
-                            };
-                            Ok(self.lease(key, slot))
-                        }
-                        Err(e) => {
-                            self.shared.release_reservation();
-                            Err(e)
-                        }
+                    let mut reservation = Reservation {
+                        shared: &self.shared,
+                        held: true,
                     };
+                    let lp = self.inner.dial(req).await?;
+                    reservation.held = false;
+                    self.shared.spawned.fetch_add(1, Ordering::SeqCst);
+                    let slot = Slot {
+                        conn: lp.conn,
+                        transport: Arc::from(lp.transport),
+                        retired: Arc::new(AtomicBool::new(false)),
+                        schema: lp.schema,
+                        idle_since: Instant::now(),
+                    };
+                    return Ok(self.lease(key, slot));
                 }
                 Plan::Wait => {
                     if tokio::time::timeout_at(deadline, freed).await.is_err() {
@@ -366,14 +370,36 @@ impl ProviderFactory for PooledProviderFactory {
     }
 }
 
-struct SharedTransport(Arc<dyn ProviderTransport>);
+struct Reservation<'a> {
+    shared: &'a Shared,
+    held: bool,
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if self.held {
+            self.shared.release_reservation();
+        }
+    }
+}
+
+struct SharedTransport {
+    process: Arc<dyn ProviderTransport>,
+    retired: Arc<AtomicBool>,
+}
 
 impl ProviderTransport for SharedTransport {
     fn crash_summary(&self) -> Option<ProviderCrash> {
-        self.0.crash_summary()
+        self.process.crash_summary()
     }
     fn close_reason(&self) -> Option<String> {
-        self.0.close_reason()
+        self.process.close_reason()
+    }
+    fn death_watch(&self) -> Option<tokio::sync::watch::Receiver<Option<String>>> {
+        self.process.death_watch()
+    }
+    fn retire(&self) {
+        self.retired.store(true, Ordering::SeqCst);
     }
 }
 

@@ -195,7 +195,8 @@ pub async fn bounded<T>(
 /// Re-exported unchanged, so every `magma_plugin::provider::<T>` path
 /// still resolves. Relocation, not redesign.
 pub use magma_provider_api::{
-    Diag, PlannedChange, Provider, ProviderError, ProviderSchema, Severity, is_retryable,
+    Diag, PlannedChange, Provider, ProviderError, ProviderSchema, Severity, UnresponsiveCause,
+    is_retryable,
 };
 
 impl ProviderConn {
@@ -1059,9 +1060,11 @@ mod tests {
 
     fn silent_conn(budget: Duration) -> (ProviderConn, tokio::io::DuplexStream) {
         let (client_io, server_io) = tokio::io::duplex(1 << 20);
-        let channel =
-            futures::executor::block_on(crate::h2_channel(hyper_util::rt::TokioIo::new(client_io)))
-                .expect("the h2 client handshake does not wait for the server");
+        let channel = futures::executor::block_on(crate::h2_channel(
+            hyper_util::rt::TokioIo::new(client_io),
+            std::sync::Arc::new(tokio::sync::watch::channel(None).0),
+        ))
+        .expect("the h2 client handshake does not wait for the server");
         (
             ProviderConn::new(channel, PluginProtocol::V6)
                 .with_budgets(RpcBudgets::uniform(budget)),

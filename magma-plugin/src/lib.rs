@@ -334,7 +334,10 @@ impl tower::Service<http::Request<tonic::body::Body>> for H2Channel {
 /// connection driver, and return a cloneable [`H2Channel`]. The spawned task
 /// owns the connection for the life of the provider; it ends when the
 /// provider closes the socket (Drop kills the subprocess).
-async fn h2_channel<IO>(io: IO) -> Result<H2Channel, PluginError>
+async fn h2_channel<IO>(
+    io: IO,
+    death: Arc<tokio::sync::watch::Sender<Option<String>>>,
+) -> Result<H2Channel, PluginError>
 where
     IO: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
@@ -357,13 +360,17 @@ where
     let close_reason = std::sync::Arc::new(std::sync::Mutex::new(None));
     let close_reason_w = std::sync::Arc::clone(&close_reason);
     tokio::spawn(async move {
-        if let Err(e) = conn.await {
-            let chain = err_chain(&e);
-            debug!("magma-plugin h2 connection closed: {chain}");
-            // Capture the real cause so the next RPC failure isn't opaque.
-            if let Ok(mut g) = close_reason_w.lock() {
-                *g = Some(chain);
+        match conn.await {
+            Err(e) => {
+                let chain = err_chain(&e);
+                debug!("magma-plugin h2 connection closed: {chain}");
+                // Capture the real cause so the next RPC failure isn't opaque.
+                if let Ok(mut g) = close_reason_w.lock() {
+                    *g = Some(chain.clone());
+                }
+                mark_dead(&death, format!("provider h2 connection closed: {chain}"));
             }
+            Ok(()) => mark_dead(&death, "provider h2 connection ended".to_string()),
         }
     });
     Ok(H2Channel {
@@ -687,6 +694,30 @@ pub struct Plugin {
     /// SIGSEGV becomes a precise typed error instead of an opaque
     /// "channel closed".
     crash: Arc<std::sync::Mutex<CrashRing>>,
+    death: Arc<tokio::sync::watch::Sender<Option<String>>>,
+}
+
+async fn next_line_of_text<R>(lines: &mut tokio::io::Lines<R>) -> Option<String>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    loop {
+        match lines.next_line().await {
+            Ok(line) => return line,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+fn mark_dead(death: &tokio::sync::watch::Sender<Option<String>>, reason: String) {
+    death.send_if_modified(|slot| {
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(reason);
+        true
+    });
 }
 
 impl Plugin {
@@ -788,7 +819,7 @@ impl Plugin {
                 // the following stack frames (which carry no marker) are kept
                 // until it closes, so the `…/file.go:NNN` crash SITE survives.
                 let mut budget = 0usize;
-                while let Ok(Some(l)) = lines.next_line().await {
+                while let Some(l) = next_line_of_text(&mut lines).await {
                     if classify_crash_capture(&l, &mut budget) {
                         // Bump to error! so the panic + SIGSEGV + the stack
                         // frames are visible at INFO (they were invisible at
@@ -805,10 +836,12 @@ impl Plugin {
             });
         }
         let crash_w = Arc::clone(&crash);
+        let death = Arc::new(tokio::sync::watch::channel(None::<String>).0);
+        let death_w = Arc::clone(&death);
         tokio::spawn(async move {
             // `reader` owns the rest of stdout after the handshake line.
             let mut budget = 0usize;
-            while let Ok(Some(l)) = reader.next_line().await {
+            while let Some(l) = next_line_of_text(&mut reader).await {
                 if classify_crash_capture(&l, &mut budget) {
                     tracing::error!(provider = ?bin, stream = "stdout", "{l}");
                     if let Ok(mut g) = crash_w.lock() {
@@ -818,6 +851,10 @@ impl Plugin {
                     tracing::trace!(provider = ?bin, stream = "stdout", "{l}");
                 }
             }
+            mark_dead(
+                &death_w,
+                "provider process closed its stdout (exited)".to_string(),
+            );
         });
 
         if !spec.accepted_protocols.contains(&handshake.app_protocol) {
@@ -839,6 +876,7 @@ impl Plugin {
             identity,
             channel: None,
             crash,
+            death,
         })
     }
 
@@ -889,13 +927,13 @@ impl Plugin {
                     let stream = tokio::net::TcpStream::connect(&address)
                         .await
                         .map_err(|e| PluginError::Transport(err_chain(&e)))?;
-                    h2_channel(TokioIo::new(stream)).await?
+                    h2_channel(TokioIo::new(stream), Arc::clone(&self.death)).await?
                 }
                 "unix" => {
                     let stream = tokio::net::UnixStream::connect(&address)
                         .await
                         .map_err(|e| PluginError::Transport(err_chain(&e)))?;
-                    h2_channel(TokioIo::new(stream)).await?
+                    h2_channel(TokioIo::new(stream), Arc::clone(&self.death)).await?
                 }
                 other => {
                     return Err(PluginError::Transport(format!(
@@ -939,7 +977,7 @@ impl Plugin {
                     .connect(server_name, stream)
                     .await
                     .map_err(|e| PluginError::Tls(err_chain(&e)))?;
-                h2_channel(TokioIo::new(tls)).await?
+                h2_channel(TokioIo::new(tls), Arc::clone(&self.death)).await?
             }
             "unix" => {
                 let stream = tokio::net::UnixStream::connect(&address)
@@ -949,7 +987,7 @@ impl Plugin {
                     .connect(server_name, stream)
                     .await
                     .map_err(|e| PluginError::Tls(err_chain(&e)))?;
-                h2_channel(TokioIo::new(tls)).await?
+                h2_channel(TokioIo::new(tls), Arc::clone(&self.death)).await?
             }
             other => {
                 return Err(PluginError::Transport(format!(
@@ -971,6 +1009,11 @@ impl Plugin {
     #[must_use]
     pub fn parent_identity(&self) -> &ParentIdentity {
         &self.identity
+    }
+
+    #[must_use]
+    pub fn death_watch(&self) -> tokio::sync::watch::Receiver<Option<String>> {
+        self.death.subscribe()
     }
 
     /// The dialed gRPC channel, if `dial()` has been called.
@@ -1044,6 +1087,20 @@ impl Drop for Plugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_drain_reads_past_a_line_that_is_not_text_and_ends_at_eof() {
+        let mut lines = BufReader::new(&b"first\n\xff\xfe junk\nsecond\n"[..]).lines();
+        assert_eq!(
+            next_line_of_text(&mut lines).await.as_deref(),
+            Some("first")
+        );
+        assert_eq!(
+            next_line_of_text(&mut lines).await.as_deref(),
+            Some("second")
+        );
+        assert_eq!(next_line_of_text(&mut lines).await, None);
+    }
 
     #[test]
     fn parse_handshake_v6() {

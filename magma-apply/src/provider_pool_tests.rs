@@ -78,9 +78,13 @@ fn empty_schema() -> ProviderSchema {
 struct FakeTransport {
     crashed: Arc<AtomicBool>,
     closed: Arc<AtomicBool>,
+    death: tokio::sync::watch::Sender<Option<String>>,
 }
 
 impl ProviderTransport for FakeTransport {
+    fn death_watch(&self) -> Option<tokio::sync::watch::Receiver<Option<String>>> {
+        Some(self.death.subscribe())
+    }
     fn crash_summary(&self) -> Option<ProviderCrash> {
         self.crashed.load(Ordering::SeqCst).then(|| ProviderCrash {
             lines: vec!["panic: runtime error".to_string()],
@@ -98,6 +102,7 @@ impl ProviderTransport for FakeTransport {
 struct FakeSpawner {
     spawned: AtomicUsize,
     fail: AtomicBool,
+    hang: AtomicBool,
     processes: Mutex<Vec<(Arc<AtomicBool>, Arc<AtomicBool>)>>,
 }
 
@@ -123,6 +128,9 @@ impl ProviderFactory for FakeSpawner {
         if self.fail.load(Ordering::SeqCst) {
             return Err(EngineError::Spawn("github".into(), "boom".into()));
         }
+        if self.hang.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         self.spawned.fetch_add(1, Ordering::SeqCst);
         let crashed = Arc::new(AtomicBool::new(false));
         let closed = Arc::new(AtomicBool::new(false));
@@ -131,9 +139,14 @@ impl ProviderFactory for FakeSpawner {
             .unwrap()
             .push((Arc::clone(&crashed), Arc::clone(&closed)));
         Ok(LiveProvider {
-            transport: Box::new(FakeTransport { crashed, closed }),
+            transport: Box::new(FakeTransport {
+                crashed,
+                closed,
+                death: tokio::sync::watch::channel(None).0,
+            }),
             conn: Box::new(FakeProvider),
             schema: empty_schema(),
+            abandoned: None,
         })
     }
 }
@@ -173,6 +186,45 @@ async fn lease(pool: &PooledProviderFactory, token: &str) -> LiveProvider {
         Ok(lp) => lp,
         Err(e) => panic!("checkout refused: {e}"),
     }
+}
+
+#[tokio::test]
+async fn a_lease_carries_the_process_death_watch() {
+    let spawner = Arc::new(FakeSpawner::default());
+    let pool = pool(&spawner, config(4, 1_000));
+    let lp = lease(&pool, "a").await;
+    assert!(lp.transport().death_watch().is_some());
+}
+
+#[tokio::test]
+async fn a_retired_lease_is_stopped_and_never_leased_again() {
+    let spawner = Arc::new(FakeSpawner::default());
+    let pool = pool(&spawner, config(4, 1_000));
+    let lp = lease(&pool, "a").await;
+    lp.transport().retire();
+    drop(lp);
+    assert_eq!(
+        pool.stats(),
+        PoolStats {
+            live: 0,
+            idle: 0,
+            spawned: 1
+        }
+    );
+    let _again = lease(&pool, "a").await;
+    assert_eq!(spawner.spawned(), 2);
+}
+
+#[tokio::test]
+async fn a_cancelled_dial_gives_its_reservation_back() {
+    let spawner = Arc::new(FakeSpawner::default());
+    spawner.hang.store(true, Ordering::SeqCst);
+    let pool = pool(&spawner, config(1, 50));
+    let cancelled = tokio::time::timeout(Duration::from_millis(20), checkout(&pool, "a")).await;
+    assert!(cancelled.is_err());
+    assert_eq!(pool.stats().live, 0);
+    spawner.hang.store(false, Ordering::SeqCst);
+    assert!(checkout(&pool, "a").await.is_ok());
 }
 
 #[tokio::test]
@@ -406,6 +458,7 @@ async fn a_dead_idle_slot_is_skipped_and_uncounted_on_take() {
         st.idle.entry(key()).or_default().push(Slot {
             conn: lp.conn,
             transport: Arc::from(lp.transport),
+            retired: Arc::new(AtomicBool::new(false)),
             schema: lp.schema,
             idle_since: Instant::now(),
         });
