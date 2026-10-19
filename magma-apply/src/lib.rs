@@ -73,6 +73,7 @@ pub mod adopt;
 pub mod checkpoint;
 pub mod cursor;
 pub mod engine;
+pub mod guard;
 pub mod import_prepass;
 pub mod natural_id;
 pub mod shigoto_jobs;

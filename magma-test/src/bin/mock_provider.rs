@@ -428,6 +428,12 @@ impl Provider for MockProvider {
         // branch of `import_and_confirm` had no fixture at all, so the arm
         // that decides whether a refuted import is persisted was untested in
         // either direction.
+        if id_of.as_deref() == Some("exit-mid-rpc") {
+            std::process::exit(3);
+        }
+        if id_of.as_deref() == Some("hang-mid-rpc") {
+            std::future::pending::<()>().await;
+        }
         let is_gone = id_of
             .as_deref()
             .is_some_and(|i| i == "gone" || i.contains("vanished"));

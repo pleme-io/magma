@@ -180,6 +180,22 @@ pub enum ProviderError {
     },
     #[error("schema: {0}")]
     Schema(#[from] SchemaError),
+    #[error("provider {provider:?} unresponsive during {op}: {cause}")]
+    Unresponsive {
+        provider: String,
+        op: String,
+        cause: UnresponsiveCause,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum UnresponsiveCause {
+    #[error("no reply within the {deadline_ms}ms deadline")]
+    DeadlineExceeded { deadline_ms: u64 },
+    #[error("provider exited: {reason}")]
+    Exited { reason: String },
+    #[error("provider was abandoned after an earlier failure: {earlier}")]
+    Abandoned { earlier: String },
 }
 
 /// Is this provider error worth retrying with backoff? True for transient
@@ -226,7 +242,9 @@ pub fn is_retryable(e: &ProviderError) -> bool {
         // idempotency key allocates a SECOND one. Retrying a partial apply is
         // strictly worse than failing it.
         ProviderError::PartiallyApplied { .. } => false,
-        ProviderError::NoNewState | ProviderError::Schema(_) => false,
+        ProviderError::NoNewState
+        | ProviderError::Schema(_)
+        | ProviderError::Unresponsive { .. } => false,
     }
 }
 

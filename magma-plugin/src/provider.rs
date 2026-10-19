@@ -82,7 +82,8 @@ pub struct ProviderConn {
 /// Re-exported unchanged, so every `magma_plugin::provider::<T>` path
 /// still resolves. Relocation, not redesign.
 pub use magma_provider_api::{
-    Diag, PlannedChange, Provider, ProviderError, ProviderSchema, Severity, is_retryable,
+    Diag, PlannedChange, Provider, ProviderError, ProviderSchema, Severity, UnresponsiveCause,
+    is_retryable,
 };
 
 impl ProviderConn {
