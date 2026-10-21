@@ -150,6 +150,13 @@ pub enum ProviderError {
     Transport(String),
     #[error("provider returned {} error diagnostic(s): {}", .0.len(), fmt_diags(.0))]
     Diagnostics(Vec<Diag>),
+    #[error("provider RPC {rpc} on {subject} timed out after {elapsed:?} (budget {budget:?})")]
+    Deadline {
+        rpc: &'static str,
+        subject: String,
+        elapsed: std::time::Duration,
+        budget: std::time::Duration,
+    },
     #[error("provider returned no new_state from apply")]
     NoNewState,
     /// The provider returned an error diagnostic AND a `new_state` — the
@@ -226,6 +233,7 @@ pub fn is_retryable(e: &ProviderError) -> bool {
         // idempotency key allocates a SECOND one. Retrying a partial apply is
         // strictly worse than failing it.
         ProviderError::PartiallyApplied { .. } => false,
+        ProviderError::Deadline { rpc, .. } => *rpc != "ApplyResourceChange",
         ProviderError::NoNewState | ProviderError::Schema(_) => false,
     }
 }

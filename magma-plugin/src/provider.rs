@@ -22,6 +22,7 @@
 //! [`ProviderError`].
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use magma_cty::{CtyType, DynamicValue};
 use magma_protocol::{PluginProtocol, tfplugin5, tfplugin6};
@@ -66,6 +67,118 @@ fn client_caps_v5() -> Option<tfplugin5::ClientCapabilities> {
 /// A connected provider — the protocol-matched client over a dialed channel.
 pub struct ProviderConn {
     client: Client,
+    budgets: RpcBudgets,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rpc {
+    GetSchema,
+    Configure,
+    Plan,
+    Apply,
+    Read,
+    ReadData,
+    Import,
+    Upgrade,
+}
+
+impl Rpc {
+    pub fn name(self) -> &'static str {
+        match self {
+            Rpc::GetSchema => "GetProviderSchema",
+            Rpc::Configure => "ConfigureProvider",
+            Rpc::Plan => "PlanResourceChange",
+            Rpc::Apply => "ApplyResourceChange",
+            Rpc::Read => "ReadResource",
+            Rpc::ReadData => "ReadDataSource",
+            Rpc::Import => "ImportResourceState",
+            Rpc::Upgrade => "UpgradeResourceState",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RpcBudgets {
+    pub schema: Duration,
+    pub configure: Duration,
+    pub plan: Duration,
+    pub apply: Duration,
+    pub read: Duration,
+    pub read_data: Duration,
+    pub import: Duration,
+    pub upgrade: Duration,
+}
+
+impl Default for RpcBudgets {
+    fn default() -> Self {
+        Self {
+            schema: Duration::from_secs(300),
+            configure: Duration::from_secs(300),
+            plan: Duration::from_secs(600),
+            apply: Duration::from_secs(3600),
+            read: Duration::from_secs(600),
+            read_data: Duration::from_secs(600),
+            import: Duration::from_secs(600),
+            upgrade: Duration::from_secs(300),
+        }
+    }
+}
+
+impl RpcBudgets {
+    pub fn uniform(d: Duration) -> Self {
+        Self {
+            schema: d,
+            configure: d,
+            plan: d,
+            apply: d,
+            read: d,
+            read_data: d,
+            import: d,
+            upgrade: d,
+        }
+    }
+
+    pub fn from_env() -> Self {
+        match std::env::var("MAGMA_RPC_DEADLINE_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|s| *s > 0)
+        {
+            Some(secs) => Self::uniform(Duration::from_secs(secs)),
+            None => Self::default(),
+        }
+    }
+
+    pub fn budget(&self, rpc: Rpc) -> Duration {
+        match rpc {
+            Rpc::GetSchema => self.schema,
+            Rpc::Configure => self.configure,
+            Rpc::Plan => self.plan,
+            Rpc::Apply => self.apply,
+            Rpc::Read => self.read,
+            Rpc::ReadData => self.read_data,
+            Rpc::Import => self.import,
+            Rpc::Upgrade => self.upgrade,
+        }
+    }
+}
+
+pub async fn bounded<T>(
+    rpc: Rpc,
+    subject: &str,
+    budget: Duration,
+    call: impl std::future::Future<Output = Result<T, ProviderError>>,
+) -> Result<T, ProviderError> {
+    let started = std::time::Instant::now();
+    match tokio::time::timeout(budget, call).await {
+        Ok(result) => result,
+        Err(_) => Err(ProviderError::Deadline {
+            rpc: rpc.name(),
+            subject: subject.to_string(),
+            elapsed: started.elapsed(),
+            budget,
+        }),
+    }
 }
 
 /// ── THE PROTOCOL DATA MODEL MOVED TO `magma-provider-api` ────────────
@@ -97,82 +210,94 @@ impl ProviderConn {
                 Client::V6(Client6::new(channel).max_decoding_message_size(256 * 1024 * 1024))
             }
         };
-        Self { client }
+        Self {
+            client,
+            budgets: RpcBudgets::from_env(),
+        }
+    }
+
+    pub fn with_budgets(mut self, budgets: RpcBudgets) -> Self {
+        self.budgets = budgets;
+        self
     }
 
     /// `GetProviderSchema` (v6) / `GetSchema` (v5) → provider-config +
     /// per-resource implied types.
     pub async fn get_schema(&mut self) -> Result<ProviderSchema, ProviderError> {
-        match &mut self.client {
-            Client::V6(c) => {
-                let resp = c
-                    .get_provider_schema(tfplugin6::get_provider_schema::Request::default())
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag6))?;
-                let provider_config = match resp.provider.and_then(|s| s.block) {
-                    Some(b) => schema::block_implied_type(&b)?,
-                    None => CtyType::Object(BTreeMap::new()),
-                };
-                let mut resources = BTreeMap::new();
-                let mut resource_versions = BTreeMap::new();
-                for (name, sch) in resp.resource_schemas {
-                    // Capture the schema version regardless of whether the
-                    // block parses, so a resource_version() lookup is never
-                    // silently missing for a type whose implied type failed
-                    // to decode.
-                    resource_versions.insert(name.clone(), sch.version);
-                    if let Some(b) = sch.block {
-                        resources.insert(name, schema::block_implied_type(&b)?);
+        let budget = self.budgets.budget(Rpc::GetSchema);
+        bounded(Rpc::GetSchema, "provider", budget, async {
+            match &mut self.client {
+                Client::V6(c) => {
+                    let resp = c
+                        .get_provider_schema(tfplugin6::get_provider_schema::Request::default())
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag6))?;
+                    let provider_config = match resp.provider.and_then(|s| s.block) {
+                        Some(b) => schema::block_implied_type(&b)?,
+                        None => CtyType::Object(BTreeMap::new()),
+                    };
+                    let mut resources = BTreeMap::new();
+                    let mut resource_versions = BTreeMap::new();
+                    for (name, sch) in resp.resource_schemas {
+                        // Capture the schema version regardless of whether the
+                        // block parses, so a resource_version() lookup is never
+                        // silently missing for a type whose implied type failed
+                        // to decode.
+                        resource_versions.insert(name.clone(), sch.version);
+                        if let Some(b) = sch.block {
+                            resources.insert(name, schema::block_implied_type(&b)?);
+                        }
                     }
-                }
-                let mut data_sources = BTreeMap::new();
-                for (name, sch) in resp.data_source_schemas {
-                    if let Some(b) = sch.block {
-                        data_sources.insert(name, schema::block_implied_type(&b)?);
+                    let mut data_sources = BTreeMap::new();
+                    for (name, sch) in resp.data_source_schemas {
+                        if let Some(b) = sch.block {
+                            data_sources.insert(name, schema::block_implied_type(&b)?);
+                        }
                     }
+                    Ok(ProviderSchema {
+                        provider_config,
+                        resources,
+                        data_sources,
+                        resource_versions,
+                    })
                 }
-                Ok(ProviderSchema {
-                    provider_config,
-                    resources,
-                    data_sources,
-                    resource_versions,
-                })
+                Client::V5(c) => {
+                    let resp = c
+                        .get_schema(tfplugin5::get_provider_schema::Request::default())
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag5))?;
+                    let provider_config = match resp.provider.and_then(|s| s.block) {
+                        Some(b) => schema::block5_implied_type(&b)?,
+                        None => CtyType::Object(BTreeMap::new()),
+                    };
+                    let mut resources = BTreeMap::new();
+                    let mut resource_versions = BTreeMap::new();
+                    for (name, sch) in resp.resource_schemas {
+                        resource_versions.insert(name.clone(), sch.version);
+                        if let Some(b) = sch.block {
+                            resources.insert(name, schema::block5_implied_type(&b)?);
+                        }
+                    }
+                    let mut data_sources = BTreeMap::new();
+                    for (name, sch) in resp.data_source_schemas {
+                        if let Some(b) = sch.block {
+                            data_sources.insert(name, schema::block5_implied_type(&b)?);
+                        }
+                    }
+                    Ok(ProviderSchema {
+                        provider_config,
+                        resources,
+                        data_sources,
+                        resource_versions,
+                    })
+                }
             }
-            Client::V5(c) => {
-                let resp = c
-                    .get_schema(tfplugin5::get_provider_schema::Request::default())
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag5))?;
-                let provider_config = match resp.provider.and_then(|s| s.block) {
-                    Some(b) => schema::block5_implied_type(&b)?,
-                    None => CtyType::Object(BTreeMap::new()),
-                };
-                let mut resources = BTreeMap::new();
-                let mut resource_versions = BTreeMap::new();
-                for (name, sch) in resp.resource_schemas {
-                    resource_versions.insert(name.clone(), sch.version);
-                    if let Some(b) = sch.block {
-                        resources.insert(name, schema::block5_implied_type(&b)?);
-                    }
-                }
-                let mut data_sources = BTreeMap::new();
-                for (name, sch) in resp.data_source_schemas {
-                    if let Some(b) = sch.block {
-                        data_sources.insert(name, schema::block5_implied_type(&b)?);
-                    }
-                }
-                Ok(ProviderSchema {
-                    provider_config,
-                    resources,
-                    data_sources,
-                    resource_versions,
-                })
-            }
-        }
+        })
+        .await
     }
 
     /// `ConfigureProvider` (v6) / `Configure` (v5) — provider creds/settings.
@@ -181,34 +306,38 @@ impl ProviderConn {
         config: &DynamicValue,
         terraform_version: &str,
     ) -> Result<(), ProviderError> {
-        match &mut self.client {
-            Client::V6(c) => {
-                let resp = c
-                    .configure_provider(tfplugin6::configure_provider::Request {
-                        terraform_version: terraform_version.to_string(),
-                        config: Some(to_pb6(config)),
-                        client_capabilities: client_caps_v6(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag6))
+        let budget = self.budgets.budget(Rpc::Configure);
+        bounded(Rpc::Configure, "provider", budget, async {
+            match &mut self.client {
+                Client::V6(c) => {
+                    let resp = c
+                        .configure_provider(tfplugin6::configure_provider::Request {
+                            terraform_version: terraform_version.to_string(),
+                            config: Some(to_pb6(config)),
+                            client_capabilities: client_caps_v6(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag6))
+                }
+                Client::V5(c) => {
+                    let resp = c
+                        .configure(tfplugin5::configure::Request {
+                            terraform_version: terraform_version.to_string(),
+                            config: Some(to_pb5(config)),
+                            client_capabilities: client_caps_v5(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag5))
+                }
             }
-            Client::V5(c) => {
-                let resp = c
-                    .configure(tfplugin5::configure::Request {
-                        terraform_version: terraform_version.to_string(),
-                        config: Some(to_pb5(config)),
-                        client_capabilities: client_caps_v5(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag5))
-            }
-        }
+        })
+        .await
     }
 
     /// `PlanResourceChange` — the provider's proposed new state PLUS
@@ -224,64 +353,68 @@ impl ProviderConn {
         proposed_new_state: &DynamicValue,
         config: &DynamicValue,
     ) -> Result<PlannedChange, ProviderError> {
-        match &mut self.client {
-            Client::V6(c) => {
-                let resp = c
-                    .plan_resource_change(tfplugin6::plan_resource_change::Request {
-                        type_name: type_name.to_string(),
-                        prior_state: Some(to_pb6(prior_state)),
-                        proposed_new_state: Some(to_pb6(proposed_new_state)),
-                        config: Some(to_pb6(config)),
-                        client_capabilities: client_caps_v6(),
-                        ..Default::default()
+        let budget = self.budgets.budget(Rpc::Plan);
+        bounded(Rpc::Plan, type_name, budget, async {
+            match &mut self.client {
+                Client::V6(c) => {
+                    let resp = c
+                        .plan_resource_change(tfplugin6::plan_resource_change::Request {
+                            type_name: type_name.to_string(),
+                            prior_state: Some(to_pb6(prior_state)),
+                            proposed_new_state: Some(to_pb6(proposed_new_state)),
+                            config: Some(to_pb6(config)),
+                            client_capabilities: client_caps_v6(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag6))?;
+                    let requires_replace = resp
+                        .requires_replace
+                        .iter()
+                        .map(attribute_path_to_string_v6)
+                        .collect();
+                    let state = resp
+                        .planned_state
+                        .map(from_pb6)
+                        .ok_or(ProviderError::NoNewState)?;
+                    Ok(PlannedChange {
+                        state,
+                        requires_replace,
                     })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag6))?;
-                let requires_replace = resp
-                    .requires_replace
-                    .iter()
-                    .map(attribute_path_to_string_v6)
-                    .collect();
-                let state = resp
-                    .planned_state
-                    .map(from_pb6)
-                    .ok_or(ProviderError::NoNewState)?;
-                Ok(PlannedChange {
-                    state,
-                    requires_replace,
-                })
-            }
-            Client::V5(c) => {
-                let resp = c
-                    .plan_resource_change(tfplugin5::plan_resource_change::Request {
-                        type_name: type_name.to_string(),
-                        prior_state: Some(to_pb5(prior_state)),
-                        proposed_new_state: Some(to_pb5(proposed_new_state)),
-                        config: Some(to_pb5(config)),
-                        client_capabilities: client_caps_v5(),
-                        ..Default::default()
+                }
+                Client::V5(c) => {
+                    let resp = c
+                        .plan_resource_change(tfplugin5::plan_resource_change::Request {
+                            type_name: type_name.to_string(),
+                            prior_state: Some(to_pb5(prior_state)),
+                            proposed_new_state: Some(to_pb5(proposed_new_state)),
+                            config: Some(to_pb5(config)),
+                            client_capabilities: client_caps_v5(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag5))?;
+                    let requires_replace = resp
+                        .requires_replace
+                        .iter()
+                        .map(attribute_path_to_string_v5)
+                        .collect();
+                    let state = resp
+                        .planned_state
+                        .map(from_pb5)
+                        .ok_or(ProviderError::NoNewState)?;
+                    Ok(PlannedChange {
+                        state,
+                        requires_replace,
                     })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag5))?;
-                let requires_replace = resp
-                    .requires_replace
-                    .iter()
-                    .map(attribute_path_to_string_v5)
-                    .collect();
-                let state = resp
-                    .planned_state
-                    .map(from_pb5)
-                    .ok_or(ProviderError::NoNewState)?;
-                Ok(PlannedChange {
-                    state,
-                    requires_replace,
-                })
+                }
             }
-        }
+        })
+        .await
     }
 
     /// `ApplyResourceChange` — execute the change. Returns the new state.
@@ -292,50 +425,54 @@ impl ProviderConn {
         planned_state: &DynamicValue,
         config: &DynamicValue,
     ) -> Result<DynamicValue, ProviderError> {
-        match &mut self.client {
-            Client::V6(c) => {
-                let resp = c
-                    .apply_resource_change(tfplugin6::apply_resource_change::Request {
-                        type_name: type_name.to_string(),
-                        prior_state: Some(to_pb6(prior_state)),
-                        planned_state: Some(to_pb6(planned_state)),
-                        config: Some(to_pb6(config)),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                // Read `new_state` BEFORE deciding on diagnostics. The old order
-                // was `check_diags(...)?` first, which discarded a committed
-                // resource whenever the provider reported an error alongside it
-                // — the partial-apply leak (see ProviderError::PartiallyApplied).
-                apply_outcome(
-                    error_diags(resp.diagnostics.iter().map(diag6)),
-                    resp.new_state.map(from_pb6),
-                )
+        let budget = self.budgets.budget(Rpc::Apply);
+        bounded(Rpc::Apply, type_name, budget, async {
+            match &mut self.client {
+                Client::V6(c) => {
+                    let resp = c
+                        .apply_resource_change(tfplugin6::apply_resource_change::Request {
+                            type_name: type_name.to_string(),
+                            prior_state: Some(to_pb6(prior_state)),
+                            planned_state: Some(to_pb6(planned_state)),
+                            config: Some(to_pb6(config)),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    // Read `new_state` BEFORE deciding on diagnostics. The old order
+                    // was `check_diags(...)?` first, which discarded a committed
+                    // resource whenever the provider reported an error alongside it
+                    // — the partial-apply leak (see ProviderError::PartiallyApplied).
+                    apply_outcome(
+                        error_diags(resp.diagnostics.iter().map(diag6)),
+                        resp.new_state.map(from_pb6),
+                    )
+                }
+                Client::V5(c) => {
+                    let resp = c
+                        .apply_resource_change(tfplugin5::apply_resource_change::Request {
+                            type_name: type_name.to_string(),
+                            prior_state: Some(to_pb5(prior_state)),
+                            planned_state: Some(to_pb5(planned_state)),
+                            config: Some(to_pb5(config)),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    // Read `new_state` BEFORE deciding on diagnostics. The old order
+                    // was `check_diags(...)?` first, which discarded a committed
+                    // resource whenever the provider reported an error alongside it
+                    // — the partial-apply leak (see ProviderError::PartiallyApplied).
+                    apply_outcome(
+                        error_diags(resp.diagnostics.iter().map(diag5)),
+                        resp.new_state.map(from_pb5),
+                    )
+                }
             }
-            Client::V5(c) => {
-                let resp = c
-                    .apply_resource_change(tfplugin5::apply_resource_change::Request {
-                        type_name: type_name.to_string(),
-                        prior_state: Some(to_pb5(prior_state)),
-                        planned_state: Some(to_pb5(planned_state)),
-                        config: Some(to_pb5(config)),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                // Read `new_state` BEFORE deciding on diagnostics. The old order
-                // was `check_diags(...)?` first, which discarded a committed
-                // resource whenever the provider reported an error alongside it
-                // — the partial-apply leak (see ProviderError::PartiallyApplied).
-                apply_outcome(
-                    error_diags(resp.diagnostics.iter().map(diag5)),
-                    resp.new_state.map(from_pb5),
-                )
-            }
-        }
+        })
+        .await
     }
 
     /// `ReadResource` — read the resource's ACTUAL current state from the
@@ -348,36 +485,40 @@ impl ProviderConn {
         type_name: &str,
         current_state: &DynamicValue,
     ) -> Result<Option<DynamicValue>, ProviderError> {
-        match &mut self.client {
-            Client::V6(c) => {
-                let resp = c
-                    .read_resource(tfplugin6::read_resource::Request {
-                        type_name: type_name.to_string(),
-                        current_state: Some(to_pb6(current_state)),
-                        client_capabilities: client_caps_v6(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag6))?;
-                Ok(resp.new_state.map(from_pb6).filter(|d| !d.is_null()))
+        let budget = self.budgets.budget(Rpc::Read);
+        bounded(Rpc::Read, type_name, budget, async {
+            match &mut self.client {
+                Client::V6(c) => {
+                    let resp = c
+                        .read_resource(tfplugin6::read_resource::Request {
+                            type_name: type_name.to_string(),
+                            current_state: Some(to_pb6(current_state)),
+                            client_capabilities: client_caps_v6(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag6))?;
+                    Ok(resp.new_state.map(from_pb6).filter(|d| !d.is_null()))
+                }
+                Client::V5(c) => {
+                    let resp = c
+                        .read_resource(tfplugin5::read_resource::Request {
+                            type_name: type_name.to_string(),
+                            current_state: Some(to_pb5(current_state)),
+                            client_capabilities: client_caps_v5(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag5))?;
+                    Ok(resp.new_state.map(from_pb5).filter(|d| !d.is_null()))
+                }
             }
-            Client::V5(c) => {
-                let resp = c
-                    .read_resource(tfplugin5::read_resource::Request {
-                        type_name: type_name.to_string(),
-                        current_state: Some(to_pb5(current_state)),
-                        client_capabilities: client_caps_v5(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag5))?;
-                Ok(resp.new_state.map(from_pb5).filter(|d| !d.is_null()))
-            }
-        }
+        })
+        .await
     }
 
     /// `ReadDataSource` — evaluate a `data` block by querying the provider,
@@ -390,36 +531,40 @@ impl ProviderConn {
         type_name: &str,
         config: &DynamicValue,
     ) -> Result<Option<DynamicValue>, ProviderError> {
-        match &mut self.client {
-            Client::V6(c) => {
-                let resp = c
-                    .read_data_source(tfplugin6::read_data_source::Request {
-                        type_name: type_name.to_string(),
-                        config: Some(to_pb6(config)),
-                        client_capabilities: client_caps_v6(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag6))?;
-                Ok(resp.state.map(from_pb6).filter(|d| !d.is_null()))
+        let budget = self.budgets.budget(Rpc::ReadData);
+        bounded(Rpc::ReadData, type_name, budget, async {
+            match &mut self.client {
+                Client::V6(c) => {
+                    let resp = c
+                        .read_data_source(tfplugin6::read_data_source::Request {
+                            type_name: type_name.to_string(),
+                            config: Some(to_pb6(config)),
+                            client_capabilities: client_caps_v6(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag6))?;
+                    Ok(resp.state.map(from_pb6).filter(|d| !d.is_null()))
+                }
+                Client::V5(c) => {
+                    let resp = c
+                        .read_data_source(tfplugin5::read_data_source::Request {
+                            type_name: type_name.to_string(),
+                            config: Some(to_pb5(config)),
+                            client_capabilities: client_caps_v5(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag5))?;
+                    Ok(resp.state.map(from_pb5).filter(|d| !d.is_null()))
+                }
             }
-            Client::V5(c) => {
-                let resp = c
-                    .read_data_source(tfplugin5::read_data_source::Request {
-                        type_name: type_name.to_string(),
-                        config: Some(to_pb5(config)),
-                        client_capabilities: client_caps_v5(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag5))?;
-                Ok(resp.state.map(from_pb5).filter(|d| !d.is_null()))
-            }
-        }
+        })
+        .await
     }
 
     /// `ImportResourceState` — adopt a resource that EXISTS in the cloud but
@@ -434,48 +579,52 @@ impl ProviderConn {
         type_name: &str,
         id: &str,
     ) -> Result<Option<DynamicValue>, ProviderError> {
-        match &mut self.client {
-            Client::V6(c) => {
-                let resp = c
-                    .import_resource_state(tfplugin6::import_resource_state::Request {
-                        type_name: type_name.to_string(),
-                        id: id.to_string(),
-                        client_capabilities: client_caps_v6(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag6))?;
-                Ok(resp
-                    .imported_resources
-                    .into_iter()
-                    .next()
-                    .and_then(|ir| ir.state)
-                    .map(from_pb6)
-                    .filter(|d| !d.is_null()))
+        let budget = self.budgets.budget(Rpc::Import);
+        bounded(Rpc::Import, type_name, budget, async {
+            match &mut self.client {
+                Client::V6(c) => {
+                    let resp = c
+                        .import_resource_state(tfplugin6::import_resource_state::Request {
+                            type_name: type_name.to_string(),
+                            id: id.to_string(),
+                            client_capabilities: client_caps_v6(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag6))?;
+                    Ok(resp
+                        .imported_resources
+                        .into_iter()
+                        .next()
+                        .and_then(|ir| ir.state)
+                        .map(from_pb6)
+                        .filter(|d| !d.is_null()))
+                }
+                Client::V5(c) => {
+                    let resp = c
+                        .import_resource_state(tfplugin5::import_resource_state::Request {
+                            type_name: type_name.to_string(),
+                            id: id.to_string(),
+                            client_capabilities: client_caps_v5(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag5))?;
+                    Ok(resp
+                        .imported_resources
+                        .into_iter()
+                        .next()
+                        .and_then(|ir| ir.state)
+                        .map(from_pb5)
+                        .filter(|d| !d.is_null()))
+                }
             }
-            Client::V5(c) => {
-                let resp = c
-                    .import_resource_state(tfplugin5::import_resource_state::Request {
-                        type_name: type_name.to_string(),
-                        id: id.to_string(),
-                        client_capabilities: client_caps_v5(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag5))?;
-                Ok(resp
-                    .imported_resources
-                    .into_iter()
-                    .next()
-                    .and_then(|ir| ir.state)
-                    .map(from_pb5)
-                    .filter(|d| !d.is_null()))
-            }
-        }
+        })
+        .await
     }
 
     /// `UpgradeResourceState` — migrate a `StateInstance`'s raw attribute
@@ -498,44 +647,48 @@ impl ProviderConn {
         stored_version: i64,
         raw_json: &[u8],
     ) -> Result<DynamicValue, ProviderError> {
-        match &mut self.client {
-            Client::V6(c) => {
-                let resp = c
-                    .upgrade_resource_state(tfplugin6::upgrade_resource_state::Request {
-                        type_name: type_name.to_string(),
-                        version: stored_version,
-                        raw_state: Some(tfplugin6::RawState {
-                            json: raw_json.to_vec(),
-                            flatmap: Default::default(),
-                        }),
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag6))?;
-                resp.upgraded_state
-                    .map(from_pb6)
-                    .ok_or(ProviderError::NoNewState)
+        let budget = self.budgets.budget(Rpc::Upgrade);
+        bounded(Rpc::Upgrade, type_name, budget, async {
+            match &mut self.client {
+                Client::V6(c) => {
+                    let resp = c
+                        .upgrade_resource_state(tfplugin6::upgrade_resource_state::Request {
+                            type_name: type_name.to_string(),
+                            version: stored_version,
+                            raw_state: Some(tfplugin6::RawState {
+                                json: raw_json.to_vec(),
+                                flatmap: Default::default(),
+                            }),
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag6))?;
+                    resp.upgraded_state
+                        .map(from_pb6)
+                        .ok_or(ProviderError::NoNewState)
+                }
+                Client::V5(c) => {
+                    let resp = c
+                        .upgrade_resource_state(tfplugin5::upgrade_resource_state::Request {
+                            type_name: type_name.to_string(),
+                            version: stored_version,
+                            raw_state: Some(tfplugin5::RawState {
+                                json: raw_json.to_vec(),
+                                flatmap: Default::default(),
+                            }),
+                        })
+                        .await
+                        .map_err(transport)?
+                        .into_inner();
+                    check_diags(resp.diagnostics.iter().map(diag5))?;
+                    resp.upgraded_state
+                        .map(from_pb5)
+                        .ok_or(ProviderError::NoNewState)
+                }
             }
-            Client::V5(c) => {
-                let resp = c
-                    .upgrade_resource_state(tfplugin5::upgrade_resource_state::Request {
-                        type_name: type_name.to_string(),
-                        version: stored_version,
-                        raw_state: Some(tfplugin5::RawState {
-                            json: raw_json.to_vec(),
-                            flatmap: Default::default(),
-                        }),
-                    })
-                    .await
-                    .map_err(transport)?
-                    .into_inner();
-                check_diags(resp.diagnostics.iter().map(diag5))?;
-                resp.upgraded_state
-                    .map(from_pb5)
-                    .ok_or(ProviderError::NoNewState)
-            }
-        }
+        })
+        .await
     }
 }
 
@@ -902,6 +1055,92 @@ mod tests {
         };
         assert!(no_replace.requires_replace.is_empty());
         assert!(!must_replace.requires_replace.is_empty());
+    }
+
+    fn silent_conn(budget: Duration) -> (ProviderConn, tokio::io::DuplexStream) {
+        let (client_io, server_io) = tokio::io::duplex(1 << 20);
+        let channel =
+            futures::executor::block_on(crate::h2_channel(hyper_util::rt::TokioIo::new(client_io)))
+                .expect("the h2 client handshake does not wait for the server");
+        (
+            ProviderConn::new(channel, PluginProtocol::V6)
+                .with_budgets(RpcBudgets::uniform(budget)),
+            server_io,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_never_answers_hits_a_typed_deadline() {
+        let (mut conn, _silent) = silent_conn(Duration::from_millis(150));
+        let state = DynamicValue {
+            msgpack: vec![0xc0],
+        };
+        let started = std::time::Instant::now();
+        let err = conn
+            .read_resource("github_repository", &state)
+            .await
+            .expect_err("a silent provider must not hang the caller");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        match &err {
+            ProviderError::Deadline {
+                rpc,
+                subject,
+                elapsed,
+                budget,
+            } => {
+                assert_eq!(*rpc, "ReadResource");
+                assert_eq!(subject, "github_repository");
+                assert!(*elapsed >= Duration::from_millis(150));
+                assert_eq!(*budget, Duration::from_millis(150));
+            }
+            other => panic!("expected a Deadline, got {other:?}"),
+        }
+        assert!(is_retryable(&err));
+        assert!(err.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn the_next_attempt_proceeds_after_a_deadline_and_apply_is_never_retried() {
+        let (mut conn, _silent) = silent_conn(Duration::from_millis(100));
+        let state = DynamicValue {
+            msgpack: vec![0xc0],
+        };
+        for _ in 0..2 {
+            let e = conn.plan_resource_change("t", &state, &state, &state).await;
+            assert!(matches!(
+                e,
+                Err(ProviderError::Deadline {
+                    rpc: "PlanResourceChange",
+                    ..
+                })
+            ));
+        }
+        let applied = conn
+            .apply_resource_change("t", &state, &state, &state)
+            .await
+            .expect_err("silent");
+        assert!(matches!(
+            applied,
+            ProviderError::Deadline {
+                rpc: "ApplyResourceChange",
+                ..
+            }
+        ));
+        assert!(
+            !is_retryable(&applied),
+            "a re-issued create after an unknown outcome allocates a second resource"
+        );
+    }
+
+    #[test]
+    fn budgets_default_to_minutes_and_apply_is_the_longest() {
+        let b = RpcBudgets::default();
+        assert!(b.apply > b.plan && b.plan >= b.read);
+        assert_eq!(b.budget(Rpc::Apply), b.apply);
+        assert_eq!(
+            RpcBudgets::uniform(Duration::from_secs(1)).budget(Rpc::Import),
+            Duration::from_secs(1)
+        );
     }
 }
 
