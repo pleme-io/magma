@@ -85,8 +85,9 @@ pub use cursor::{
 };
 
 pub use import_prepass::{
-    ConfiguredImportEnvironment, FailedImport, ImportEnvironment, ImportPrepassOutcome,
-    ImportedAddress, PluginImportEnvironment, import_on_conflict, run_explicit_prepass,
+    AbsentImport, ConfiguredImportEnvironment, FailedImport, ImportEnvironment,
+    ImportPrepassOutcome, ImportVerdict, ImportedAddress, PluginImportEnvironment,
+    import_on_conflict, run_explicit_prepass,
 };
 
 use std::collections::HashMap;

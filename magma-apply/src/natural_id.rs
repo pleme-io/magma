@@ -90,6 +90,7 @@ impl Confidence {
 pub struct ImportId {
     pub id: String,
     pub confidence: Confidence,
+    pub parent: Option<String>,
 }
 
 /// One catalog row: a resource type and the components of its import id.
@@ -274,6 +275,7 @@ pub fn derive(
     if let Some(rule) = rule_for(change.address.type_id.0.as_str()) {
         let mut id = String::new();
         let mut confidence = Confidence::Catalog;
+        let mut parent = None;
         for (i, part) in rule.parts.iter().enumerate() {
             let component = match *part {
                 IdPart::Attr(k) => attr_str(resolved_after, k)
@@ -285,6 +287,9 @@ pub fn derive(
                     // name, or the syntactic fallback). Only the raw value can
                     // tell us the parent's identity.
                     let rawv = attr_str(raw, k);
+                    if let Some((ty, name)) = rawv.and_then(ref_parent) {
+                        parent.get_or_insert_with(|| format!("{ty}.{name}"));
+                    }
                     match rawv.and_then(ref_parent) {
                         Some((ty, name)) => match parent_name_from_state(state_map, ty, name)
                             // Not in state yet? The parent's DECLARED name is
@@ -331,7 +336,11 @@ pub fn derive(
             }
             id.push_str(&component);
         }
-        return Some(ImportId { id, confidence });
+        return Some(ImportId {
+            id,
+            confidence,
+            parent,
+        });
     }
 
     // No catalog row: name-keyed provider (github_repository's id IS its name).
@@ -339,11 +348,13 @@ pub fn derive(
         return Some(ImportId {
             id: n.to_string(),
             confidence: Confidence::NameAttribute,
+            parent: None,
         });
     }
     Some(ImportId {
         id: change.address.name.clone(),
         confidence: Confidence::AddressName,
+        parent: None,
     })
 }
 
@@ -733,13 +744,52 @@ mod tests {
                 &HashMap::new(),
             );
             match got {
-                Some(ImportId { id, confidence }) if id == row.expect => {
+                Some(ImportId { id, confidence, .. }) if id == row.expect => {
                     assert_eq!(confidence, Confidence::Catalog, "{}", row.ty);
                 }
                 other => failures.push((row.ty, row.expect, other)),
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn a_parent_keyed_id_names_the_parent_address_it_resolved_through() {
+        let after = serde_json::json!({
+            "repository": "${github_repository.onepassword_admin.name}",
+            "allowed_actions": "all"
+        });
+        let mut declared = HashMap::new();
+        declared.insert(
+            "github_repository".to_string(),
+            serde_json::json!({ "onepassword_admin": { "name": "onepassword-admin" } }),
+        );
+        let got = derive(
+            &mk(
+                "github_actions_repository_permissions",
+                "onepassword_admin_actions",
+                after.clone(),
+            ),
+            Some(&after),
+            &HashMap::new(),
+            &declared,
+        )
+        .unwrap();
+        assert_eq!(got.id, "onepassword-admin");
+        assert_eq!(
+            got.parent.as_deref(),
+            Some("github_repository.onepassword_admin")
+        );
+
+        let own = serde_json::json!({ "name": "onepassword-admin" });
+        let repo = derive(
+            &mk("github_repository", "onepassword_admin", own.clone()),
+            Some(&own),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(repo.parent, None);
     }
 
     // ── the defect this module exists for ─────────────────────────────────

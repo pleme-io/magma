@@ -37,7 +37,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use magma_types::{
-    ImportDirectives, ImportTarget, ImportedInstance, InstanceStatus, ModulePath, ProviderInstance,
+    ImportDirectives, ImportTarget, ImportedInstance, ModulePath, ProviderInstance,
     ProviderReference, ResourceAddress, ResourceKind, ResourceTypeId, State, StateInstance,
     StateResource,
 };
@@ -88,6 +88,21 @@ pub struct FailedImport {
 pub struct ImportPrepassOutcome {
     pub imported: Vec<ImportedAddress>,
     pub failed: Vec<FailedImport>,
+    #[serde(default)]
+    pub absent: Vec<AbsentImport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbsentImport {
+    pub address: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportVerdict {
+    Imported { absorbed: bool },
+    Absent,
+    Failed { reason: String },
 }
 
 impl ImportPrepassOutcome {
@@ -96,7 +111,25 @@ impl ImportPrepassOutcome {
     /// failed addresses simply re-plan as Create.
     #[must_use]
     pub fn all_succeeded(&self) -> bool {
-        self.failed.is_empty()
+        self.failed.is_empty() && self.absent.is_empty()
+    }
+
+    #[must_use]
+    pub fn verdict_for(&self, address: &str) -> Option<ImportVerdict> {
+        if let Some(i) = self.imported.iter().find(|i| i.address == address) {
+            return Some(ImportVerdict::Imported {
+                absorbed: i.absorbed,
+            });
+        }
+        if self.absent.iter().any(|a| a.address == address) {
+            return Some(ImportVerdict::Absent);
+        }
+        self.failed
+            .iter()
+            .find(|f| f.address == address)
+            .map(|f| ImportVerdict::Failed {
+                reason: f.reason.clone(),
+            })
     }
 
     /// How many addresses were newly absorbed into state.
@@ -199,15 +232,24 @@ pub async fn run_explicit_prepass<E: ImportEnvironment>(
             .import_resource_state(&parsed.type_id.0, id, &instance)
             .await
         {
-            Ok(instances) => {
-                absorb(state, &parsed, &instances, &instance);
-                debug!(%address, %id, count = instances.len(), "import prepass: absorbed");
-                outcome.imported.push(ImportedAddress {
-                    address: address.clone(),
-                    id: id.to_string(),
-                    absorbed: true,
-                });
-            }
+            Ok(instances) => match adoptable(&parsed, &instances) {
+                Some(chosen) => {
+                    absorb(state, &parsed, chosen, &instance);
+                    debug!(%address, %id, count = instances.len(), "import prepass: absorbed");
+                    outcome.imported.push(ImportedAddress {
+                        address: address.clone(),
+                        id: id.to_string(),
+                        absorbed: true,
+                    });
+                }
+                None => {
+                    warn!(%address, %id, "import prepass: provider reported the resource absent; state left untouched");
+                    outcome.absent.push(AbsentImport {
+                        address: address.clone(),
+                        id: id.to_string(),
+                    });
+                }
+            },
             Err(reason) => {
                 // Per-resource failure isolation: log + record, never
                 // abort. The address stays un-absorbed; plan re-proposes
@@ -254,7 +296,14 @@ pub async fn import_on_conflict<E: ImportEnvironment>(
     let instances = env
         .import_resource_state(&address.type_id.0, natural_id, provider)
         .await?;
-    absorb(state, address, &instances, provider);
+    let chosen = adoptable(address, &instances).ok_or_else(|| {
+        TypedRefusal::Absent {
+            address: format!("{}.{}", address.type_id.0, address.name),
+            id: natural_id.to_string(),
+        }
+        .to_string()
+    })?;
+    absorb(state, address, chosen, provider);
     Ok(true)
 }
 
@@ -339,6 +388,10 @@ enum TypedRefusal {
          ConfiguredImportEnvironment, which spawns and configures the named instance."
     )]
     AliasOnRawChannel { provider: String, alias: String },
+    #[error(
+        "import of {address} ({id}): the provider reported the resource absent; nothing was adopted"
+    )]
+    Absent { address: String, id: String },
 }
 
 // ── Real environment (correct): provider gRPC over a CONFIGURED conn ──
@@ -464,9 +517,6 @@ impl ImportEnvironment for ConfiguredImportEnvironment<'_> {
                 // regression introduced here.
                 private: Vec::new(),
             }]),
-            // The provider imported nothing (cty-null state) — an empty
-            // instance list; `absorb()` records a tracked-but-empty
-            // placeholder, same as the raw path's empty-state case.
             None => Ok(Vec::new()),
         }
     }
@@ -501,6 +551,22 @@ fn state_contains(state: &State, address: &ResourceAddress) -> bool {
     state.resources.iter().any(|r| r.address == *address)
 }
 
+fn adoptable<'i>(
+    target_address: &ResourceAddress,
+    instances: &'i [ImportedInstance],
+) -> Option<&'i ImportedInstance> {
+    let carries_attributes = |i: &&ImportedInstance| {
+        i.attributes
+            .as_object()
+            .is_some_and(|o| o.values().any(|v| !v.is_null()))
+    };
+    instances
+        .iter()
+        .filter(carries_attributes)
+        .find(|i| i.type_name == target_address.type_id.0)
+        .or_else(|| instances.iter().find(carries_attributes))
+}
+
 /// Absorb the imported instances into state under `target_address`.
 /// The provider may return several instances (e.g. dependent
 /// resources); the one whose `type_name` matches the target's type maps
@@ -517,34 +583,10 @@ fn state_contains(state: &State, address: &ResourceAddress) -> bool {
 fn absorb(
     state: &mut State,
     target_address: &ResourceAddress,
-    instances: &[ImportedInstance],
+    chosen: &ImportedInstance,
     provider: &ProviderInstance,
 ) {
-    // Prefer the instance whose reported type matches the target; fall
-    // back to the first instance (single-resource imports — the common
-    // case — always return exactly one).
-    let chosen = instances
-        .iter()
-        .find(|i| i.type_name == target_address.type_id.0)
-        .or_else(|| instances.first());
-
-    let state_instances: Vec<StateInstance> = match chosen {
-        Some(inst) => vec![inst.to_state_instance()],
-        None => {
-            // No instance returned — record an empty Ready instance so
-            // the address is at least tracked (the next ReadResource
-            // hydrates it). This keeps the import idempotent.
-            vec![StateInstance {
-                index_key: None,
-                schema_version: 0,
-                attributes: serde_json::Value::Object(Default::default()),
-                sensitive_attribute_paths: Vec::new(),
-                private: Vec::new(),
-                dependencies: Vec::new(),
-                status: InstanceStatus::Ready,
-            }]
-        }
-    };
+    let state_instances: Vec<StateInstance> = vec![chosen.to_state_instance()];
 
     // Upsert: drop any prior instance at this address, then insert.
     state.resources.retain(|r| r.address != *target_address);
@@ -624,6 +666,7 @@ mod tests {
     struct MockEnv {
         ok: HashMap<String, serde_json::Value>,
         fail: HashMap<String, String>,
+        absent: HashMap<String, Vec<ImportedInstance>>,
         calls: Mutex<Vec<String>>,
     }
 
@@ -637,6 +680,10 @@ mod tests {
         }
         fn with_fail(mut self, id: &str, reason: &str) -> Self {
             self.fail.insert(id.to_string(), reason.to_string());
+            self
+        }
+        fn with_absent(mut self, id: &str, answer: Vec<ImportedInstance>) -> Self {
+            self.absent.insert(id.to_string(), answer);
             self
         }
         fn call_count(&self) -> usize {
@@ -664,6 +711,9 @@ mod tests {
             if let Some(reason) = self.fail.get(id) {
                 return Err(reason.clone());
             }
+            if let Some(answer) = self.absent.get(id) {
+                return Ok(answer.clone());
+            }
             if let Some(canned) = self.ok.get(id) {
                 return Ok(vec![ImportedInstance {
                     type_name: canned["type"].as_str().unwrap_or(type_name).to_string(),
@@ -681,6 +731,123 @@ mod tests {
             d = d.with_explicit(*a, *i);
         }
         d
+    }
+
+    fn absent_answers() -> Vec<(&'static str, Vec<ImportedInstance>)> {
+        vec![
+            ("no instance", Vec::new()),
+            (
+                "empty attribute map",
+                vec![ImportedInstance {
+                    type_name: "github_repository".into(),
+                    attributes: serde_json::json!({}),
+                    private: vec![],
+                }],
+            ),
+            (
+                "all-null attributes",
+                vec![ImportedInstance {
+                    type_name: "github_repository".into(),
+                    attributes: serde_json::json!({"name": null, "node_id": null}),
+                    private: vec![],
+                }],
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn an_absent_read_is_a_typed_absent_verdict_and_writes_nothing() {
+        for (label, answer) in absent_answers() {
+            let env = MockEnv::default().with_absent("onepassword-admin", answer);
+            let mut state = empty();
+            let d = directives(&[("github_repository.onepassword_admin", "onepassword-admin")]);
+
+            let outcome = run_explicit_prepass(&env, &d, &mut state).await.unwrap();
+
+            assert_eq!(
+                outcome.verdict_for("github_repository.onepassword_admin"),
+                Some(ImportVerdict::Absent),
+                "{label}"
+            );
+            assert!(outcome.imported.is_empty(), "{label}: {outcome:?}");
+            assert!(outcome.failed.is_empty(), "{label}: {outcome:?}");
+            assert!(!outcome.all_succeeded(), "{label}");
+            assert!(state.resources.is_empty(), "{label}: {:?}", state.resources);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_absent_import_is_retried_as_absent_not_absorbed_as_present() {
+        let env = MockEnv::default().with_absent("onepassword-admin", Vec::new());
+        let mut state = empty();
+        let d = directives(&[("github_repository.onepassword_admin", "onepassword-admin")]);
+
+        run_explicit_prepass(&env, &d, &mut state).await.unwrap();
+        let second = run_explicit_prepass(&env, &d, &mut state).await.unwrap();
+
+        assert_eq!(
+            second.verdict_for("github_repository.onepassword_admin"),
+            Some(ImportVerdict::Absent)
+        );
+        assert!(state.resources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_on_conflict_import_of_an_absent_object_refuses_and_writes_nothing() {
+        for (label, answer) in absent_answers() {
+            let env = MockEnv::default().with_absent("onepassword-admin", answer);
+            let mut state = empty();
+            let addr = parse_address("github_repository.onepassword_admin").unwrap();
+
+            let r = import_on_conflict(
+                &env,
+                &addr,
+                "onepassword-admin",
+                &mut state,
+                &ProviderInstance::implied_by_type("github_repository"),
+            )
+            .await;
+
+            assert!(r.unwrap_err().contains("absent"), "{label}");
+            assert!(state.resources.is_empty(), "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn verdicts_cover_imported_absent_and_failed() {
+        let env = MockEnv::default()
+            .with_ok(
+                "live",
+                "github_repository",
+                serde_json::json!({"name": "live"}),
+            )
+            .with_absent("gone", Vec::new())
+            .with_fail("broken", "403 forbidden");
+        let mut state = empty();
+        let d = directives(&[
+            ("github_repository.live", "live"),
+            ("github_repository.gone", "gone"),
+            ("github_repository.broken", "broken"),
+        ]);
+
+        let outcome = run_explicit_prepass(&env, &d, &mut state).await.unwrap();
+
+        assert_eq!(
+            outcome.verdict_for("github_repository.live"),
+            Some(ImportVerdict::Imported { absorbed: true })
+        );
+        assert_eq!(
+            outcome.verdict_for("github_repository.gone"),
+            Some(ImportVerdict::Absent)
+        );
+        assert_eq!(
+            outcome.verdict_for("github_repository.broken"),
+            Some(ImportVerdict::Failed {
+                reason: "403 forbidden".into()
+            })
+        );
+        assert_eq!(outcome.verdict_for("github_repository.never"), None);
+        assert_eq!(state.resources.len(), 1);
     }
 
     #[tokio::test]
@@ -924,11 +1091,11 @@ mod tests {
         absorb(
             &mut state,
             &addr,
-            &[ImportedInstance {
+            &ImportedInstance {
                 type_name: "github_repository".into(),
                 attributes: serde_json::json!({"name": "my-repo"}),
                 private: vec![],
-            }],
+            },
             &ProviderInstance::implied_by_type("github_repository"),
         );
         let calls_before = env.call_count();
@@ -944,9 +1111,9 @@ mod tests {
     async fn deterministic_address_order() {
         // Receipt order is sorted by address regardless of map order.
         let env = MockEnv::default()
-            .with_ok("a", "aws_iam_role", serde_json::json!({}))
-            .with_ok("b", "aws_iam_role", serde_json::json!({}))
-            .with_ok("c", "aws_iam_role", serde_json::json!({}));
+            .with_ok("a", "aws_iam_role", serde_json::json!({"id": "a"}))
+            .with_ok("b", "aws_iam_role", serde_json::json!({"id": "b"}))
+            .with_ok("c", "aws_iam_role", serde_json::json!({"id": "c"}));
         let mut state = empty();
         let d = directives(&[
             ("aws_iam_role.zeta", "c"),

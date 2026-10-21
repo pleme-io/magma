@@ -4519,6 +4519,7 @@ mod tests {
                 Some(ImportId {
                     id: "tag_forge:bug".into(),
                     confidence: c,
+                    parent: None,
                 }),
                 &addr,
                 "github_issue_label",
