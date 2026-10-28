@@ -33,6 +33,7 @@ use crate::schema;
 type Client5 = tfplugin5::provider_client::ProviderClient<H2Channel>;
 type Client6 = tfplugin6::provider_client::ProviderClient<H2Channel>;
 
+#[derive(Clone)]
 enum Client {
     V5(Client5),
     V6(Client6),
@@ -65,6 +66,7 @@ fn client_caps_v5() -> Option<tfplugin5::ClientCapabilities> {
 }
 
 /// A connected provider — the protocol-matched client over a dialed channel.
+#[derive(Clone)]
 pub struct ProviderConn {
     client: Client,
     budgets: RpcBudgets,
@@ -1226,5 +1228,9 @@ impl Provider for ProviderConn {
         raw_json: &[u8],
     ) -> Result<DynamicValue, ProviderError> {
         ProviderConn::upgrade_resource_state(self, type_name, stored_version, raw_json).await
+    }
+
+    fn fork(&self) -> Option<Box<dyn Provider>> {
+        Some(Box::new(self.clone()))
     }
 }

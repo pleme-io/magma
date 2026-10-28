@@ -349,6 +349,10 @@ pub trait Provider: Send + Sync {
         stored_version: i64,
         raw_json: &[u8],
     ) -> Result<DynamicValue, ProviderError>;
+
+    fn fork(&self) -> Option<Box<dyn Provider>> {
+        None
+    }
 }
 
 #[cfg(test)]

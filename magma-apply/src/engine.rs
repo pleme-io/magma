@@ -1771,7 +1771,7 @@ impl From<RefreshReport> for magma_types::RefreshCounts {
 /// it `kept_on_error`" (refresh must never drop or corrupt state because a
 /// read/upgrade failed).
 async fn resolve_prior_dv(
-    lp: &mut LiveProvider,
+    conn: &mut dyn Provider,
     pacer: Option<&LeakyBucket>,
     type_name: &str,
     implied: &CtyType,
@@ -1782,8 +1782,7 @@ async fn resolve_prior_dv(
         let raw = serde_json::to_vec(&inst.attributes).map_err(|_| ())?;
         rpc_retry!(
             pacer,
-            lp.conn
-                .upgrade_resource_state(type_name, inst.schema_version as i64, &raw)
+            conn.upgrade_resource_state(type_name, inst.schema_version as i64, &raw)
         )
         .map_err(|_| ())
     } else {
@@ -1808,86 +1807,171 @@ async fn resolve_prior_dv(
 /// Resources whose every instance went away are removed entirely. Returns a
 /// [`RefreshReport`] for the caller's cycle receipt.
 pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshReport {
+    refresh_state_with(state, ctx, None, ReadConcurrency::default()).await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadConcurrency {
+    Sequential,
+    Bounded(std::num::NonZeroUsize),
+}
+
+pub const DEFAULT_READ_CONCURRENCY: usize = 8;
+
+impl Default for ReadConcurrency {
+    fn default() -> Self {
+        Self::bounded(DEFAULT_READ_CONCURRENCY)
+    }
+}
+
+impl ReadConcurrency {
+    #[must_use]
+    pub fn bounded(width: usize) -> Self {
+        match std::num::NonZeroUsize::new(width) {
+            Some(w) if w.get() > 1 => Self::Bounded(w),
+            _ => Self::Sequential,
+        }
+    }
+
+    #[must_use]
+    pub fn width(self) -> usize {
+        match self {
+            Self::Sequential => 1,
+            Self::Bounded(w) => w.get(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RefreshScope {
+    #[default]
+    Full,
+    Affected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RefreshOptions {
+    pub scope: RefreshScope,
+    pub concurrency: ReadConcurrency,
+}
+
+struct ReadJob {
+    slot: (usize, usize),
+    type_name: String,
+    implied: CtyType,
+    current_version: i64,
+    inst: StateInstance,
+}
+
+enum ReadVerdict {
+    Refreshed(StateInstance),
+    Gone,
+    Kept(StateInstance),
+}
+
+async fn run_read_jobs(
+    conn: &mut dyn Provider,
+    pacer: Option<&LeakyBucket>,
+    jobs: Vec<ReadJob>,
+) -> Vec<((usize, usize), ReadVerdict)> {
+    let mut out = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        if let Some(p) = pacer {
+            let _ = p.acquire().await;
+        }
+        let verdict = read_one(conn, pacer, &job).await;
+        out.push((job.slot, verdict.unwrap_or(ReadVerdict::Kept(job.inst))));
+    }
+    out
+}
+
+async fn read_one(
+    conn: &mut dyn Provider,
+    pacer: Option<&LeakyBucket>,
+    job: &ReadJob,
+) -> Option<ReadVerdict> {
+    let prior_dv = resolve_prior_dv(
+        conn,
+        None,
+        &job.type_name,
+        &job.implied,
+        job.current_version,
+        &job.inst,
+    )
+    .await
+    .ok()?;
+    match rpc_retry!(pacer, conn.read_resource(&job.type_name, &prior_dv)) {
+        Ok(None) => Some(ReadVerdict::Gone),
+        Ok(Some(dv)) => {
+            let attrs = dv.to_json(&job.implied).ok()?;
+            Some(ReadVerdict::Refreshed(StateInstance {
+                attributes: attrs,
+                schema_version: u64::try_from(job.current_version)
+                    .unwrap_or(job.inst.schema_version),
+                ..job.inst.clone()
+            }))
+        }
+        Err(_) => None,
+    }
+}
+
+fn stripe<T>(items: Vec<T>, width: usize) -> Vec<Vec<T>> {
+    let mut lanes: Vec<Vec<T>> = (0..width).map(|_| Vec::new()).collect();
+    for (i, item) in items.into_iter().enumerate() {
+        lanes[i % width].push(item);
+    }
+    lanes
+}
+
+pub async fn refresh_state_with(
+    state: &mut State,
+    ctx: &ApplyContext,
+    scope: Option<&HashSet<ResourceAddress>>,
+    concurrency: ReadConcurrency,
+) -> RefreshReport {
     let mut registry = Registry::new(ctx);
     let mut report = RefreshReport::default();
-    let mut kept: Vec<StateResource> = Vec::new();
+    let mut resources = std::mem::take(&mut state.resources);
+    let mut outcomes: Vec<Vec<Option<StateInstance>>> = Vec::with_capacity(resources.len());
+    let mut in_scope: Vec<bool> = Vec::with_capacity(resources.len());
+    let mut jobs: HashMap<ProviderInstance, Vec<ReadJob>> = HashMap::new();
+    let mut order: Vec<ProviderInstance> = Vec::new();
 
-    for resource in std::mem::take(&mut state.resources) {
+    for (r, resource) in resources.iter_mut().enumerate() {
+        let instances = std::mem::take(&mut resource.instances);
+        let targeted = scope.is_none_or(|s| s.contains(&resource.address));
+        in_scope.push(targeted);
+        if !targeted {
+            outcomes.push(instances.into_iter().map(Some).collect());
+            continue;
+        }
         let type_name = resource.address.type_id.0.clone();
-        // Select from the ROW's own provider reference, so an aliased
-        // resource is read back through the instance that holds it.
-        let provider_instance = match refresh_instance_for(ctx, &resource) {
+        let provider_instance = match refresh_instance_for(ctx, resource) {
             Ok(i) => i,
-            Err(kept_row) => {
-                report.kept_on_error += resource.instances.len();
-                kept.push(kept_row);
+            Err(_) => {
+                report.kept_on_error += instances.len();
+                outcomes.push(instances.into_iter().map(Some).collect());
                 continue;
             }
         };
-
-        // Resolve the implied type + current schema version once (clone
-        // so the schema borrow ends before the per-instance mutable RPC
-        // borrows). Any failure here ⇒ keep the whole resource untouched.
         let (implied, current_version) = match registry.get(&provider_instance).await {
             Ok(lp) => match lp.schema.resource(&type_name) {
                 Some(t) => (t.clone(), lp.schema.resource_version(&type_name)),
                 None => {
-                    report.kept_on_error += resource.instances.len();
-                    kept.push(resource);
+                    report.kept_on_error += instances.len();
+                    outcomes.push(instances.into_iter().map(Some).collect());
                     continue;
                 }
             },
             Err(_) => {
-                report.kept_on_error += resource.instances.len();
-                kept.push(resource);
+                report.kept_on_error += instances.len();
+                outcomes.push(instances.into_iter().map(Some).collect());
                 continue;
             }
         };
-
-        let mut kept_instances: Vec<StateInstance> = Vec::new();
-        for inst in resource.instances {
-            // PACE THE REFRESH. `refresh_state` reads EVERY instance in the
-            // workspace on EVERY cycle, so it is the dominant consumer of the
-            // provider's hourly budget — far larger than the mutations the
-            // pacer was originally built for. It ran unpaced while its own
-            // sibling `refresh_named` paced the identical RPC, so a bulk
-            // refresh could exhaust the budget before the apply it precedes
-            // ever dispatched a single write.
-            //
-            // Measured 2026-08-08 on pleme-io-opensource: 4,786 instances
-            // against GitHub's 5,000 req/hr, so the refresh alone consumed the
-            // hour and every apply died on `403 API rate limit of 5000 still
-            // exceeded` — three approvals, zero completed applies.
-            if let Some(p) = ctx.pacer.as_deref() {
-                let _ = p.acquire().await;
-            }
-            // STRUCTURAL DROP, and the one principled exception to the
-            // "never delete because a read failed" rule above.
-            //
-            // The predicate is deliberately NARROWER than "has no id". An
-            // id-less instance cannot be read — ReadResource has nothing to
-            // look up — so it never reaches the provider-reports-gone arm that
-            // self-heals ordinary phantoms; it fails, lands in
-            // `kept_on_error`, and survives every refresh forever while
-            // re-planning as a pending change, wedging the workspace on
-            // `apply didn't converge` permanently.
-            //
-            // But missing-id ALONE is not safe to act on: `id` is mandatory
-            // for legacy-SDK resources and merely conventional for
-            // plugin-framework (protocol v6) ones, so a blanket drop could
-            // delete legitimate state. The second half of the predicate is
-            // what makes it decisive — an UNRESOLVED `${…}` interpolation in
-            // an attribute. State holds resolved values by definition; a
-            // `${…}` there is never a refreshed read, only ever a config echo
-            // recorded from a failed apply. Both together identify a phantom
-            // with no plausible innocent reading.
-            //
-            // Measured on example-eks-vpn-concentrator (2026-08-01): a failed
-            // SG create recorded the provider's config echo (no id, `vpc_id`
-            // still the literal `${data.aws_vpc.example_eks.id}`), and every
-            // cycle thereafter failed with "re-plan has 1 non-NoOp changes"
-            // while AWS showed no such SG. `record_partial_apply` now refuses
-            // to create these; this arm heals the ones already written.
+        let mut slots: Vec<Option<StateInstance>> = Vec::with_capacity(instances.len());
+        for (i, inst) in instances.into_iter().enumerate() {
+            slots.push(None);
             if is_unmanageable_phantom(&inst.attributes) {
                 report.dropped_unmanageable += 1;
                 tracing::warn!(
@@ -1899,75 +1983,72 @@ pub async fn refresh_state(state: &mut State, ctx: &ApplyContext) -> RefreshRepo
                 );
                 continue;
             }
-            let lp = match registry.get(&provider_instance).await {
-                Ok(l) => l,
-                Err(_) => {
-                    report.kept_on_error += 1;
-                    kept_instances.push(inst);
-                    continue;
-                }
-            };
-            let prior_dv = match resolve_prior_dv(
-                lp,
-                None,
-                &type_name,
-                &implied,
+            if !jobs.contains_key(&provider_instance) {
+                order.push(provider_instance.clone());
+            }
+            jobs.entry(provider_instance.clone()).or_default().push(ReadJob {
+                slot: (r, i),
+                type_name: type_name.clone(),
+                implied: implied.clone(),
                 current_version,
-                &inst,
-            )
-            .await
-            {
-                Ok(d) => d,
-                Err(()) => {
-                    report.kept_on_error += 1;
-                    kept_instances.push(inst);
-                    continue;
+                inst,
+            });
+        }
+        outcomes.push(slots);
+    }
+
+    let pacer = ctx.pacer.as_deref();
+    for provider_instance in order {
+        let Some(list) = jobs.remove(&provider_instance) else {
+            continue;
+        };
+        let results = match registry.get(&provider_instance).await {
+            Err(_) => list
+                .into_iter()
+                .map(|j| (j.slot, ReadVerdict::Kept(j.inst)))
+                .collect::<Vec<_>>(),
+            Ok(lp) => {
+                let width = concurrency.width().min(list.len()).max(1);
+                let forks: Vec<Box<dyn Provider>> = if width > 1 {
+                    (0..width).map_while(|_| lp.conn.fork()).collect()
+                } else {
+                    Vec::new()
+                };
+                if forks.len() > 1 {
+                    let lanes = stripe(list, forks.len());
+                    let runs = forks.into_iter().zip(lanes).map(|(mut conn, lane)| async move {
+                        run_read_jobs(conn.as_mut(), pacer, lane).await
+                    });
+                    futures::future::join_all(runs).await.into_iter().flatten().collect()
+                } else {
+                    run_read_jobs(lp.conn.as_mut(), pacer, list).await
                 }
-            };
-            match rpc_retry!(
-                ctx.pacer.as_deref(),
-                lp.conn.read_resource(&type_name, &prior_dv)
-            ) {
-                Ok(None) => {
-                    // Confirmed gone — drop this phantom/deleted instance.
-                    report.dropped_instances += 1;
+            }
+        };
+        for ((r, i), verdict) in results {
+            match verdict {
+                ReadVerdict::Refreshed(inst) => {
+                    report.refreshed += 1;
+                    outcomes[r][i] = Some(inst);
                 }
-                Ok(Some(dv)) => match dv.to_json(&implied) {
-                    Ok(attrs) => {
-                        report.refreshed += 1;
-                        kept_instances.push(StateInstance {
-                            attributes: attrs,
-                            // Now confirmed current — never leave the stale
-                            // stored version in place (that would silently
-                            // re-trigger the same upgrade every cycle and
-                            // never actually converge to "checked").
-                            schema_version: u64::try_from(current_version)
-                                .unwrap_or(inst.schema_version),
-                            ..inst
-                        });
-                    }
-                    Err(_) => {
-                        report.kept_on_error += 1;
-                        kept_instances.push(inst);
-                    }
-                },
-                Err(_) => {
+                ReadVerdict::Gone => report.dropped_instances += 1,
+                ReadVerdict::Kept(inst) => {
                     report.kept_on_error += 1;
-                    kept_instances.push(inst);
+                    outcomes[r][i] = Some(inst);
                 }
             }
         }
-
-        if kept_instances.is_empty() {
-            report.dropped_resources += 1;
-        } else {
-            kept.push(StateResource {
-                instances: kept_instances,
-                ..resource
-            });
-        }
     }
 
+    let mut kept: Vec<StateResource> = Vec::with_capacity(resources.len());
+    for ((mut resource, slots), targeted) in resources.into_iter().zip(outcomes).zip(in_scope) {
+        resource.instances = slots.into_iter().flatten().collect();
+        if targeted && resource.instances.is_empty() {
+            report.dropped_resources += 1;
+        } else {
+            kept.push(resource);
+        }
+    }
     state.resources = kept;
     report
 }
@@ -2108,7 +2189,7 @@ pub async fn refresh_named(
             // `inst.schema_version` is older than `current_version` — see
             // `resolve_prior_dv`'s doc.
             let prior_dv = match resolve_prior_dv(
-                lp,
+                lp.conn.as_mut(),
                 pacer.as_deref(),
                 &type_name,
                 &implied,
@@ -2226,25 +2307,80 @@ pub async fn refresh_then_plan(
     state: &mut State,
     ctx: Option<&ApplyContext>,
 ) -> Result<(Plan, Option<RefreshReport>), magma_plan::PlanError> {
+    refresh_then_plan_with(cfg, state, ctx, RefreshOptions::default()).await
+}
+
+#[must_use]
+pub fn affected_addresses(plan: &Plan) -> HashSet<ResourceAddress> {
+    let mut changed: HashSet<(String, String)> = HashSet::new();
+    let mut affected: HashSet<ResourceAddress> = HashSet::new();
+    for c in &plan.resource_changes {
+        if c.action != Action::NoOp {
+            changed.insert((c.address.type_id.0.clone(), c.address.name.clone()));
+            affected.insert(c.address.clone());
+        }
+    }
+    let edges: Vec<(&ResourceAddress, Vec<(String, String)>)> = plan
+        .resource_changes
+        .iter()
+        .filter(|c| c.action == Action::NoOp)
+        .map(|c| {
+            let targets = c
+                .after
+                .as_ref()
+                .map(|after| collect_refs(after).iter().filter_map(|r| ref_target(r)).collect())
+                .unwrap_or_default();
+            (&c.address, targets)
+        })
+        .collect();
+    loop {
+        let mut grew = false;
+        for (address, targets) in &edges {
+            if affected.contains(*address) {
+                continue;
+            }
+            if targets.iter().any(|t| changed.contains(t)) {
+                changed.insert((address.type_id.0.clone(), address.name.clone()));
+                affected.insert((*address).clone());
+                grew = true;
+            }
+        }
+        if !grew {
+            return affected;
+        }
+    }
+}
+
+pub async fn refresh_then_plan_with(
+    cfg: &magma_config::Config,
+    state: &mut State,
+    ctx: Option<&ApplyContext>,
+    options: RefreshOptions,
+) -> Result<(Plan, Option<RefreshReport>), magma_plan::PlanError> {
     state.apply_moved(&cfg.moves()?)?;
-    let report = match ctx {
-        Some(ctx) => Some(refresh_state(state, ctx).await),
-        None => None,
+    let Some(ctx) = ctx else {
+        let plan = magma_plan::plan(cfg, state)?.with_observation(magma_types::Observation::unrefreshed());
+        return Ok((plan, None));
     };
-    // Stamp the refresh's OWN trustworthiness onto the artifact that
-    // survives. Without this the report died here — printed to stderr,
-    // reduced to `.is_some()` — and a pass in which every `ReadResource`
-    // failed produced a plan bit-indistinguishable from one in which
-    // reality genuinely matched: same untouched state, same all-`NoOp`
-    // change set, same bytes. Publishing that as reality is publishing a
-    // lie. `Observation` is derived from the counts, never asserted, so
-    // this can only ever narrow a claim.
-    let observation = report.as_ref().map_or_else(
-        magma_types::Observation::unrefreshed,
-        RefreshReport::observation,
-    );
+    let (report, observation) = match options.scope {
+        RefreshScope::Full => {
+            let report = refresh_state_with(state, ctx, None, options.concurrency).await;
+            (report, report.observation())
+        }
+        RefreshScope::Affected => {
+            let targets = affected_addresses(&magma_plan::plan(cfg, state)?);
+            let unread = state
+                .resources
+                .iter()
+                .filter(|r| !targets.contains(&r.address))
+                .map(|r| r.instances.len())
+                .sum();
+            let report = refresh_state_with(state, ctx, Some(&targets), options.concurrency).await;
+            (report, magma_types::Observation::scoped(report.into(), unread))
+        }
+    };
     let plan = magma_plan::plan(cfg, state)?.with_observation(observation);
-    Ok((plan, report))
+    Ok((plan, Some(report)))
 }
 
 /// Does a provider error message *look like* an already-exists diagnostic?
