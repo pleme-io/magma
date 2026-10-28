@@ -1487,7 +1487,7 @@ checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 
 [[package]]
 name = "magma-apply"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1517,7 +1517,7 @@ dependencies = [
 
 [[package]]
 name = "magma-arch-test"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "chrono",
  "hex",
@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "magma-attest"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "blake3",
  "chrono",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "magma-backend"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "magma-state",
@@ -1566,7 +1566,7 @@ dependencies = [
 
 [[package]]
 name = "magma-budget"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1582,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "magma-bundle"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "blake3",
  "chrono",
@@ -1602,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "magma-cli"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "magma-config"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "magma-types",
  "serde",
@@ -1640,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "magma-controller"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1662,7 +1662,7 @@ dependencies = [
 
 [[package]]
 name = "magma-converge"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "magma-core"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "magma-apply",
  "magma-attest",
@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "magma-cty"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "rmpv",
  "serde",
@@ -1715,7 +1715,7 @@ dependencies = [
 
 [[package]]
 name = "magma-discover"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "magma-converge",
@@ -1728,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "magma-drift"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "blake3",
  "chrono",
@@ -1745,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "magma-fixtures"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "magma-state",
  "magma-types",
@@ -1757,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "magma-flow"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "hex",
  "magma-backend",
@@ -1777,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "magma-fsm"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "chrono",
  "magma-converge",
@@ -1789,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "magma-graph"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "magma-types",
  "petgraph 0.6.5",
@@ -1818,7 +1818,7 @@ dependencies = [
 
 [[package]]
 name = "magma-mcp"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "hex",
@@ -1844,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "magma-metrics"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "chrono",
  "magma-converge",
@@ -1857,7 +1857,7 @@ dependencies = [
 
 [[package]]
 name = "magma-migrate"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "blake3",
  "chrono",
@@ -1875,7 +1875,7 @@ dependencies = [
 
 [[package]]
 name = "magma-nix"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "blake3",
  "hex",
@@ -1886,7 +1886,7 @@ dependencies = [
 
 [[package]]
 name = "magma-operator-backend"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "magma-backend",
@@ -1904,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "magma-pangea"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "magma-config",
@@ -1922,7 +1922,7 @@ dependencies = [
 
 [[package]]
 name = "magma-plan"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1942,7 +1942,7 @@ dependencies = [
 
 [[package]]
 name = "magma-plugin"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "base64",
@@ -1971,7 +1971,7 @@ dependencies = [
 
 [[package]]
 name = "magma-protocol"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "prost",
  "prost-build",
@@ -1985,7 +1985,7 @@ dependencies = [
 
 [[package]]
 name = "magma-provider-api"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "magma-cty",
@@ -1996,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "magma-provider-random"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "base64",
@@ -2014,7 +2014,7 @@ dependencies = [
 
 [[package]]
 name = "magma-provider-registry"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "blake3",
@@ -2031,7 +2031,7 @@ dependencies = [
 
 [[package]]
 name = "magma-providers"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "magma-plugin",
  "magma-types",
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "magma-replay"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "chrono",
  "magma-converge",
@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "magma-repo"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "blake3",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "magma-rubygems"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "blake3",
  "hex",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "magma-spec"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "magma-converge",
  "magma-test-laws",
@@ -2105,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "magma-state"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "base64",
  "chrono",
@@ -2122,7 +2122,7 @@ dependencies = [
 
 [[package]]
 name = "magma-stream"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "blake3",
@@ -2143,7 +2143,7 @@ dependencies = [
 
 [[package]]
 name = "magma-tatara"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "proptest",
  "serde_json",
@@ -2152,7 +2152,7 @@ dependencies = [
 
 [[package]]
 name = "magma-test"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "base64",
@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "magma-test-laws"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2212,7 +2212,7 @@ dependencies = [
 
 [[package]]
 name = "magma-tfmod"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "serde",
  "serde_json",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "magma-types"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "chrono",
  "gen-platform",
