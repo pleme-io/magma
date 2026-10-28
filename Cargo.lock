@@ -1490,6 +1490,7 @@ name = "magma-apply"
 version = "0.1.38"
 dependencies = [
  "async-trait",
+ "blake3",
  "chrono",
  "futures",
  "hex",

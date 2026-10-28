@@ -149,6 +149,14 @@ pub enum EngineError {
          (`ApplyContext::with_provider_instance_config`) or drop the alias."
     )]
     UnconfiguredProviderAlias { instance: String },
+    #[error(
+        "provider pool exhausted for {provider:?}: all {max_processes} provider processes are leased and none returned within {waited_ms} ms"
+    )]
+    ProviderPoolExhausted {
+        provider: String,
+        max_processes: usize,
+        waited_ms: u64,
+    },
 }
 
 /// Build a crash-aware [`EngineError`] from a failed provider RPC. ONE

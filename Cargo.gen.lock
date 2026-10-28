@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "552960f99e43e2304f25dba9d69694d2715881948bcd90139da833e730abcc27",
+  "cargo_lock_sha256": "76be420f023ffceb7f13fa063d52073fd346e9b44a85a7fe204fb21545c68e5f",
   "manifest_sha256": {
     "Cargo.toml": "1a6f173f6370269008e066769f0b9645e7d758b7e9f67c77a5eae396f56e0382",
-    "magma-apply/Cargo.toml": "9565c0f59a4499b4620c11ec1e8f3cc90629fe6f626e14256b529ce3742c5311",
+    "magma-apply/Cargo.toml": "b430e139a860f97518791bfaf3bedfebeedb965d68431c88fab9e21cd2229d78",
     "magma-arch-test/Cargo.toml": "9c75271183cdc70bb256ae0265490500f1753b18b87caa9bcd76afeffaa58cc5",
     "magma-attest/Cargo.toml": "e77f0414566d26f73556049e4b3d4b7cfc449e73eac3ded69d7f935b06cf6433",
     "magma-backend/Cargo.toml": "f959a5d6afde8eb5a278806cdc26130c639e97fa8db01875efc01d32d3e06706",
@@ -2849,6 +2849,16 @@
             "optional": false,
             "target": null,
             "tree": "host"
+          },
+          {
+            "name": "blake3",
+            "package_key": "blake3-1.8.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
           },
           {
             "name": "chrono",

@@ -75,6 +75,7 @@ pub mod cursor;
 pub mod engine;
 pub mod import_prepass;
 pub mod natural_id;
+pub mod provider_pool;
 pub mod shigoto_jobs;
 
 pub use checkpoint::{CheckpointError, CheckpointSink, MemoryCheckpointSink, NullCheckpointSink};
