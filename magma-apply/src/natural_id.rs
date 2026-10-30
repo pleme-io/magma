@@ -70,7 +70,8 @@ pub enum Confidence {
     /// convention `resource-name == repo-name`, which underscore-sanitized
     /// resource names (`tag_forge` vs `tag-forge`) break.
     CatalogWithGuessedParent,
-    /// No catalog rule; the type keys import on its own `name` attribute.
+    /// No catalog rule; the id is the type's own `name` attribute. A guess:
+    /// a type imports by `name` only when its catalog row says so.
     NameAttribute,
     /// No catalog rule and no `name` attribute — the resource's *address* name
     /// is the last resort. A guess, and labelled as one.
@@ -81,7 +82,7 @@ impl Confidence {
     /// Is this id derived from real data, as opposed to a naming convention?
     #[must_use]
     pub const fn is_exact(self) -> bool {
-        matches!(self, Self::Catalog | Self::NameAttribute)
+        matches!(self, Self::Catalog)
     }
 }
 
@@ -198,6 +199,31 @@ pub const CATALOG: &[NaturalIdRule] = &[
     NaturalIdRule {
         resource_type: "github_actions_repository_permissions",
         parts: &[IdPart::ParentName("repository")],
+        sep: ':',
+    },
+    NaturalIdRule {
+        resource_type: "github_repository",
+        parts: &[IdPart::Attr("name")],
+        sep: ':',
+    },
+    NaturalIdRule {
+        resource_type: "aws_iam_role",
+        parts: &[IdPart::Attr("name")],
+        sep: ':',
+    },
+    NaturalIdRule {
+        resource_type: "aws_cloudwatch_log_group",
+        parts: &[IdPart::Attr("name")],
+        sep: ':',
+    },
+    NaturalIdRule {
+        resource_type: "aws_iam_role_policy",
+        parts: &[IdPart::ParentName("role"), IdPart::Attr("name")],
+        sep: ':',
+    },
+    NaturalIdRule {
+        resource_type: "aws_budgets_budget",
+        parts: &[IdPart::Attr("account_id"), IdPart::Attr("name")],
         sep: ':',
     },
 ];
@@ -722,6 +748,31 @@ mod tests {
                 after: || serde_json::json!({ "username": "someuser" }),
                 expect: "someuser",
             },
+            Row {
+                ty: "github_repository",
+                after: || serde_json::json!({ "name": "tag-forge" }),
+                expect: "tag-forge",
+            },
+            Row {
+                ty: "aws_iam_role",
+                after: || serde_json::json!({ "name": "flow-logs-role" }),
+                expect: "flow-logs-role",
+            },
+            Row {
+                ty: "aws_cloudwatch_log_group",
+                after: || serde_json::json!({ "name": "/egress/flow-logs" }),
+                expect: "/egress/flow-logs",
+            },
+            Row {
+                ty: "aws_iam_role_policy",
+                after: || serde_json::json!({ "role": "flow-logs-role", "name": "flow-logs" }),
+                expect: "flow-logs-role:flow-logs",
+            },
+            Row {
+                ty: "aws_budgets_budget",
+                after: || serde_json::json!({ "account_id": "991235379755", "name": "cap" }),
+                expect: "991235379755:cap",
+            },
         ];
         assert_eq!(
             matrix.len(),
@@ -907,7 +958,17 @@ mod tests {
         )
         .expect("derivable");
         assert_eq!(got.id, "breathe");
+        assert_eq!(got.confidence, Confidence::Catalog);
+
+        let got = derive(
+            &mk("unlisted_type", "x", after.clone()),
+            Some(&after),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("derivable");
         assert_eq!(got.confidence, Confidence::NameAttribute);
+        assert!(!got.confidence.is_exact());
 
         let got = derive(
             &mk("some_other_type", "thing", serde_json::json!({ "x": 1 })),
@@ -920,6 +981,60 @@ mod tests {
         assert_eq!(got.confidence, Confidence::AddressName);
     }
 
+    #[test]
+    fn composite_aws_types_import_by_their_composite_id() {
+        let role = serde_json::json!({ "name": "flow-logs-role" });
+        let mut declared = HashMap::new();
+        declared.insert(
+            "aws_iam_role".to_string(),
+            serde_json::json!({ "flow": role }),
+        );
+        let policy = serde_json::json!({
+            "role": "${aws_iam_role.flow.id}",
+            "name": "flow-logs-policy"
+        });
+        let got = derive(
+            &mk("aws_iam_role_policy", "flow", policy),
+            None,
+            &HashMap::new(),
+            &declared,
+        )
+        .expect("derivable");
+        assert_eq!(got.id, "flow-logs-role:flow-logs-policy");
+        assert!(got.confidence.is_exact());
+
+        let budget = serde_json::json!({ "account_id": "991235379755", "name": "cap" });
+        let got = derive(
+            &mk("aws_budgets_budget", "cap", budget),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("derivable");
+        assert_eq!(got.id, "991235379755:cap");
+
+        let unowned = serde_json::json!({ "name": "cap" });
+        assert_eq!(
+            derive(
+                &mk("aws_budgets_budget", "cap", unowned),
+                None,
+                &HashMap::new(),
+                &HashMap::new(),
+            ),
+            None
+        );
+
+        let sg = serde_json::json!({ "name": "egress" });
+        let got = derive(
+            &mk("aws_security_group", "egress", sg),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("derivable");
+        assert!(!got.confidence.is_exact());
+    }
+
     // ── The confidence gate + the identity gate ───────────────────────────
 
     /// `is_exact` is the ONE thing standing between a convention-guessed id and
@@ -929,7 +1044,12 @@ mod tests {
     #[test]
     fn only_fully_resolved_confidences_are_exact() {
         assert!(Confidence::Catalog.is_exact());
-        assert!(Confidence::NameAttribute.is_exact());
+        assert!(
+            !Confidence::NameAttribute.is_exact(),
+            "a type with no row imports by `name` only by assumption: \
+             aws_iam_role_policy imports by `role:name`, aws_security_group \
+             by its server-assigned id"
+        );
         assert!(
             !Confidence::CatalogWithGuessedParent.is_exact(),
             "a parent guessed from the resource-name convention is exactly the \

@@ -4535,10 +4535,7 @@ mod tests {
         };
 
         assert_eq!(gate(Confidence::Catalog), Some("tag_forge:bug".to_string()));
-        assert_eq!(
-            gate(Confidence::NameAttribute),
-            Some("tag_forge:bug".to_string())
-        );
+        assert_eq!(gate(Confidence::NameAttribute), None);
         assert_eq!(
             gate(Confidence::CatalogWithGuessedParent),
             None,
