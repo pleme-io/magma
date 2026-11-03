@@ -196,6 +196,7 @@ impl Provider for MockProvider {
         };
         let mut resource_schemas = std::collections::HashMap::new();
         resource_schemas.insert("mock_resource".to_string(), schema.clone());
+        resource_schemas.insert("github_repository".to_string(), schema.clone());
         resource_schemas.insert("mock_replace_resource".to_string(), replace_schema);
 
         Ok(Response::new(tfplugin6::get_provider_schema::Response {
@@ -359,7 +360,7 @@ impl Provider for MockProvider {
         // Without this the adopt-on-conflict test would be vacuous — a gate
         // that only ever sees inputs it already accepts proves nothing
         // (★★ UNREPRESENTABILITY Tier ⊥).
-        if r.type_name == "mock_resource" {
+        if matches!(r.type_name.as_str(), "mock_resource" | "github_repository") {
             if let Some(name) = mock_resource_name_of(&r.planned_state) {
                 if name.contains("boom") {
                     return Ok(Response::new(tfplugin6::apply_resource_change::Response {

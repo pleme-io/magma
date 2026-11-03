@@ -55,12 +55,12 @@ fn mock_provider_binary() -> PathBuf {
 }
 
 /// A workspace whose `.terraform/providers/` holds only the mock binary,
-/// named so `magma_providers::locate_provider(_, "mock")` finds it.
+/// named so `magma_providers::locate_provider(_, "github")` finds it.
 fn workspace_with_mock_provider() -> tempfile::TempDir {
     let td = tempfile::tempdir().expect("tempdir");
     let providers_dir = td.path().join(".terraform").join("providers");
     fs::create_dir_all(&providers_dir).expect("mkdir providers dir");
-    let dest = providers_dir.join("terraform-provider-mock");
+    let dest = providers_dir.join("terraform-provider-github");
     fs::copy(mock_provider_binary(), &dest).expect("copy mock_provider binary");
     #[cfg(unix)]
     {
@@ -77,14 +77,14 @@ fn create_of(name: &str) -> ResourceChange {
         address: ResourceAddress {
             module: ModulePath::root(),
             kind: ResourceKind::Managed,
-            type_id: ResourceTypeId("mock_resource".to_string()),
+            type_id: ResourceTypeId("github_repository".to_string()),
             name: "under_test".to_string(),
             key: None,
         },
         action: Action::Create,
         before: None,
-        // `mock_resource` is name-keyed, so the derived import id IS this
-        // name — the same relationship `github_repository` has.
+        // `github_repository`'s catalog row keys it on `name`, so the derived
+        // import id IS this name, with `Confidence::Catalog`.
         after: Some(serde_json::json!({ "name": name })),
         reasons: vec![ChangeReason::AttributeDrift],
         meta: Default::default(),
@@ -224,7 +224,7 @@ const WEDGED: &str = "boom-adoptable";
 /// labels GitHub created at repo birth.
 fn cfg_declaring_the_wedged_resource() -> Config {
     Config::from_json(serde_json::json!({
-        "resource": { "mock_resource": { "under_test": { "name": WEDGED } } }
+        "resource": { "github_repository": { "under_test": { "name": WEDGED } } }
     }))
     .expect("config parses")
 }

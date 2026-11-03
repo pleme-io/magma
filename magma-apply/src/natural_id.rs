@@ -770,8 +770,8 @@ mod tests {
             },
             Row {
                 ty: "aws_budgets_budget",
-                after: || serde_json::json!({ "account_id": "991235379755", "name": "cap" }),
-                expect: "991235379755:cap",
+                after: || serde_json::json!({ "account_id": "123456789012", "name": "cap" }),
+                expect: "123456789012:cap",
             },
         ];
         assert_eq!(
@@ -1003,7 +1003,7 @@ mod tests {
         assert_eq!(got.id, "flow-logs-role:flow-logs-policy");
         assert!(got.confidence.is_exact());
 
-        let budget = serde_json::json!({ "account_id": "991235379755", "name": "cap" });
+        let budget = serde_json::json!({ "account_id": "123456789012", "name": "cap" });
         let got = derive(
             &mk("aws_budgets_budget", "cap", budget),
             None,
@@ -1011,7 +1011,7 @@ mod tests {
             &HashMap::new(),
         )
         .expect("derivable");
-        assert_eq!(got.id, "991235379755:cap");
+        assert_eq!(got.id, "123456789012:cap");
 
         let unowned = serde_json::json!({ "name": "cap" });
         assert_eq!(
