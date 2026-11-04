@@ -1,9 +1,8 @@
 //! Build script for magma-protocol.
 //!
-//! Compiles tfplugin5.proto + tfplugin6.proto via tonic-build when the
-//! files are vendored in `proto/`. Until vendored from OpenTofu's
-//! `internal/tfplugin{5,6}/`, this is a no-op and `lib.rs` exposes
-//! placeholder modules so dependent crates can compile.
+//! Compiles the vendored tfplugin5.proto + tfplugin6.proto via tonic-build.
+
+mod proto_root;
 
 use std::path::Path;
 
@@ -18,25 +17,11 @@ fn protoc_on_path() -> Option<std::path::PathBuf> {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=proto/");
-
-    let proto_files = ["proto/tfplugin5.proto", "proto/tfplugin6.proto"];
-    let present: Vec<&&str> = proto_files
-        .iter()
-        .filter(|p| Path::new(p).exists())
-        .collect();
-
-    if present.is_empty() {
-        // No proto files yet — emit nothing. Will be populated in M0
-        // when tfplugin5/6 are vendored from OpenTofu's internal/.
-        println!(
-            "cargo:warning=magma-protocol: proto files not yet vendored; \
-             gRPC bindings unavailable. Vendor tfplugin5.proto + \
-             tfplugin6.proto from github.com/opentofu/opentofu/internal/ \
-             then rebuild."
-        );
-        return;
-    }
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+    let member = std::env::var("CARGO_PKG_NAME").expect("CARGO_PKG_NAME");
+    let root = proto_root::proto_root(Path::new(&manifest_dir), &member)
+        .unwrap_or_else(|refusal| panic!("magma-protocol: {refusal}"));
+    println!("cargo:rerun-if-changed={}", root.display());
 
     // ── PROTOC RESOLUTION: PATH FIRST, VENDORED ONLY AS A FALLBACK ────────
     // A `protoc` on PATH wins. Under Nix that is `pkgs.protobuf`, supplied as a
@@ -79,11 +64,11 @@ fn main() {
     // client side lives in `magma-plugin`; the server side is consumed
     // by `magma-test/src/bin/mock_provider.rs` (and is the integration
     // surface a future WASI provider would also use).
-    let proto_paths: Vec<&str> = present.iter().map(|&&p| p).collect();
+    let proto_paths = proto_root::PROTOS.map(|proto| root.join(proto));
     if let Err(e) = tonic_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_protos(&proto_paths, &["proto/"])
+        .compile_protos(&proto_paths, &[&root])
     {
         panic!("magma-protocol: tonic-build failed: {e}");
     }

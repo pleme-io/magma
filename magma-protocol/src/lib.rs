@@ -4,10 +4,6 @@
 //! at build time by `tonic-build` from the vendored .proto files in `proto/`.
 //! No hand-written gRPC anywhere else in magma per `theory/MAGMA.md` §IX
 //! anti-patterns.
-//!
-//! Until proto files are vendored (M0), this crate exposes placeholder
-//! modules so dependent crates compile. Once the build script generates
-//! the real bindings, uncomment the `include_proto!` invocations below.
 
 /// Marker for which provider-plugin protocol version a `Plugin` speaks.
 /// Real gRPC client stubs live under `tfplugin5::*` and `tfplugin6::*`
