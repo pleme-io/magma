@@ -19,8 +19,6 @@
 //!      Verifying → Stable
 //! 6. build a tamper-evident magma-bundle
 //! 7. return a typed ControllerOutcome carrying the bundle + final FSM state
-//!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §IV.5 + §IV.7.
 
 #![deny(unsafe_code)]
 

@@ -8,7 +8,7 @@
 //! "any Reconciler is interchangeable with any other Reconciler" is
 //! now broken for that impl.
 //!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §VII. Per the Compounding
+//! Per the Compounding
 //! Directive: contract testing happens once, in one place
 //! (magma-test-laws), and is consumed by every impl.
 

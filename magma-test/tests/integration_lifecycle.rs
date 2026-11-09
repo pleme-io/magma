@@ -6,7 +6,7 @@
 //! per-resource lifecycle (plan → apply) over a real gRPC channel
 //! against a typed provider implementation.
 //!
-//! Per `theory/MAGMA.md` §II.6 level 5 (apply-against-real-cloud),
+//! For test level 5 (apply-against-real-cloud),
 //! this is the offline mock variant; the real-cloud lifecycle test
 //! against `hashicorp/null` lands once the provider binary is
 //! reachable in CI.

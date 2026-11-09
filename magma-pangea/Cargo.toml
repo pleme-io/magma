@@ -1,6 +1,6 @@
 [package]
 name        = "magma-pangea"
-description = "magma — Pangea Ruby DSL evaluator (in-process CRuby via magnus + pangea-ruby-eval) + Terraform JSON reader. The canonical input layer per theory/MAGMA.md §II.1 (Pangea-first; HCL is out of scope)."
+description = "magma — Pangea Ruby DSL evaluator (in-process CRuby via magnus + pangea-ruby-eval) + Terraform JSON reader. The canonical input layer (Pangea-first; HCL is out of scope)."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

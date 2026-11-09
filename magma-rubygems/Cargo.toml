@@ -1,6 +1,6 @@
 [package]
 name        = "magma-rubygems"
-description = "magma — typed in-memory replacement for bundler. Parses Gemfile + *.gemspec, resolves the Pangea Ruby dependency graph in process, materializes a BLAKE3-attested virtual gem tree the embedded CRuby evaluator consumes. Subsumes `bundle install` end-to-end. Per theory/MAGMA-RUBYGEMS.md."
+description = "magma — typed in-memory replacement for bundler. Parses Gemfile + *.gemspec, resolves the Pangea Ruby dependency graph in process, materializes a BLAKE3-attested virtual gem tree the embedded CRuby evaluator consumes. Subsumes `bundle install` end-to-end."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

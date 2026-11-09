@@ -1,6 +1,6 @@
 //! shigoto Job wrappers for magma operations.
 //!
-//! Per `theory/MAGMA.md` §II.9, every magma operation surfaces as a
+//! Every magma operation surfaces as a
 //! typed `shigoto::Job`. This module provides the typed wrappers:
 //!
 //! - `PlanJob` — wraps `magma_plan::plan(Config, State) -> Plan`

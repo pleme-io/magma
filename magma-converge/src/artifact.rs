@@ -1,6 +1,6 @@
 //! Typed content-addressed artifact — the canonical `Artifact<T>`
 //! every fleet-wide fetcher/publisher consumes.
-//! Spec: `theory/FLUXCD-CONVERGENCE.md` §III, P1.1.
+//! FluxCD convergence P1.1.
 //!
 //! Subsumes FluxCD's per-CR `artifact { url, revision, digest, size,
 //! lastUpdateTime }` block (GitRepository, OCIRepository,

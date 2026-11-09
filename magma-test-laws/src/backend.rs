@@ -17,8 +17,7 @@
 //! }
 //! ```
 //!
-//! Gated behind `backend-laws` feature. Per
-//! `theory/CONVERGENCE-SUBSTRATE.md` §V.4 (durable state).
+//! Gated behind `backend-laws` feature (durable state).
 
 use magma_backend::{Backend, LockId};
 use magma_state::empty_state;

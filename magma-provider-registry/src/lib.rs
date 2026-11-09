@@ -1,7 +1,7 @@
 //! magma-provider-registry — the typed [`ProviderRegistry`] resolution
 //! plane for the Magma Dynamic Provider Plane.
 //!
-//! Spec: `theory/MAGMA-PROVIDER-PLANE.md`. This crate is the **first
+//! This crate is the **first
 //! increment**: a typed registry trait + two concrete resolvers (a
 //! directory mirror and an optional Postgres registry) + a fallback
 //! chain. It does **not** yet wire into `magma-apply`'s `ApplyContext`,

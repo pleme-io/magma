@@ -1,6 +1,6 @@
 [package]
 name        = "magma-test"
-description = "magma — compatibility test harness. Tier 1/2/3 providers × 5 test levels (smoke / schema / plan-diff / state-roundtrip / real-cloud-apply). Per theory/MAGMA.md §II.6."
+description = "magma — compatibility test harness. Tier 1/2/3 providers × 5 test levels (smoke / schema / plan-diff / state-roundtrip / real-cloud-apply)."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

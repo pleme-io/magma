@@ -2,8 +2,7 @@
 //!
 //! The protocol surface every Terraform / OpenTofu provider speaks. Generated
 //! at build time by `tonic-build` from the vendored .proto files in `proto/`.
-//! No hand-written gRPC anywhere else in magma per `theory/MAGMA.md` §IX
-//! anti-patterns.
+//! No hand-written gRPC anywhere else in magma; that is an anti-pattern.
 
 /// Marker for which provider-plugin protocol version a `Plugin` speaks.
 /// Real gRPC client stubs live under `tfplugin5::*` and `tfplugin6::*`

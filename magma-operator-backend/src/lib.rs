@@ -41,8 +41,6 @@
 //! `unlock` so the operator can plug its own lock semantics in.
 //! Default impls treat lock/unlock as no-ops (synthetic ids); real
 //! operators should override.
-//!
-//! Per `theory/MAGMA-OPERATOR-BACKEND.md`.
 
 use std::sync::Arc;
 

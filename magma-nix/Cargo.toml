@@ -1,6 +1,6 @@
 [package]
 name        = "magma-nix"
-description = "magma — in-process Nix expression evaluator + store materialization. Parses the narrow Nix subset Pangea workspaces use (import, let-in, function calls, attribute sets, fetchurl, callPackage), evaluates lazily, materializes content-addressed store paths without a Nix daemon. Subsumes bundix-equivalent (gemset.nix emission) + nix-build (closure materialization) for Pangea workspaces. Per theory/MAGMA-AS-PLATFORM.md M7+M8."
+description = "magma — in-process Nix expression evaluator + store materialization. Parses the narrow Nix subset Pangea workspaces use (import, let-in, function calls, attribute sets, fetchurl, callPackage), evaluates lazily, materializes content-addressed store paths without a Nix daemon. Subsumes bundix-equivalent (gemset.nix emission) + nix-build (closure materialization) for Pangea workspaces."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

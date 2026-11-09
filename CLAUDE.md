@@ -1,8 +1,6 @@
 # magma — Rust-native OpenTofu-compatible IaC executor
 
-> **★★★ CSE / Knowable Construction.** This repo operates under **Constructive Substrate Engineering** — canonical specification at [`pleme-io/theory/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md`](https://github.com/pleme-io/theory/blob/main/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md). The Compounding Directive (operational rules: solve once, load-bearing fixes only, idiom-first, models stay current, direction beats velocity) is in the org-level pleme-io/CLAUDE.md ★★★ section.
->
-> **Destination doc:** [`pleme-io/theory/MAGMA.md`](https://github.com/pleme-io/theory/blob/main/MAGMA.md). Read it before touching anything load-bearing — typed surface in §III, plugin protocol in §IV, compatibility contract in §II.2, test corpus in §II.6, substrate integration in §II.7, anti-patterns in §IX.
+> **★★★ CSE / Knowable Construction.** This repo operates under **Constructive Substrate Engineering**. The Compounding Directive (operational rules: solve once, load-bearing fixes only, idiom-first, models stay current, direction beats velocity) is in the org-level pleme-io/CLAUDE.md ★★★ section.
 
 The execution layer of pleme-io's Pillar 5 (IaC declaration → execution). Pangea declares the supercontinent's shape; magma is the molten executive force that realizes it on cloud substrate. Pairs with `forja` (forge — CI/CD metal-shaping); `tear` is the session manager, not this.
 
@@ -31,11 +29,11 @@ magma (workspace root)
 └── magma              — Umbrella crate; re-exports the public surface
 ```
 
-**No HCL parser.** Magma reads two input shapes only: Pangea Ruby (in-process via magnus, the canonical M0 path) and Terraform JSON (the fallback). Per [`theory/MAGMA.md` §I, §II.1, §IX](https://github.com/pleme-io/theory/blob/main/MAGMA.md). Operators with raw-HCL workflows render to JSON via `terraform-config-inspect` first or migrate to Pangea Ruby.
+**No HCL parser.** Magma reads two input shapes only: Pangea Ruby (in-process via magnus, the canonical M0 path) and Terraform JSON (the fallback). Operators with raw-HCL workflows render to JSON via `terraform-config-inspect` first or migrate to Pangea Ruby.
 
-Phases M0–M5 in [`theory/MAGMA.md` §VI](https://github.com/pleme-io/theory/blob/main/MAGMA.md#vi-phases--the-path-down-from-destination). M0 (≈4 months) ships in-process Pangea-Ruby evaluation + JSON executor + drop-in CLI compat + MCP skeleton + Tier 1 providers passing all 5 test levels.
+The work runs in phases M0–M5. M0 (≈4 months) ships in-process Pangea-Ruby evaluation + JSON executor + drop-in CLI compat + MCP skeleton + Tier 1 providers passing all 5 test levels.
 
-## Four interfaces (theory/MAGMA.md §II.8)
+## Four interfaces
 
 | Interface | Surface | Status |
 |---|---|---|
@@ -59,7 +57,7 @@ Pangea Ruby evaluates in-process; rendered architecture never touches disk in th
 | CLI | `init/plan/apply/destroy/state/import/workspace/output/show/refresh/taint/force-unlock/get/fmt/validate/console` | OpenTofu `cmd/opentofu/` |
 | Function library | 150+ built-ins, exact semantics | OpenTofu `internal/lang/funcs/` |
 
-Byte-exactness is the gate — see [`theory/MAGMA.md` §II.6](https://github.com/pleme-io/theory/blob/main/MAGMA.md#ii6-test-corpus--the-proof-of-compatibility) for the proof harness.
+Byte-exactness is the gate; `magma-test` is the proof harness.
 
 ## Build
 
@@ -99,9 +97,9 @@ This repo follows the canonical pleme-io patterns; no escape hatches (§II.7):
 
 ## NixOS / home-manager surface
 
-The module trio in `flake.nix` produces `services.magma` (NixOS), `blackmatter.components.magma` (home-manager — operator workstations), and a darwin counterpart. See [`theory/MAGMA.md` §II.7](https://github.com/pleme-io/theory/blob/main/MAGMA.md#ii7-pleme-io-substrate-integration) for the full option surface. Module options expand mechanically as the typed schema grows — never hand-edit `nix/*-module.nix`; instead extend the `shikumiTypedGroups` block in `flake.nix`.
+The module trio in `flake.nix` produces `services.magma` (NixOS), `blackmatter.components.magma` (home-manager — operator workstations), and a darwin counterpart. Module options expand mechanically as the typed schema grows — never hand-edit `nix/*-module.nix`; instead extend the `shikumiTypedGroups` block in `flake.nix`.
 
-## Anti-patterns (see also theory/MAGMA.md §IX)
+## Anti-patterns
 
 - Shelling out to `tofu`/`terraform` from anywhere inside magma
 - Hand-written gRPC clients for tfplugin5/6 (must go through `magma-protocol`)

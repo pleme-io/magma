@@ -5,7 +5,5 @@ use crate::{NixError, Result};
 
 /// Fetch a URL into the store, verifying against an expected hash.
 pub async fn fetch_url(_url: &str, _expected_sha256: &str) -> Result<Vec<u8>> {
-    Err(NixError::Fetch(
-        "M8.4 fetcher not yet implemented — see theory/MAGMA-AS-PLATFORM.md".into(),
-    ))
+    Err(NixError::Fetch("M8.4 fetcher not yet implemented".into()))
 }

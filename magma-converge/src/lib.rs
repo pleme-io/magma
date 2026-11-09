@@ -10,8 +10,6 @@
 //! Every reconciler shares typed `Plan` / `Outcome` / `Change`
 //! shapes so downstream consumers (drift classification,
 //! attestation, K8s events) don't care which kind produced them.
-//!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md`.
 
 #![deny(unsafe_code)]
 
@@ -72,7 +70,7 @@ pub use webhook::{
 // The Reconciler trait + its Plan/Outcome/Change/Action/PlanId/Severity/
 // AppliedChange/FailedChange/ReconcilerError/ApplyMetrics border + the
 // build_outcome/change/change_with_severity helpers were lifted VERBATIM to
-// lightweight shigoto-types::converge (2026-06-05, theory/CONVERGENCE-ADOPTION.md)
+// lightweight shigoto-types::converge (2026-06-05)
 // -- the third leg of the CascadePolicy/Decision re-home arc. The border is
 // serde-only, so lightweight controllers adopt the trait without dragging
 // magma's IaC closure (tonic/rustls/aws-lc-rs/gen-platform). Re-exported here so

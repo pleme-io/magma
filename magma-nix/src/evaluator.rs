@@ -33,7 +33,5 @@ pub enum Value {
 }
 
 pub fn evaluate(_expr: &Expr) -> Result<Value> {
-    Err(NixError::Eval(
-        "M8.2 evaluator not yet implemented — see theory/MAGMA-AS-PLATFORM.md".into(),
-    ))
+    Err(NixError::Eval("M8.2 evaluator not yet implemented".into()))
 }

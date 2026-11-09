@@ -83,9 +83,7 @@
 //! breaks the contract surfaces immediately in CI with a clear
 //! message naming the broken law.
 //!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §VII +
-//! `theory/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md` (every promise
-//! becomes a derivable theorem). The helpers panic with a
+//! Every promise becomes a derivable theorem. The helpers panic with a
 //! descriptive message on law violation — they're meant to be
 //! used INSIDE `#[test]` / `#[tokio::test]` functions, not
 //! standalone.

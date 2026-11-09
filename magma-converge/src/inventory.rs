@@ -1,6 +1,6 @@
 //! Typed K8s resource set + diff — the canonical `Inventory` primitive
 //! every Kustomization-style reconciler consumes.
-//! Spec: `theory/FLUXCD-CONVERGENCE.md` §III, P1.3.
+//! FluxCD convergence P1.3.
 //!
 //! Subsumes FluxCD Kustomization's load-bearing `inventory.entries[]`
 //! concept (the set of GVKNN tuples the controller currently owns)

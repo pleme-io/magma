@@ -571,7 +571,7 @@ fn adoptable<'i>(
 /// The provider may return several instances (e.g. dependent
 /// resources); the one whose `type_name` matches the target's type maps
 /// to the target address; any extras are skipped in M0 (a follow-up
-/// maps them by their reported type+id, per theory/MAGMA.md §ApplyRpcContract).
+/// maps them by their reported type+id).
 /// `provider` is the instance the import was issued to. It is recorded
 /// on the state row, and it has to be: refresh selects a row's instance
 /// from `StateResource.provider`, so a resource adopted out of a second

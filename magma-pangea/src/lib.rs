@@ -17,7 +17,7 @@
 //!    no Ruby in the loop. Required for environments without a CRuby
 //!    toolchain (some CI, some WASI deployments). Always available.
 //!
-//! HCL parsing is **out of scope** per `theory/MAGMA.md` §II.1. Magma
+//! HCL parsing is **out of scope**. Magma
 //! never reads `.tf` files. If you have raw HCL, render it to Terraform
 //! JSON with `terraform-config-inspect` or migrate to Pangea Ruby.
 

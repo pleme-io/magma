@@ -3,8 +3,6 @@
 //! `ConditionStatus`, and future outcomes like `SettlingOutcome`,
 //! `CostOutcome`, `LatencyOutcome`) under **one lattice algebra**.
 //!
-//! Spec: `theory/LATTICE-OF-OUTCOMES.md` §X.3.
-//!
 //! # The lattice
 //!
 //! Every outcome enum in the substrate is a **totally-ordered chain

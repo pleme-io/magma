@@ -1,7 +1,7 @@
 //! `BackendError` — the canonical trait every typed backend / validator
 //! error in the substrate implements.
 //!
-//! Spec: `theory/PATTERN-EXTRACTION.md` Pattern 2 (TransientPermanent
+//! Pattern 2 (TransientPermanent
 //! BackendError). Extracted after 3+ sites repeated the same
 //! `.is_retryable() + .kind()` shape:
 //!

@@ -14,8 +14,6 @@
 //!
 //! Every reconciler kind with a list-API can implement this trait.
 //! The convergence substrate gets a reverse capability for free.
-//!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §IV.4.
 
 #![deny(unsafe_code)]
 

@@ -14,8 +14,7 @@
 //!   closure (commit-independent so two operators see identical
 //!   hashes for identical content).
 //!
-//! Future: `source`, `watch`, `reconciler` modules (M1-M2 per
-//! theory/PANGEA-REPOSITORY.md).
+//! Future: `source`, `watch`, `reconciler` modules (M1-M2).
 //!
 //! M0 lands today: typed parse + discovery + attestation. The
 //! Reconciler trait impl + Git watcher land in subsequent

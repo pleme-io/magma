@@ -27,8 +27,7 @@ use crate::{H2Channel, PluginError};
 /// `PlanResourceChange`/`ApplyResourceChange` round-trip in the
 /// lifecycle integration suite). A `DynamicValue` carrying ONLY
 /// msgpack surfaces a typed error — magma has no msgpack decoder yet,
-/// and a silent wrong answer is forbidden (theory/MAGMA.md §IX +
-/// the TYPED-SPEC rule).
+/// and a silent wrong answer is forbidden (the TYPED-SPEC rule).
 fn decode_dynamic_value(dv: &tfplugin6::DynamicValue) -> Result<serde_json::Value, PluginError> {
     if !dv.json.is_empty() {
         return serde_json::from_slice(&dv.json).map_err(|e| {

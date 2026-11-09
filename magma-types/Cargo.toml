@@ -1,6 +1,6 @@
 [package]
 name        = "magma-types"
-description = "magma — typed primitives (Plan, Resource, ResourceAddress, Action, Diff, State, Lock, ProviderSchema). Per theory/MAGMA.md §III."
+description = "magma — typed primitives (Plan, Resource, ResourceAddress, Action, Diff, State, Lock, ProviderSchema)."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

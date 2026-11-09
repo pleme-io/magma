@@ -28,13 +28,10 @@ verified go-plugin handshake with mTLS and gRPC against real provider binaries,
 and a schema oracle run against the real `terraform-provider-random` Go binary
 that caught a genuine bug. It is the sole executor on pleme-io's own pangea
 stack. It is **not** a drop-in `terraform` replacement, and the input-format
-paragraph above is why. The destination doc —
-[`pleme-io/theory/MAGMA.md`](https://github.com/pleme-io/theory/blob/main/MAGMA.md)
-— is canonical; read it before touching this repo.
+paragraph above is why.
 
 **Repo docs:**
 - [`CLAUDE.md`](./CLAUDE.md) — agent-facing repo guide (architecture, build, anti-patterns)
-- [`theory/MAGMA.md`](https://github.com/pleme-io/theory/blob/main/MAGMA.md) — destination, typed surface, compatibility contract, phases, alignment
 
 ## Quick start
 

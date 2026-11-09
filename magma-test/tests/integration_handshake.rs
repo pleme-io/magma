@@ -2,7 +2,7 @@
 //! go-plugin handshake via magma-plugin's `Plugin::spawn`, assert the
 //! parsed handshake line matches what the mock provider printed.
 //!
-//! This is the end-to-end proof for `theory/MAGMA.md` §IV.1 — the
+//! This is the end-to-end proof for the plugin protocol — the
 //! load-bearing technical question (can magma actually handshake with
 //! a go-plugin provider?) — using a controllable mock binary so the
 //! test runs offline + deterministically.

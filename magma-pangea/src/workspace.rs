@@ -1,7 +1,6 @@
 //! `Workspace` — a typed reconcilable atom.
 //!
-//! Per [[project-workspaces-as-programmable-atoms]] / theory/MAGMA.md
-//! §II.9, each Pangea workspace is a typed primitive with declared
+//! Per [[project-workspaces-as-programmable-atoms]], each Pangea workspace is a typed primitive with declared
 //! input/output slots, a render function (inputs → Config), and a
 //! reconcile method (state × config → ReconcileResult).
 //!

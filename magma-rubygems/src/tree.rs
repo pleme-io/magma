@@ -38,6 +38,6 @@ pub struct VirtualGemTree {
 /// M4 implementation TBD. Composes M3 fetcher + M4 native build.
 pub async fn materialize(_lock: &Lockfile) -> Result<VirtualGemTree> {
     Err(crate::RubygemsError::Materialize(
-        "M4 not yet started — see theory/MAGMA-RUBYGEMS.md".into(),
+        "M4 not yet started".into(),
     ))
 }

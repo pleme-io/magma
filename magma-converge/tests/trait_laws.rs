@@ -4,8 +4,6 @@
 //! (see `magma_converge::Reconciler` docs). These tests express
 //! the laws as property tests + run them against each shipped
 //! impl. Adding a new impl = run these against it.
-//!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §VII.
 
 use std::collections::HashMap;
 

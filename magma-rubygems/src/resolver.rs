@@ -15,7 +15,5 @@ use crate::{Result, RubygemsError, lockfile::Lockfile, manifest::Manifest};
 ///
 /// M2 implementation TBD.
 pub async fn resolve(_manifest: &Manifest) -> Result<Lockfile> {
-    Err(RubygemsError::Resolver(
-        "M2 not yet started — see theory/MAGMA-RUBYGEMS.md".into(),
-    ))
+    Err(RubygemsError::Resolver("M2 not yet started".into()))
 }

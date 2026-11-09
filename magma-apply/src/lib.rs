@@ -2,7 +2,7 @@
 //!
 //! Drives provider RPC for each `ResourceChange` in a plan, updating
 //! state per the provider's response. Parallelism + retries + budgets
-//! come from `shigoto::Scheduler` (per `theory/MAGMA.md` §II.9).
+//! come from `shigoto::Scheduler`.
 //!
 //! Execution is **sequential** within and across dependency waves, but it is
 //! **resumable** and **durable**:

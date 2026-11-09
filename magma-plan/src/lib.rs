@@ -15,7 +15,7 @@
 //! plumbing for `Action::Update` already exists (see
 //! `magma-apply`'s engine catch-all apply arm).
 //!
-//! Per `theory/MAGMA.md` §X.1, OpenTofu has documented plan-diff
+//! OpenTofu has documented plan-diff
 //! quirks. Magma matches bug-for-bug for M0–M2 — each documented
 //! quirk is a `magma_known_quirk!` proptest case so regressions surface
 //! immediately.
@@ -526,7 +526,7 @@ fn lookup_config_value(config: &Config, addr: &ResourceAddress) -> Option<serde_
 ///
 /// `magma-config::Config::resource_addresses()` never expands
 /// `count`/`for_each` (neither Pangea nor magma's JSON config reader
-/// supports either today — see `theory/MAGMA.md` §IX), so every
+/// supports either today), so every
 /// config-declared address is inherently singular: at most one
 /// `StateInstance` is ever the "right" one to diff against. A real,
 /// pre-existing state file adopted from tofu/terraform CAN carry

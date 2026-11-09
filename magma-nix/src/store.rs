@@ -27,9 +27,7 @@ impl Store {
     }
 
     pub fn put(&mut self, _bytes: &[u8]) -> Result<String> {
-        Err(NixError::Store(
-            "M8.3 store not yet implemented — see theory/MAGMA-AS-PLATFORM.md".into(),
-        ))
+        Err(NixError::Store("M8.3 store not yet implemented".into()))
     }
 
     pub fn get(&self, _hash: &str) -> Result<Option<&Vec<u8>>> {

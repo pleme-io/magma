@@ -2,7 +2,7 @@
 //! client lifecycle + subprocess management for Terraform / OpenTofu
 //! providers.
 //!
-//! Load-bearing layer per `theory/MAGMA.md` §IV. Spawn a provider
+//! The load-bearing layer. Spawn a provider
 //! binary, complete the go-plugin handshake (magic cookie validation,
 //! stdout-handshake-line parse, mTLS cert exchange), and return a
 //! typed `Plugin` handle ready for gRPC calls.

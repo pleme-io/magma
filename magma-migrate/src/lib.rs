@@ -1,8 +1,7 @@
 //! magma-migrate — typed state-organization migration primitive.
 //!
 //! Move resources between workspaces' state files atomically while
-//! preserving cloud-resource identity. Per
-//! `theory/PANGEA-MAGMA-ORCHESTRATION.md` §III.3 + §V.
+//! preserving cloud-resource identity.
 //!
 //! Five guarantees the engine enforces (§V):
 //!

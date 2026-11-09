@@ -13,8 +13,6 @@
 //! Powers forensic queries — "what happened during incident X?",
 //! "which kinds saw critical drift last week?", "did this CR's
 //! reconcile actually run?".
-//!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §IV.3.
 
 #![deny(unsafe_code)]
 

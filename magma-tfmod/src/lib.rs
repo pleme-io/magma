@@ -15,7 +15,7 @@
 //! one ingestion call away from being a typed Pangea primitive
 //! composable in Ruby DSL alongside hand-written architectures.
 //!
-//! Per [`theory/MAGMA-AS-PLATFORM.md`](https://github.com/pleme-io/theory/blob/main/MAGMA-AS-PLATFORM.md) §IV.M9-M10.
+//! Phases M9-M10.
 //!
 //! # Crate status
 //!
@@ -109,7 +109,5 @@ pub struct RequiredProvider {
 /// Public entry point: download + parse + emit Pangea Ruby code
 /// for a Terraform module.
 pub async fn ingest(_source: ModuleSource) -> Result<String> {
-    Err(TfModError::Registry(
-        "M9 not yet started — see theory/MAGMA-AS-PLATFORM.md".into(),
-    ))
+    Err(TfModError::Registry("M9 not yet started".into()))
 }

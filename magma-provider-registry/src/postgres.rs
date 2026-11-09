@@ -28,7 +28,7 @@
 //! [`PgRegistry::ensure_schema`].
 //!
 //! That follows the house pattern rather than inventing one:
-//! `theory/MAGMA-POSTGRES-LIFECYCLE.md` §1 chose `sqlx_embedded` **over** a
+//! it chooses `sqlx_embedded` **over** a
 //! `migrations/*.sql` directory, and pangea-operator's `ArtifactStore`
 //! (`pangea_meta.artifacts` — the same BYTEA + content-hash shape this
 //! table mirrors) does exactly this: `CREATE SCHEMA/TABLE IF NOT EXISTS`,
@@ -45,7 +45,7 @@
 //! below is already what the changeset will render.
 //!
 //! ── SCHEMA, and one deliberate deviation from the spec ────────────────
-//! `theory/MAGMA-PROVIDER-PLANE.md` §III declares `protocol INT NOT NULL`.
+//! The provider-plane spec declares `protocol INT NOT NULL`.
 //! It is **nullable** here. The tfplugin protocol version is discovered
 //! from the go-plugin handshake at load (`magma-apply` engine.rs), so the
 //! column is a RECORD of what was seen, never the source of truth — and a

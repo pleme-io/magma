@@ -2,7 +2,7 @@
 //!
 //! Built on `petgraph`. Yields wave structure (Kahn's algorithm) for the
 //! apply engine — each wave is a partial-order batch that may apply in
-//! parallel. Per `theory/MAGMA.md` §II.1, this is the *resource* graph;
+//! parallel. This is the *resource* graph;
 //! the *operation* graph (EvaluatePangea → Plan → Apply → …) is a
 //! `shigoto::Dag` in magma-apply (§II.9).
 

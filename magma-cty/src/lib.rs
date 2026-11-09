@@ -6,7 +6,7 @@
 //! attributes as a `DynamicValue` — schema-typed, msgpack-encoded `cty`
 //! values. magma cannot call a provider without this layer; it is the
 //! prerequisite for `magma-apply` to stop being a structural no-op and
-//! actually create resources. See `theory/MAGMA.md` §IV + magma#2.
+//! actually create resources. See magma#2.
 //!
 //! ## Surface
 //!

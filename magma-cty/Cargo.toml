@@ -1,6 +1,6 @@
 [package]
 name        = "magma-cty"
-description = "magma — HashiCorp cty type system + msgpack DynamicValue codec (go-cty compatible). The foundation of magma's provider-RPC apply: every tfplugin5/6 RPC carries schema-typed, msgpack-encoded cty values. Per theory/MAGMA.md §IV + magma#2."
+description = "magma — HashiCorp cty type system + msgpack DynamicValue codec (go-cty compatible). The foundation of magma's provider-RPC apply: every tfplugin5/6 RPC carries schema-typed, msgpack-encoded cty values."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

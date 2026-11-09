@@ -4,8 +4,7 @@
 //! typed MCP tools for AI agents. JSON-RPC 2.0 over stdin/stdout (MCP
 //! standard transport).
 //!
-//! Per `theory/MAGMA.md` §II.8 (Multi-interface surface — interface 3),
-//! the MCP server is an M0 deliverable, not a follow-up. Tool schemas
+//! As interface 3 of the multi-interface surface, the MCP server is an M0 deliverable, not a follow-up. Tool schemas
 //! are generated mechanically from the typed magma-types surface, never
 //! hand-authored (Pillar 12).
 //!
@@ -153,7 +152,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "magma_fixture_verify".into(),
-            description: "Verify a single Pangea-rendered workspace through magma's typed pipeline. Returns a WorkspaceReport with resource counts, providers, action histogram, plan_id, and compatibility summary. Per theory/MAGMA.md §II.6 + magma-arch-test.".into(),
+            description: "Verify a single Pangea-rendered workspace through magma's typed pipeline. Returns a WorkspaceReport with resource counts, providers, action histogram, plan_id, and compatibility summary. See magma-arch-test.".into(),
             schema: minimal_schema(&[("workspace_path", "string", true)]),
             destructive: false,
         },
@@ -213,7 +212,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "magma_migrate".into(),
-            description: "Atomically move resources between workspaces' state files (no recreate, identity preserved). Requires explicit `confirm: true`. Consumes the typed MigrationPlan shape; returns a MigrationReceipt with BLAKE3 hashes pre/post per theory/PANGEA-MAGMA-ORCHESTRATION.md §V. Two-phase commit: validates source addresses + target collision-free, stages target write, then commits source.".into(),
+            description: "Atomically move resources between workspaces' state files (no recreate, identity preserved). Requires explicit `confirm: true`. Consumes the typed MigrationPlan shape; returns a MigrationReceipt with BLAKE3 hashes pre/post. Two-phase commit: validates source addresses + target collision-free, stages target write, then commits source.".into(),
             schema: {
                 let mut s = migration_plan_schema();
                 if let Some(props) = s.get_mut("properties").and_then(|v| v.as_object_mut()) {

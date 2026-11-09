@@ -1,6 +1,6 @@
 //! Typed blob-store backend dispatch — the canonical `BlobStoreBackend`
 //! trait every fleet-wide object-store consumer reads against.
-//! Spec: `theory/FLUXCD-CONVERGENCE.md` §III, P1.4.
+//! FluxCD convergence P1.4.
 //!
 //! Subsumes the hand-rolled "which cloud's blob API?" dispatch that
 //! recurs in FluxCD's Bucket controller (`provider: generic|aws|gcp|azure`)

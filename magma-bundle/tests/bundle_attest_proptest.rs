@@ -5,8 +5,6 @@
 //! audit). Compliance teams trust the hash to mean "this bundle
 //! hasn't been mutated since reconcile-time." Without proptest, the
 //! hash projection is a hand-coded JSON shape — easy to bit-rot.
-//!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §VI (attested bundles).
 
 use chrono::Utc;
 use magma_bundle::{Bundle, BundleError};

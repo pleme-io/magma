@@ -1,6 +1,6 @@
 //! `Validate` — operator-supplied-value validation trait.
 //!
-//! Spec: `theory/PATTERN-EXTRACTION.md` Pattern 7 (Validate).
+//! Pattern 7 (Validate).
 //!
 //! Multiple primitives in `magma-converge` ship typed predicates
 //! over their fields:

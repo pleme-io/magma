@@ -16,8 +16,7 @@
 //! workspaces don't use any of these — we refuse rather than
 //! silently support them.
 //!
-//! Per [`theory/MAGMA-AS-PLATFORM.md`](https://github.com/pleme-io/theory/blob/main/MAGMA-AS-PLATFORM.md) §IV.M8.
-//! Pairs with `magma-rubygems` M7 (bundix-equivalent gemset.nix
+//! Phase M8. Pairs with `magma-rubygems` M7 (bundix-equivalent gemset.nix
 //! emission); magma-nix evaluates the gemset.nix magma-rubygems
 //! emits.
 //!

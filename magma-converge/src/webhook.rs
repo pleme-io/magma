@@ -1,6 +1,6 @@
 //! Typed webhook intake + signature validation — the canonical
 //! `WebhookValidator` trait every fleet-wide HTTP-edge intake reads.
-//! Spec: `theory/FLUXCD-CONVERGENCE.md` §III, P1.5.
+//! FluxCD convergence P1.5.
 //!
 //! Subsumes FluxCD's Receiver controller (22-variant `type` enum
 //! over generic/github/gitlab/bitbucket/harbor/dockerhub/quay/...

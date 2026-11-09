@@ -1,11 +1,9 @@
 //! magma-state — terraform.tfstate v4 read/write, state migrations,
 //! state locking, sensitive-value redaction.
 //!
-//! Byte-exact compat with OpenTofu state-file format per
-//! `theory/MAGMA.md` §II.2 row 4. Every `magma apply` produces a state
+//! Byte-exact compat with OpenTofu state-file format. Every `magma apply` produces a state
 //! file that round-trips through `tofu show -json` unchanged, and vice
-//! versa. See `theory/MAGMA.md` §II.6 level 4 for the round-trip proof
-//! harness.
+//! versa. `magma-test` level 4 is the round-trip proof harness.
 //!
 //! Disk I/O (`read_state` / `write_state` / `round_trip`) goes through
 //! the [`tfstate_v4`] wire-format boundary — a real, pre-existing

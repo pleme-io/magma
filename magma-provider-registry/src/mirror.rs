@@ -1,6 +1,6 @@
 //! Reading a Nix-baked provider mirror as registry COORDINATES.
 //!
-//! The seed half of `theory/MAGMA-PROVIDER-PLANE.md` §VI's "interim →
+//! The seed half of the provider plane's "interim →
 //! destination path": *seed the registry from the current bake*. The bake
 //! stops being the mechanism and becomes the seed + the offline fallback.
 //!

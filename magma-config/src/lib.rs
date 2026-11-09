@@ -3,8 +3,7 @@
 //! resolver needed for Pangea-rendered JSON.
 //!
 //! Magma does **not** implement HCL. The full HCL2 expression language,
-//! the ~150-function library, dynamic blocks, etc. are out of scope per
-//! `theory/MAGMA.md` §II.1. Pangea Ruby evaluates all HCL-equivalent
+//! the ~150-function library, dynamic blocks, etc. are out of scope. Pangea Ruby evaluates all HCL-equivalent
 //! expressions at render time; magma sees only flat resource definitions
 //! plus the narrow `${aws_vpc.main.id}` style references that Terraform
 //! resolves at apply time using state data.
@@ -608,8 +607,7 @@ impl Config {
     ///
     /// These refusals are magma's *documented* bounds surfacing at the
     /// boundary, not new limits: magma does not expand modules and does
-    /// not implement `count`/`for_each` (so no instance keys), per
-    /// `theory/MAGMA.md` §IX.
+    /// not implement `count`/`for_each` (so no instance keys).
     pub fn from_resources(
         resources: impl IntoIterator<Item = Resource>,
     ) -> Result<Self, ConfigError> {
@@ -1185,8 +1183,7 @@ pub use magma_types::{collect_refs, ref_target};
 /// actually changed.
 ///
 /// A resource with multiple `StateInstance`s (`count`/`for_each`, which
-/// magma-config does not expand on the config side — see
-/// `theory/MAGMA.md` §IX) contributes only its first instance, consistent
+/// magma-config does not expand on the config side) contributes only its first instance, consistent
 /// with the rest of the plan/apply pipeline's current single-instance
 /// handling.
 pub fn state_resolution_map(state: &State) -> HashMap<String, serde_json::Value> {

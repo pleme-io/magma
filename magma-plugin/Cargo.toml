@@ -1,6 +1,6 @@
 [package]
 name        = "magma-plugin"
-description = "magma — HashiCorp go-plugin handshake + mTLS bootstrap + stdio framing + gRPC client lifecycle + subprocess management. The load-bearing technical layer per theory/MAGMA.md §IV."
+description = "magma — HashiCorp go-plugin handshake + mTLS bootstrap + stdio framing + gRPC client lifecycle + subprocess management. The load-bearing technical layer."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

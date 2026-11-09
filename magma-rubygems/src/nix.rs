@@ -24,7 +24,7 @@
 //!   downstream that requires a usable gemset.nix must wait for
 //!   M3, but the M7 emission is the load-bearing typed bridge.
 //!
-//! Per [`theory/MAGMA-AS-PLATFORM.md`](https://github.com/pleme-io/theory/blob/main/MAGMA-AS-PLATFORM.md) §IV.M7.
+//! Phase M7.
 
 use crate::{
     Result,

@@ -56,8 +56,7 @@
 //!
 //!   * **`count`/`for_each` config-side expansion.** Neither Pangea nor
 //!     `magma-config`'s JSON reader expands `count`/`for_each` today
-//!     (`Config::resource_addresses()` always emits `key: None`) — see
-//!     `theory/MAGMA.md` §IX. This module still round-trips a
+//!     (`Config::resource_addresses()` always emits `key: None`). This module still round-trips a
 //!     multi-instance resource read from a real file correctly (the
 //!     instances travel together under one `StateResource`), but
 //!     `magma-plan`'s diff only compares the first instance against
@@ -114,8 +113,8 @@
 //! the paste into a Rust raw string — so the assertion was blind to
 //! precisely the byte it claimed to check.
 //!
-//! Per `theory/MAGMA.md` §II.2 ("State file | JSON, schema version 4 |
-//! OpenTofu `internal/states/statefile/`") and §II.6 (byte-exact test
+//! The compatibility contract ("State file | JSON, schema version 4 |
+//! OpenTofu `internal/states/statefile/`") and the byte-exact test
 //! corpus, level `StateRoundTrip`).
 
 use std::collections::BTreeMap;

@@ -4,7 +4,7 @@
 //! an invariant of `magma_plan::plan`. Strengthens the M0 structural
 //! diff's correctness guarantees independent of any specific fixture.
 //!
-//! Invariants tested (per `theory/MAGMA.md` §VI.M0 + §IX):
+//! Invariants tested (M0 scope and anti-patterns):
 //!
 //! 1. **Determinism** — same (config, state) → same `PlanId`. Foundation
 //!    for tameshi attestation + §II.6 level-3 plan-diff round-trip.

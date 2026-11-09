@@ -13,8 +13,6 @@
 //! Fan-out via `PlanStream`: one event in, every registered sink
 //! receives it. Sinks can fail independently without affecting the
 //! reconcile path.
-//!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §IV.3.
 
 #![deny(unsafe_code)]
 

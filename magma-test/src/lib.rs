@@ -1,7 +1,7 @@
 //! magma-test — compatibility test harness.
 //!
 //! Tier 1 / 2 / 3 providers × 5 test levels (smoke / schema / plan-diff /
-//! state-roundtrip / real-cloud-apply) per `theory/MAGMA.md` §II.6. The
+//! state-roundtrip / real-cloud-apply). The
 //! non-negotiable release gate: any Tier 1 regression blocks release.
 //!
 //! Skeleton: real fixtures + the `magma_test!` macro + the InSpec
@@ -22,7 +22,7 @@ pub enum Level {
     Apply,
 }
 
-/// Test corpus tier — see `theory/MAGMA.md` §II.6.
+/// Test corpus tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     /// pleme-io's own usage. M0 gate, every level.

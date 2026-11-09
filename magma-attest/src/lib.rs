@@ -4,7 +4,7 @@
 //! Every plan is hashed (config ⊕ prior state ⊕ variables ⊕ computed
 //! changes) to a `PlanId`. `magma apply --plan <id>` requires a verified
 //! prior plan; mismatch is a hard error. Plans land in tabeliao as receipts
-//! per `theory/MAGMA.md` §II.3 (Attestation via tameshi).
+//! (attestation via tameshi).
 
 use blake3::Hasher;
 use magma_types::PlanId;

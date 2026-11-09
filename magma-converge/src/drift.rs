@@ -1,6 +1,6 @@
 //! Typed drift-correction policy — the canonical `DriftPolicy` enum
 //! every reconciler that detects live-vs-declared divergence uses.
-//! Spec: `theory/FLUXCD-CONVERGENCE.md` §III, P1.0.
+//! FluxCD convergence P1.0.
 //!
 //! Subsumes the inline "what do we do when the cluster diverged from
 //! the manifest?" decision currently scattered across lava-operator's

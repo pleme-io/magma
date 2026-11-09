@@ -288,7 +288,7 @@ mod pg_pure {
 
     /// The table is SCHEMA-QUALIFIED. It used to be a bare
     /// `magma_providers` in the public schema, which diverged from
-    /// `theory/MAGMA-PROVIDER-PLANE.md` §III (`magma_meta.providers`) — and
+    /// the provider-plane spec (`magma_meta.providers`) — and
     /// nothing caught it because the table was never created at all.
     #[test]
     fn the_table_is_schema_qualified_per_the_spec() {

@@ -1,7 +1,7 @@
 //! `WorkspaceChain` — typed DAG of workspaces with cross-workspace
 //! data flow.
 //!
-//! Per theory/MAGMA.md §II.9, chains thread upstream outputs into
+//! Chains thread upstream outputs into
 //! downstream inputs as typed Rust values. The chain is reconciled in
 //! topological order; each workspace runs once, its outputs feed the
 //! next, no disk roundtrips happen between workspaces.

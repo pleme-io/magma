@@ -1,7 +1,7 @@
 //! Typed K8s status condition — the canonical `Condition` +
 //! `ConditionSet` primitive every CRD status surface writes against.
-//! Spec: `theory/FLUXCD-CONVERGENCE.md` §III (extends the typed
-//! substrate surface beyond the original 9 gaps).
+//! It extends the typed substrate surface beyond the original 9
+//! FluxCD convergence gaps.
 //!
 //! Subsumes the K8s metav1.Condition shape that every FluxCD CRD
 //! (and every pleme-io CRD) reports status through. Lifts into a

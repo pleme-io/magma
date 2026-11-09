@@ -5,8 +5,6 @@
 //! `verify_chain`." Compliance teams trust that promise; this file
 //! turns it from "code review claim" into a proven theorem over
 //! 1000+ random event sequences + 1000+ random tamper positions.
-//!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §IV.2 (tamper evidence).
 
 use magma_stream::{Event, EventPayload, InMemorySink, PlanStream, verify_chain};
 use magma_test_laws::strategies::arb_event_payload;

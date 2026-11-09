@@ -9,8 +9,6 @@
 //! be unsafe.
 //!
 //! Tests over 1000+ random emit sequences in each property.
-//!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §V.3 (replay).
 
 use std::sync::Arc;
 

@@ -92,7 +92,7 @@ pub enum RefError {
     #[error(
         "reference target `{address}` carries an instance key. Only `count`/`for_each` \
          produce one and magma implements neither, so there is no keyed instance to \
-         reference — see `theory/MAGMA.md` §IX."
+         reference."
     )]
     InstanceKeyed { address: String },
     #[error(

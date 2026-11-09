@@ -1,6 +1,6 @@
 //! Typed git/OCI/object-store ref polymorphism — the canonical
 //! `RefSpec` enum every FluxCD-shape source consumer uses.
-//! Spec: `theory/FLUXCD-CONVERGENCE.md` §III, P1.0.
+//! FluxCD convergence P1.0.
 //!
 //! Subsumes the "what ref?" polymorphism currently scattered as
 //! `Option<String>` fields (`spec.ref.branch`, `spec.ref.tag`,

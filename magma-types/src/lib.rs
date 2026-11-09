@@ -2,7 +2,7 @@
 //!
 //! Every consumer crate codes against the types defined here. State, plans,
 //! provider schemas, the resource graph, attestation receipts — all
-//! ground in this crate. Per `theory/MAGMA.md` §III.
+//! ground in this crate.
 //!
 //! Wire formats (Terraform JSON, terraform.tfstate v4, tfplugin5/6 protobuf)
 //! are serializations of these typed values. Internal flow is typed
@@ -1130,8 +1130,7 @@ pub enum Action {
 
 // Fleet-wide dispatcher-catalog registrations for magma's IaC
 // executor surface. Seventh consumer class adopting gen-platform's
-// typed-dispatcher catamorphism. See
-// theory/UNIFIED-COMPUTING-MODEL.md §VI.
+// typed-dispatcher catamorphism.
 gen_platform::register_dispatcher!("magma.resource-kind", ResourceKind);
 gen_platform::register_dispatcher!("magma.action", Action);
 

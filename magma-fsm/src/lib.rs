@@ -16,8 +16,6 @@
 //! Each `Transition` carries timestamps + the typed plan_id + a
 //! reason. The whole `LifecycleState` is serializable so the
 //! operator's reconcile state survives pod restarts.
-//!
-//! Per `theory/CONVERGENCE-SUBSTRATE.md` §IV.5.
 
 #![deny(unsafe_code)]
 

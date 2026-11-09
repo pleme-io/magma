@@ -6,7 +6,5 @@ use crate::{NixError, Result, ast::Expr};
 ///
 /// M8.1 implementation TBD.
 pub fn parse(_source: &str) -> Result<Expr> {
-    Err(NixError::Parse(
-        "M8.1 parser not yet implemented — see theory/MAGMA-AS-PLATFORM.md".into(),
-    ))
+    Err(NixError::Parse("M8.1 parser not yet implemented".into()))
 }

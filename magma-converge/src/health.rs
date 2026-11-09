@@ -3,7 +3,7 @@
 //! consumes. Composes with [`crate::Inventory`] +
 //! [`crate::ResourceRef`] to produce typed `HealthReport`s.
 //!
-//! Spec: `theory/FLUXCD-CONVERGENCE.md` §III, P1.x (P1.5+).
+//! FluxCD convergence P1.x (P1.5+).
 //!
 //! Subsumes FluxCD Kustomization's `healthChecks[]{kind,name,namespace}`
 //! and `healthCheckExprs[]{kind,inProgress,failed,current}` (CEL)

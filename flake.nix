@@ -1,5 +1,5 @@
 {
-  description = "magma — the Rust-native OpenTofu-compatible IaC executor. gRPC plugin protocol v5/v6 + terraform.tfstate v4 + .terraform.lock.hcl + HCL2 + full CLI surface; byte-exact compat with existing providers; internals shikumi-typed end to end, apply engine shigoto-scheduled, plans tameshi-attested via BLAKE3, ships as a WASI module. Pangea declares the supercontinent's shape; magma is the molten executive force that realizes it on cloud substrate. Spec: theory/MAGMA.md.";
+  description = "magma — the Rust-native OpenTofu-compatible IaC executor. gRPC plugin protocol v5/v6 + terraform.tfstate v4 + .terraform.lock.hcl + HCL2 + full CLI surface; byte-exact compat with existing providers; internals shikumi-typed end to end, apply engine shigoto-scheduled, plans tameshi-attested via BLAKE3, ships as a WASI module. Pangea declares the supercontinent's shape; magma is the molten executive force that realizes it on cloud substrate.";
 
   inputs = {
     nixpkgs.url     = "github:nixos/nixpkgs?ref=nixos-25.11";
@@ -91,7 +91,7 @@
               description = "Path to the Vector ingest Unix domain socket.";
             };
           };
-          # Dual-backend selection — per theory/MAGMA.md §II.11.
+          # Dual-backend selection.
           # Pangea Ruby and substrate's pangea-arch-workspace.nix consult
           # this when picking between tofu and magma. magma is the
           # selectable default once the operator opts in fleet-wide;
@@ -100,7 +100,7 @@
             selection = {
               type        = "str";
               default     = "tofu";
-              description = "Default executor for Pangea workspaces: tofu | magma. See theory/MAGMA.md §II.11.";
+              description = "Default executor for Pangea workspaces: tofu | magma.";
             };
             require_in_memory_pipeline = {
               type        = "bool";

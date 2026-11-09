@@ -17,8 +17,6 @@
 //! duplicated in magma-cli (CLI binary) and magma-mcp (MCP server).
 //! Per Pillar 12 (generation over composition) — every cross-workspace
 //! caller now reaches the same engine.
-//!
-//! Per `theory/PANGEA-MAGMA-ORCHESTRATION.md` §IV.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -179,7 +177,7 @@ pub struct AggregateReport {
 
 /// Run a flow plan-only: discover + load + plan each workspace in
 /// topological order, propagate outputs along declared edges, emit
-/// an AggregateReport. Per `theory/PANGEA-MAGMA-ORCHESTRATION.md` §IV.
+/// an AggregateReport.
 ///
 /// The current implementation is sequential regardless of
 /// `flow.optimization` — the shigoto-wrapped apply path lands those

@@ -1,14 +1,12 @@
 //! magma — Rust-native Pangea-Ruby-first OpenTofu-compatible IaC executor.
 //!
 //! Umbrella crate; re-exports the public surface from the workspace's
-//! typed primitives. See `theory/MAGMA.md` for the canonical
-//! specification. Consumers pull from `magma::*`, not from individual
+//! typed primitives. Consumers pull from `magma::*`, not from individual
 //! sub-crates.
 //!
 //! Input layer: Pangea Ruby DSL (in-process via magnus + `pangea-ruby-eval`)
 //! and Terraform JSON (Pangea's rendered output). Magma never reads `.tf`
-//! files — HCL parsing is intentionally out of scope per
-//! `theory/MAGMA.md` §II.1.
+//! files — HCL parsing is intentionally out of scope.
 
 pub use magma_apply as apply;
 pub use magma_attest as attest;

@@ -14,9 +14,8 @@
 //! assert_outputs_have_values(&cfg);
 //! ```
 //!
-//! Gated behind `architecture-laws`. Per
-//! `theory/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md` §III (typed
-//! architectures = composable proofs).
+//! Gated behind `architecture-laws`. Typed architectures are
+//! composable proofs.
 
 use std::collections::{HashMap, HashSet};
 

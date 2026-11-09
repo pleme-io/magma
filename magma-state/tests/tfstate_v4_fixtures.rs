@@ -1,6 +1,6 @@
 //! Real-fixture proof that `magma_state::tfstate_v4` can read a real,
 //! pre-existing `terraform.tfstate` file — the concrete gap this test
-//! corpus closes (per `theory/MAGMA.md` §II.6 level `StateRoundTrip`).
+//! corpus closes (test level `StateRoundTrip`).
 //!
 //! Every byte string below is copied VERBATIM from an actual local
 //! `tofu apply` / `terraform apply` run (OpenTofu 1.10.9 / HashiCorp

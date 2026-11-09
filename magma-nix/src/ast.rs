@@ -1,6 +1,6 @@
 //! Typed Nix expression AST (M8.0 destination).
 //!
-//! Mirrors `theory/NIX-AST.md`'s canonical NixValue shape. Every
+//! Mirrors the canonical NixValue shape. Every
 //! emitter that produces Nix syntax (`flake.nix`, home-manager
 //! modules, gemset.nix, NixOS configurations) builds this typed
 //! tree + renders through one canonical pretty-printer. Refuses

@@ -1,6 +1,6 @@
 [package]
 name        = "magma-provider-registry"
-description = "magma — the Dynamic Provider Plane: a typed ProviderRegistry resolving provider binaries from a directory mirror (MAGMA_PROVIDER_DIR), a Postgres registry, or a DB-then-dir fallback chain. Per theory/MAGMA-PROVIDER-PLANE.md."
+description = "magma — the Dynamic Provider Plane: a typed ProviderRegistry resolving provider binaries from a directory mirror (MAGMA_PROVIDER_DIR), a Postgres registry, or a DB-then-dir fallback chain."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -18,8 +18,7 @@ workspace = true
 default = []
 # `postgres` pulls in sqlx + the PgRegistry impl. The schema it SELECTs
 # against is ensured by PgRegistry::ensure_schema (CREATE SCHEMA/TABLE IF
-# NOT EXISTS) — the house pattern per theory/MAGMA-POSTGRES-LIFECYCLE.md §1,
-# which chose sqlx_embedded over a migrations/*.sql directory. The old
+# NOT EXISTS) — the house pattern, which chose sqlx_embedded over a migrations/*.sql directory. The old
 # migrations/001_providers_table.sql was deleted because NOTHING executed
 # it: it was referenced from a doc comment only, so the first real resolve
 # would have failed with `relation "magma_providers" does not exist`.

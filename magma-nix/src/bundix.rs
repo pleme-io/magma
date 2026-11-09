@@ -15,6 +15,6 @@ use crate::{NixError, Result, ast::Expr};
 /// emission via this entry point).
 pub fn emit_gemset(_lockfile_json: &serde_json::Value) -> Result<Expr> {
     Err(NixError::Eval(
-        "M7 bundix-equivalent not yet implemented — see theory/MAGMA-AS-PLATFORM.md".into(),
+        "M7 bundix-equivalent not yet implemented".into(),
     ))
 }

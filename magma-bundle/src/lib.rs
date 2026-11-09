@@ -71,7 +71,7 @@ pub struct Bundle {
     /// gem tree this reconcile ran against. `None` means the
     /// reconcile ran outside a magma-rubygems-materialized
     /// closure (e.g. legacy `bundle install` workspace). Once
-    /// per theory/MAGMA-RUBYGEMS.md M5 lands, every Pangea-side
+    /// magma-rubygems M5 lands, every Pangea-side
     /// reconcile populates this — operators can verify the gem
     /// closure end-to-end alongside plan + drift + lifecycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]

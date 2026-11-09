@@ -1,6 +1,6 @@
 [package]
 name        = "magma-flow"
-description = "magma — typed Pangea cross-workspace flow runner. One canonical FlowFile / OptimizationHints / topological_order + run engine; consumed by `magma flow` CLI, `pangea_orchestrate` MCP tool, and `Pangea::Magma::Chain` Ruby. Per theory/PANGEA-MAGMA-ORCHESTRATION.md §IV."
+description = "magma — typed Pangea cross-workspace flow runner. One canonical FlowFile / OptimizationHints / topological_order + run engine; consumed by `magma flow` CLI, `pangea_orchestrate` MCP tool, and `Pangea::Magma::Chain` Ruby."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

@@ -11,8 +11,6 @@
 //! cache; one resolution per pangea-operator startup shared across
 //! every workspace.
 //!
-//! Per [`theory/MAGMA-RUBYGEMS.md`](https://github.com/pleme-io/theory/blob/main/MAGMA-RUBYGEMS.md).
-//!
 //! # Crate status
 //!
 //! M0 (lockfile parser) not yet started. This file is the typed

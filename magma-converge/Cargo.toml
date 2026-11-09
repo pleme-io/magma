@@ -1,6 +1,6 @@
 [package]
 name        = "magma-converge"
-description = "magma — universal state-convergence substrate. One typed Reconciler trait that fits any declarative API (Terraform, GitHub, DNS, Helm, Slack, …). The operator becomes the universal convergence engine. Per theory/CONVERGENCE-SUBSTRATE.md."
+description = "magma — universal state-convergence substrate. One typed Reconciler trait that fits any declarative API (Terraform, GitHub, DNS, Helm, Slack, …). The operator becomes the universal convergence engine."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

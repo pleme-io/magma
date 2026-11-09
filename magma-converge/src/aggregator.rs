@@ -1,7 +1,6 @@
 //! `Aggregator<K, V>` — typed sorted per-key map.
 //!
-//! Spec: `theory/PATTERN-EXTRACTION.md` Pattern 4 (Aggregator).
-//! Extracted after 3+ primitives shipped the same shape:
+//! Pattern 4 (Aggregator). Extracted after 3+ primitives shipped the same shape:
 //!
 //!   - `HealthReport` — `Vec<(ResourceRef, ReadyState)>`
 //!   - `ApplyReport` — `Vec<(ResourceRef, ApplyOutcome<T>)>` (partial fit)

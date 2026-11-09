@@ -1,6 +1,6 @@
 //! magma — CLI binary entry point.
 //!
-//! Four interfaces per `theory/MAGMA.md` §II.8:
+//! Four interfaces:
 //! 1. **Drop-in CLI compat** — when invoked as `terraform`/`tofu`,
 //!    magma honors the TF env vars, exit codes, and output formats.
 //! 2. **Native typed CLI** — when invoked as `magma`, the pleme-io
@@ -10,7 +10,7 @@
 //! 4. **Rust library** — consumers `cargo add magma`; this binary is
 //!    a façade over the typed library surface.
 //!
-//! Per `theory/MAGMA.md` §VI.M3 (Full CLI parity), every Terraform
+//! At M3 (full CLI parity), every Terraform
 //! flag + exit code must match upstream. M0 ships the load-bearing
 //! subset (init/plan/apply/destroy + daemon/watch + mcp).
 
@@ -26,7 +26,7 @@ use magma::pangea::WorkspaceLoader as _;
 // ── Drop-in compat: argv[0] sensing ────────────────────────────────
 
 /// Which CLI mode magma is running in. Determined from `argv[0]`'s
-/// basename per `theory/MAGMA.md` §II.8 interface 1.
+/// basename (interface 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InvokeMode {
     /// Invoked as `terraform` or `terraform-*`. Match upstream
@@ -77,7 +77,7 @@ fn is_compat_mode(m: InvokeMode) -> bool {
 
 /// Snapshot of Terraform / OpenTofu environment variables magma
 /// honors when running in compat mode (and respects in native mode
-/// when set). Per `theory/MAGMA.md` §II.2 row 15.
+/// when set).
 #[derive(Debug, Default, Clone)]
 struct TfEnv {
     /// `TF_VAR_<name>` → variable value (name lower-cased per Terraform).
@@ -163,7 +163,7 @@ fn detect_output_mode(invoke: InvokeMode) -> OutputMode {
     name = "magma",
     version,
     about = "Rust-native Pangea-Ruby-first OpenTofu-compatible IaC executor",
-    long_about = "Pangea declares the supercontinent's shape; magma is the molten executive force that realizes it on cloud substrate. See theory/MAGMA.md for the destination spec.",
+    long_about = "Pangea declares the supercontinent's shape; magma is the molten executive force that realizes it on cloud substrate.",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -217,14 +217,14 @@ enum Command {
     ForceUnlock,
     /// Get / update modules.
     Get,
-    /// Format HCL files. (No-op in magma — see theory/MAGMA.md §IX.)
+    /// Format HCL files. (No-op in magma — magma never reads HCL.)
     Fmt,
     /// Validate config + state.
     Validate,
     /// Interactive evaluator console.
     Console,
 
-    // ── Native magma additions (per theory/MAGMA.md §II.8 interface 2) ──
+    // ── Native magma additions (interface 2) ──
     /// Start the MCP server on stdin/stdout (or TCP if --port is set).
     Mcp(McpArgs),
     /// Run as the system-side workspace-watcher daemon (NixOS services.magma).
@@ -241,7 +241,6 @@ enum Command {
     Flow(FlowArgs),
     /// Print a typed JSON capability manifest — consumed by Pangea Ruby's
     /// backend auto-discovery to probe magma's abilities at runtime.
-    /// Per `theory/MAGMA.md` §II.11.
     Capabilities,
     /// Verify any Pangea-rendered workspace through magma's typed
     /// pipeline. Reusable from Ruby rspec, CI, bash — anywhere a JSON
@@ -251,8 +250,7 @@ enum Command {
     /// Atomic typed state-organization migration. Moves resources
     /// between workspaces' state files without recreate. Consumes a
     /// typed `MigrationPlan` JSON; emits a `MigrationReceipt` JSON
-    /// with BLAKE3 hashes pre/post. Per
-    /// `theory/PANGEA-MAGMA-ORCHESTRATION.md` §III.3 + §V.
+    /// with BLAKE3 hashes pre/post.
     Migrate(MigrateArgs),
     /// Split: move a subset of one workspace's resources into a new
     /// workspace. Thin wrapper over `magma migrate` for the case where
@@ -771,7 +769,7 @@ async fn cmd_fixture(cmd: FixtureCommand) -> Result<u8> {
 
 fn cmd_capabilities() -> Result<u8> {
     // Typed JSON capability manifest — the canonical Pangea-Ruby
-    // auto-discovery surface per theory/MAGMA.md §II.11.
+    // auto-discovery surface.
     let mcp_tools: Vec<String> = magma::mcp::tool_specs()
         .into_iter()
         .map(|t| t.name)
@@ -839,7 +837,7 @@ fn print_banner(invoke: InvokeMode) {
                 "magma {} — Rust-native Pangea-Ruby-first IaC executor",
                 env!("CARGO_PKG_VERSION"),
             );
-            println!("See `magma --help` and theory/MAGMA.md for the destination spec.");
+            println!("See `magma --help` for the full command surface.");
         }
     }
 }
@@ -847,7 +845,7 @@ fn print_banner(invoke: InvokeMode) {
 // ── Per-subcommand stubs (M0; full impl wires in M0.x → M3) ──────
 
 fn stub(name: &str) -> Result<u8> {
-    eprintln!("magma {name}: not yet implemented (M0 in flight — see theory/MAGMA.md §VI)");
+    eprintln!("magma {name}: not yet implemented (M0 in flight)");
     Ok(1)
 }
 
@@ -1239,11 +1237,11 @@ fn cmd_workspace(cmd: WorkspaceCommand) -> Result<u8> {
 }
 
 fn cmd_fmt() -> Result<u8> {
-    // magma does NOT parse HCL (theory/MAGMA.md §I, §IX). `magma fmt`
+    // magma does NOT parse HCL. `magma fmt`
     // is a no-op that returns success — operators who relied on
     // `terraform fmt` against Pangea-rendered JSON output didn't need
     // it anyway (the JSON renderer emits canonical output).
-    eprintln!("magma fmt: no-op (magma never reads HCL — see theory/MAGMA.md §IX)");
+    eprintln!("magma fmt: no-op (magma never reads HCL)");
     Ok(0)
 }
 

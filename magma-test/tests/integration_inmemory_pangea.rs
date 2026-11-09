@@ -19,7 +19,7 @@
 //!    constructs a `serde_json::Value` directly (or parses an inline
 //!    string), feeds it to `Config::from_json`, plans against state.
 //!    No filesystem ops. Demonstrates the lib-as-Rust-API interface
-//!    (`theory/MAGMA.md` §II.8 interface 4).
+//!    (interface 4).
 //!
 //! 2. **Disk-shape discovery + in-memory load** — `WorkspaceShape::discover`
 //!    against a fixture dir, then `TerraformJsonLoader::load` to bring

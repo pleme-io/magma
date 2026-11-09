@@ -1,6 +1,6 @@
 //! Typed policy cascade — the canonical `CascadePolicy` trait every
 //! fleet-wide multi-layer-override system consumes.
-//! Spec: `theory/CONVERGENCE-ADOPTION.md` §II.2, Phase 0.4.
+//! Convergence adoption Phase 0.4.
 //!
 //! Subsumes the hand-rolled "innermost-wins per-field merge" shapes
 //! that previously lived in:
@@ -48,7 +48,7 @@
 use serde::{Deserialize, Serialize};
 
 // The `CascadePolicy` trait was RE-HOMED to lightweight
-// `shigoto-types::policy` (2026-06-02, theory/CONVERGENCE-ADOPTION.md): it
+// `shigoto-types::policy` (2026-06-02): it
 // is a pure, general per-field merge primitive with no IaC coupling, and
 // keeping it here forced lightweight controllers (pangea/lava) to take
 // magma's whole executor closure to adopt it. Re-exported for back-compat;

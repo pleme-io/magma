@@ -1,6 +1,6 @@
 //! `Decision` (+ its generic `PoolDecisionDemo` reference impl + law
 //! tests) was RE-HOMED to lightweight `shigoto-types::decision`
-//! (2026-06-02, theory/CONVERGENCE-ADOPTION.md) — it is a pure, general
+//! (2026-06-02) — it is a pure, general
 //! pure-decision-function primitive with no IaC coupling, and keeping it
 //! in magma-converge forced lightweight controllers (tatara/pangea/lava)
 //! to take magma's whole executor closure to adopt it. Re-exported here

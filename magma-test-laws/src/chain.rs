@@ -12,8 +12,7 @@
 //! 4. Workspace names are unique within the chain.
 //! 5. Empty chain (0 workspaces) is vacuously valid.
 //!
-//! Gated behind `chain-laws`. Per `theory/MAGMA.md` §V.7
-//! (constellation orchestration).
+//! Gated behind `chain-laws` (constellation orchestration).
 
 use std::collections::HashSet;
 
