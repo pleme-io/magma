@@ -247,7 +247,7 @@ impl<R: ?Sized> HealthCheck<R> for ChainedHealthCheck<R> {
 /// canonical order without per-cycle re-sorting.
 /// Canonical readiness report — `Aggregator<ResourceRef, ReadyState>`.
 ///
-/// As of the Aggregator extraction (PATTERN-EXTRACTION.md Pattern 4),
+/// As of the Aggregator extraction,
 /// HealthReport is a typed alias over the generic per-key outcome
 /// aggregator. Existing API (set/get/len/is_empty/iter/overall) flows
 /// through the generic; the only HealthReport-specific surface is

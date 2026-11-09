@@ -28,7 +28,7 @@
 
       # ── Substrate module trio: emits nixosModules.default +
       # ── homeManagerModules.default + darwinModules.default.
-      # ── Per MAGMA.md §II.7 "Pleme-io substrate integration":
+      # ── Pleme-io substrate integration:
       # ──   - services.magma  (NixOS — per-workspace systemd units)
       # ──   - programs.magma  (home-manager — operator config)
       # ──   - blackmatter.components.magma (opinionated bundle)
@@ -53,8 +53,7 @@
         withShikumiConfig = true;
 
         # Typed config groups — auto-generated NixOS option declarations.
-        # Per "what extensive means concretely" (MAGMA.md §II.7) —
-        # options expand mechanically from the typed schema, never
+        # Options expand mechanically from the typed schema, never
         # hand-edited.
         shikumiTypedGroups = {
           general = {
