@@ -66,7 +66,7 @@
 //! raise the aggregate rate — and only then does concurrency have anything to
 //! convert into throughput.
 //!
-//! The typed shape matches §II.9 — every apply operation surfaces as
+//! The typed shape is the in-memory work-graph: every apply operation surfaces as
 //! a typed `ApplyChange` Job.
 
 pub mod adopt;
@@ -157,7 +157,7 @@ pub struct FailedChange {
 /// integration (M0.x) once `PlanResourceChange` + `ApplyResourceChange`
 /// gRPC calls flow through the spawned `Plugin`.
 ///
-/// This is the typed in-memory `apply` step in the §II.9 work-graph;
+/// This is the typed in-memory `apply` step in the work-graph;
 /// downstream consumers (chains, MCP `magma_apply`, CLI `magma apply`)
 /// invoke this function directly with typed values.
 pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyError> {

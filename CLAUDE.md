@@ -42,11 +42,11 @@ The work runs in phases M0–M5. M0 (≈4 months) ships in-process Pangea-Ruby e
 | MCP server | `magma mcp`; JSON-RPC 2.0; 14 typed tools; destructive gating | ✓ M0 (skeleton) |
 | Rust library | `cargo add magma`; consumers compose typed values directly | ✓ M0 |
 
-## In-memory pipelines + shigoto work-graph (§II.9)
+## In-memory pipelines + shigoto work-graph
 
 Pangea Ruby evaluates in-process; rendered architecture never touches disk in the in-memory chain. Every operation surfaces as a typed `shigoto::Job`; flows authored as `(defmagma-flow …)` compile to a `shigoto::Dag`. Cross-workspace chaining passes typed values through Rust, not state files through S3.
 
-## Compatibility contract (§II.2)
+## Compatibility contract
 
 | Surface | Format | Source of truth |
 |---|---|---|
@@ -74,7 +74,7 @@ nix run .#regenerate               # regenerate Cargo.nix after Cargo.toml chang
 
 ## Substrate integration
 
-This repo follows the canonical pleme-io patterns; no escape hatches (§II.7):
+This repo follows the canonical pleme-io patterns; no escape hatches:
 
 | Primitive | How magma uses it |
 |---|---|
@@ -90,7 +90,7 @@ This repo follows the canonical pleme-io patterns; no escape hatches (§II.7):
 
 ## Per-crate notes
 
-- **magma-protocol** vendors `tfplugin5.proto` + `tfplugin6.proto` in `magma-protocol/proto/` from OpenTofu's `internal/tfplugin{5,6}/`. `build.rs` invokes `tonic-build` to emit Rust gRPC client stubs at compile time. Do not hand-write protobuf or gRPC code anywhere else (per §IX anti-patterns).
+- **magma-protocol** vendors `tfplugin5.proto` + `tfplugin6.proto` in `magma-protocol/proto/` from OpenTofu's `internal/tfplugin{5,6}/`. `build.rs` invokes `tonic-build` to emit Rust gRPC client stubs at compile time. Do not hand-write protobuf or gRPC code anywhere else (per anti-patterns).
 - **magma-plugin** owns the go-plugin handshake (stdout parsing + mTLS bootstrap + subprocess lifecycle). Exposes `Plugin::spawn(binary, magic_cookie, accepted_protocols) -> Result<Plugin>` and a typed `Provider` trait.
 - **magma-types** is consumed by every other crate; no upstream deps beyond `serde` + `chrono` + `uuid` + `thiserror` + `schemars`. Keep it small.
 - **magma-cli** depends on `magma` (umbrella) + `clap`; logic stays in the typed crates.

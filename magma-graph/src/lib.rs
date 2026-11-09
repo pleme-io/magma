@@ -4,7 +4,7 @@
 //! apply engine — each wave is a partial-order batch that may apply in
 //! parallel. This is the *resource* graph;
 //! the *operation* graph (EvaluatePangea → Plan → Apply → …) is a
-//! `shigoto::Dag` in magma-apply (§II.9).
+//! `shigoto::Dag` in magma-apply.
 
 use std::collections::HashMap;
 

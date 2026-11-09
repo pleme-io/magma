@@ -59,7 +59,7 @@ pub struct ToolSpec {
     pub destructive: bool,
 }
 
-/// The full set of MCP tools magma exposes. Per §II.8 interface 3.
+/// The full set of MCP tools magma exposes. This is interface 3.
 #[must_use]
 pub fn tool_specs() -> Vec<ToolSpec> {
     vec![

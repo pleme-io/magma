@@ -237,7 +237,7 @@ enum Command {
     /// Manipulate ~/.config/magma/magma.yaml (typed shikumi config).
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// Execute a tatara-lisp DAG of magma operations (§II.9).
+    /// Execute a tatara-lisp DAG of magma operations.
     Flow(FlowArgs),
     /// Print a typed JSON capability manifest — consumed by Pangea Ruby's
     /// backend auto-discovery to probe magma's abilities at runtime.

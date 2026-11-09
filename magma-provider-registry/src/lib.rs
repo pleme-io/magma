@@ -6,10 +6,10 @@
 //! directory mirror and an optional Postgres registry) + a fallback
 //! chain. It does **not** yet wire into `magma-apply`'s `ApplyContext`,
 //! download providers, or perform live updates — those are the next
-//! increment (§V). The crate is additive: nothing in the apply engine
+//! increment. The crate is additive: nothing in the apply engine
 //! depends on it yet.
 //!
-//! # The destination (§I)
+//! # The destination
 //!
 //! Provider availability is a DB-resolved, live-updatable property — not
 //! a build-time constant. At apply time magma resolves the workspace's
@@ -22,7 +22,7 @@
 //! [`ChainRegistry`] composes the two: DB first, dir on a miss. The
 //! `FetchProvider` remediation (download-on-miss) is the next increment.
 //!
-//! # The one honest filesystem reach (§III)
+//! # The one honest filesystem reach
 //!
 //! go-plugin `exec`s the provider binary from a *path*. A directory
 //! registry resolves a path directly; a DB registry materializes its
@@ -193,7 +193,7 @@ pub trait ProviderRegistry: Send + Sync {
 }
 
 /// A two-tier resolver: try `primary`, and on a clean miss
-/// (`Ok(None)`) fall through to `fallback`. Per §IV the canonical
+/// (`Ok(None)`) fall through to `fallback`. The canonical
 /// composition is DB-then-dir: `ChainRegistry::new(pg, dir)`.
 ///
 /// A genuine error from `primary` (I/O, backend, hash mismatch) is

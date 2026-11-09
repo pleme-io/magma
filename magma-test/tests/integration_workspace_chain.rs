@@ -1,5 +1,5 @@
 //! Workspaces as programmable reconcilable atoms + chains as another
-//! typed atom — the §II.9 demonstration extended.
+//! typed atom — the in-memory demonstration, extended.
 //!
 //! Per [[project-workspaces-as-programmable-atoms]] memory:
 //!   - Each workspace = typed atom (input_slots / output_slots /

@@ -1,8 +1,8 @@
 //! Full lifecycle integration test: spawn mock provider → dial gRPC →
 //! GetProviderSchema → PlanResourceChange → ApplyResourceChange.
 //!
-//! Closes §IV.2 (tfplugin6 protocol bindings) end-to-end alongside
-//! §IV.1 (handshake) — proves magma can complete the entire
+//! Closes the tfplugin6 protocol bindings end-to-end alongside
+//! the handshake — proves magma can complete the entire
 //! per-resource lifecycle (plan → apply) over a real gRPC channel
 //! against a typed provider implementation.
 //!
@@ -104,7 +104,7 @@ async fn full_lifecycle_against_mock() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn schema_only_smoke() {
-    // §II.6 level 1 (Smoke) — minimal proof that schema retrieval works.
+    // Test level 1 (smoke) — minimal proof that schema retrieval works.
     let binary = mock_provider_binary();
     let spec = PluginSpec {
         binary,

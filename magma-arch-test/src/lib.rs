@@ -228,7 +228,7 @@ impl WorkspaceTestHarness {
     }
 
     /// Assert: PlanId is byte-stable across reruns with the same
-    /// fixed state. Critical for tameshi attestation + §II.6 level-3
+    /// fixed state. Critical for tameshi attestation and level-3
     /// plan-diff determinism.
     ///
     /// `empty_state()` regenerates the state lineage UUID on every

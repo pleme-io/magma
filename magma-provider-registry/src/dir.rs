@@ -1,4 +1,4 @@
-//! [`DirRegistry`] — the directory-mirror resolver (§IV tier 2).
+//! [`DirRegistry`] — the directory-mirror resolver (tier 2).
 //!
 //! Resolves a provider binary from `MAGMA_PROVIDER_DIR` (the Nix-baked
 //! seed / offline fallback) by bounded recursive walk, matching the

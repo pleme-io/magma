@@ -3,7 +3,7 @@
 //! Move resources between workspaces' state files atomically while
 //! preserving cloud-resource identity.
 //!
-//! Five guarantees the engine enforces (§V):
+//! Five guarantees the engine enforces:
 //!
 //! 1. **No recreate** — `state mv` semantics; cloud identity (ARN/UUID)
 //!    is unchanged.
@@ -114,7 +114,7 @@ pub struct MigrationPlan {
 
 /// Typed audit receipt emitted after every migration. Includes
 /// pre/post BLAKE3 hashes of both state files (the
-/// attestation-continuity guarantee §V row 4).
+/// attestation-continuity guarantee).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MigrationReceipt {
     pub plan: MigrationPlan,

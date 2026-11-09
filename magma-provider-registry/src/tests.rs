@@ -168,7 +168,7 @@ async fn dir_registry_no_root_is_clean_miss() {
 
 #[tokio::test]
 async fn chain_falls_back_db_miss_then_dir_hit() {
-    // Tier 1 (DB) misses; tier 2 (dir) hits — the canonical §IV path,
+    // Tier 1 (DB) misses; tier 2 (dir) hits — the canonical path,
     // proven with zero live Postgres.
     let td = TempDir::new().unwrap();
     let bin = td

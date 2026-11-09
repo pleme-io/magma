@@ -1,4 +1,4 @@
-//! [`PgRegistry`] — the Postgres registry resolver (§III, §IV tier 1),
+//! [`PgRegistry`] — the Postgres registry resolver (tier 1),
 //! gated behind the `postgres` feature so the crate compiles without a
 //! live database or libpq.
 //!
@@ -12,7 +12,7 @@
 //! 3. **materializes** the binary to a per-coordinate exec cache path
 //!    under `cache_dir` and returns a [`ProviderHandle`] pointing at it.
 //!
-//! Per §III the binary's durable home is Postgres; the cache path is a
+//! The binary's durable home is Postgres; the cache path is a
 //! transient materialized exec reach (the one sanctioned filesystem
 //! touch), not storage.
 //!
@@ -85,7 +85,7 @@ pub struct PgRegistry {
     ensured: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// The table this registry resolves against, qualified. Spec §III.
+/// The table this registry resolves against, qualified.
 pub(crate) const PROVIDERS_TABLE: &str = "magma_meta.providers";
 
 impl PgRegistry {
@@ -142,7 +142,7 @@ impl PgRegistry {
     }
 
     /// Seed the registry from a Nix-baked mirror — the bake's demotion from
-    /// mechanism to seed (spec §II, §VI).
+    /// mechanism to seed.
     ///
     /// Idempotent by construction: the key is a content coordinate, and a
     /// row already at that coordinate is left alone (`ON CONFLICT DO

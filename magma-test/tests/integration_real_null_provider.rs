@@ -1,6 +1,6 @@
 //! Real-provider lifecycle test against `hashicorp/null v3.2.4`.
 //!
-//! Closes §II.6 level 1 (smoke) + level 2 (schema-diff seed) for a
+//! Closes test level 1 (smoke) + level 2 (schema-diff seed) for a
 //! Tier 1 provider — proves magma can complete the handshake, dial
 //! gRPC, fetch the schema, and exercise plan/apply against a real
 //! Terraform-ecosystem provider binary (not a mock).

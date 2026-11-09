@@ -7,7 +7,7 @@
 //! Invariants tested (M0 scope and anti-patterns):
 //!
 //! 1. **Determinism** — same (config, state) → same `PlanId`. Foundation
-//!    for tameshi attestation + §II.6 level-3 plan-diff round-trip.
+//!    for tameshi attestation and level-3 plan-diff round-trip.
 //! 2. **Action coverage** — every resource in config-but-not-state is a
 //!    Create; every resource in state-but-not-config is a Delete; every
 //!    in-both is a NoOp (M0 — Update detection requires provider RPC).

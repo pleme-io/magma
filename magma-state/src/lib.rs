@@ -135,8 +135,8 @@ pub async fn write_state(path: impl AsRef<Path>, state: &State) -> Result<(), St
 }
 
 /// Round-trip real `terraform.tfstate` v4 bytes through the typed
-/// `State` boundary without disk I/O. Used by the §II.6 level 4
-/// byte-exact tests.
+/// `State` boundary without disk I/O. Used by the level-4
+/// (state round-trip) byte-exact tests.
 pub fn round_trip(bytes: &[u8]) -> Result<Vec<u8>, StateError> {
     let state = tfstate_v4::decode(bytes)?;
     tfstate_v4::encode(&state)

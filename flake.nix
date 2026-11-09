@@ -104,12 +104,12 @@
             require_in_memory_pipeline = {
               type        = "bool";
               default     = false;
-              description = "Require in-memory workspace chains (§II.9). When true, magma is the only viable backend.";
+              description = "Require in-memory workspace chains. When true, magma is the only viable backend.";
             };
             require_workspace_chains = {
               type        = "bool";
               default     = false;
-              description = "Require typed WorkspaceChain DAG support (§II.9).";
+              description = "Require typed WorkspaceChain DAG support.";
             };
           };
         };

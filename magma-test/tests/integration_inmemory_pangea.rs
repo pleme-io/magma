@@ -1,4 +1,4 @@
-//! In-memory Pangea pipeline — the §II.9 demonstration.
+//! In-memory Pangea pipeline, demonstrated.
 //!
 //! Drives a Pangea-rendered Terraform JSON workspace through magma's
 //! typed core *entirely in memory*: no `tempfile`, no intermediate
@@ -9,8 +9,8 @@
 //!             → magma_plan::plan(config, state)
 //!                 → magma_types::Plan
 //!
-//! This is the M0 proof of §II.9 (in-memory pipelines + shigoto
-//! work-graph): when Pangea Ruby evaluates in-process, the rendered
+//! This is the M0 proof of in-memory pipelines and the shigoto
+//! work-graph: when Pangea Ruby evaluates in-process, the rendered
 //! architecture never touches disk on its way to magma's planner.
 //!
 //! Two paths exercised:
@@ -39,7 +39,7 @@ use serde_json::json;
 
 // ── Path 1: pure-in-memory pipeline ────────────────────────────────
 
-/// The canonical §II.9 demo: workspace JSON, planning, all in RAM.
+/// The canonical in-memory demo: workspace JSON, planning, all in RAM.
 /// Every value here is a Rust value; no file path is named, no
 /// serde-to-tempfile-and-back ritual happens.
 #[tokio::test]
@@ -63,7 +63,7 @@ async fn inmemory_pangea_pipeline_create() {
     });
 
     // 2. Typed Config — no parsing of HCL anywhere; magma reads
-    // Pangea-rendered JSON directly (§II.1).
+    // Pangea-rendered JSON directly.
     let cfg = Config::from_json(rendered).expect("parse rendered JSON");
     assert_eq!(cfg.resources.len(), 2);
     let provider_refs = cfg.provider_references();
@@ -95,7 +95,7 @@ async fn inmemory_pangea_pipeline_create() {
 
 /// In-memory chaining demo: the typed Plan output from one workspace
 /// directly feeds the input of another (no state file, no S3, no
-/// terraform_remote_state data source) — per §II.9 cross-workspace
+/// terraform_remote_state data source) — cross-workspace
 /// chaining without disk.
 #[tokio::test]
 async fn inmemory_pangea_cross_workspace_chain() {
