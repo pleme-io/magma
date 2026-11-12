@@ -659,6 +659,8 @@ fn declared_attributes_drifted(
 ///   is allow-all (`-1`) — AWS returns `null`, config declares `0` —
 ///   BUG 5. Scoped to allow-all only: a genuine port difference on a
 ///   normal rule still compares by equality.
+/// - `aws_budgets_budget.limit_amount` — config declares `"100"`, AWS
+///   returns `"100.0"`; compared as decimal numbers.
 /// - `aws_iam_openid_connect_provider.url` — a config-resolved
 ///   reference to an EKS cluster's OIDC issuer carries the `https://`
 ///   scheme; AWS's `DescribeOpenIDConnectProvider` strips it on read.
@@ -680,6 +682,9 @@ fn attribute_matches(
     }
     if resource_type == "aws_iam_openid_connect_provider" && field_name == "url" {
         return url_scheme_normalized_matches(before_v, after_v);
+    }
+    if resource_type == "aws_budgets_budget" && field_name == "limit_amount" {
+        return decimal_string_matches(before_v, after_v);
     }
     subset_matches(before_v, after_v)
 }
@@ -709,10 +714,18 @@ fn attribute_matches(
 ///   compares by its PARSED value, not the literal string, so AWS
 ///   re-serializing the same policy with reordered keys doesn't drift.
 ///
-/// Arrays-of-objects and non-JSON strings still compare by whole-value
-/// equality — real Terraform DOES flag any difference in a genuinely
-/// order-sensitive list attribute; these relaxations are additive, not
-/// a general "ignore order/shape" switch.
+/// - **Nested-block lists** — two equal-length arrays of objects match
+///   when each config block subset-matches a distinct state block,
+///   first by position, else by a one-to-one assignment. AWS returns
+///   set-typed blocks (`aws_network_acl.ingress`, `aws_route_table.route`,
+///   `aws_budgets_budget.notification`) in its own order and fills every
+///   optional field, so whole-value equality re-planned those resources
+///   as Update on every cycle (kensa-pentest on plo, 2026-11-12). A block
+///   added, removed or changed still drifts; a pure reorder of an
+///   order-sensitive block list does not, the same trade BUG 2 makes
+///   for scalars.
+///
+/// Non-JSON strings still compare by whole-value equality.
 fn subset_matches(before_v: &serde_json::Value, after_v: &serde_json::Value) -> bool {
     // BUG 3: max_items=1 nested-block shape mismatch — normalize
     // BEFORE the main dispatch so the unwrapped values still get the
@@ -741,6 +754,14 @@ fn subset_matches(before_v: &serde_json::Value, after_v: &serde_json::Value) -> 
             scalar_multiset_matches(before_arr, after_arr)
         }
 
+        (serde_json::Value::Array(before_arr), serde_json::Value::Array(after_arr))
+            if before_arr.len() == after_arr.len()
+                && before_arr.iter().all(serde_json::Value::is_object)
+                && after_arr.iter().all(serde_json::Value::is_object) =>
+        {
+            block_list_matches(before_arr, after_arr)
+        }
+
         // BUG 1: JSON-encoded string attributes compare by parsed
         // value. A parse failure on either side (not JSON to begin
         // with — a genuine plain-string attribute) falls back to the
@@ -755,6 +776,63 @@ fn subset_matches(before_v: &serde_json::Value, after_v: &serde_json::Value) -> 
             }
         }
 
+        _ => before_v == after_v,
+    }
+}
+
+fn block_list_matches(before_arr: &[serde_json::Value], after_arr: &[serde_json::Value]) -> bool {
+    if before_arr
+        .iter()
+        .zip(after_arr)
+        .all(|(b, a)| subset_matches(b, a))
+    {
+        return true;
+    }
+    let fits: Vec<Vec<usize>> = after_arr
+        .iter()
+        .map(|a| {
+            before_arr
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| subset_matches(b, a))
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .collect();
+    let mut owner: Vec<Option<usize>> = vec![None; before_arr.len()];
+    (0..after_arr.len()).all(|ai| {
+        let mut seen = vec![false; before_arr.len()];
+        claim_block(ai, &fits, &mut owner, &mut seen)
+    })
+}
+
+fn claim_block(
+    ai: usize,
+    fits: &[Vec<usize>],
+    owner: &mut [Option<usize>],
+    seen: &mut [bool],
+) -> bool {
+    for &bi in &fits[ai] {
+        if seen[bi] {
+            continue;
+        }
+        seen[bi] = true;
+        if owner[bi].is_none_or(|other| claim_block(other, fits, owner, seen)) {
+            owner[bi] = Some(ai);
+            return true;
+        }
+    }
+    false
+}
+
+fn decimal_string_matches(before_v: &serde_json::Value, after_v: &serde_json::Value) -> bool {
+    let parse = |v: &serde_json::Value| match v {
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
+        serde_json::Value::Number(n) => n.as_f64(),
+        _ => None,
+    };
+    match (parse(before_v), parse(after_v)) {
+        (Some(b), Some(a)) => b == a,
         _ => before_v == after_v,
     }
 }
@@ -2764,6 +2842,185 @@ mod tests {
         assert_eq!(
             st.resources[0].address.to_string(),
             "github_repository.ensaio_akeyless"
+        );
+    }
+
+    fn action_for(type_id: &str, declared: serde_json::Value, stored: serde_json::Value) -> Action {
+        let cfg = Config::from_json(json!({ "resource": { type_id: { "r": declared } } })).unwrap();
+        let mut st = empty_state();
+        st.resources.push(mk_state_resource(type_id, "r", stored));
+        let p = plan(&cfg, &st).unwrap();
+        assert_eq!(p.resource_changes.len(), 1);
+        p.resource_changes[0].action
+    }
+
+    fn nacl_rule(protocol: &str, rule_no: u64, from: u64, to: u64) -> serde_json::Value {
+        json!({
+            "action": "allow", "cidr_block": "0.0.0.0/0", "from_port": from,
+            "icmp_code": 0, "icmp_type": 0, "ipv6_cidr_block": "",
+            "protocol": protocol, "rule_no": rule_no, "to_port": to
+        })
+    }
+
+    fn nacl_declared(protocol: &str, rule_no: u64, from: u64, to: u64) -> serde_json::Value {
+        json!({
+            "action": "allow", "cidr_block": "0.0.0.0/0", "from_port": from,
+            "protocol": protocol, "rule_no": rule_no, "to_port": to
+        })
+    }
+
+    #[test]
+    fn set_typed_blocks_in_provider_order_with_filled_fields_are_noop() {
+        let declared = json!({
+            "ingress": [nacl_declared("6", 100, 1024, 65535), nacl_declared("17", 110, 1024, 65535)],
+            "egress": [nacl_declared("-1", 100, 0, 0)]
+        });
+        let stored = json!({
+            "id": "acl-1",
+            "ingress": [nacl_rule("17", 110, 1024, 65535), nacl_rule("6", 100, 1024, 65535)],
+            "egress": [nacl_rule("-1", 100, 0, 0)]
+        });
+        assert_eq!(
+            action_for("aws_network_acl", declared, stored),
+            Action::NoOp
+        );
+    }
+
+    #[test]
+    fn a_changed_block_in_a_set_typed_list_still_updates() {
+        let declared = json!({
+            "ingress": [nacl_declared("6", 100, 1024, 65535), nacl_declared("17", 110, 2048, 65535)]
+        });
+        let stored = json!({
+            "ingress": [nacl_rule("17", 110, 1024, 65535), nacl_rule("6", 100, 1024, 65535)]
+        });
+        assert_eq!(
+            action_for("aws_network_acl", declared, stored),
+            Action::Update
+        );
+    }
+
+    #[test]
+    fn an_added_block_still_updates() {
+        let declared = json!({
+            "ingress": [nacl_declared("6", 100, 1024, 65535), nacl_declared("17", 110, 1024, 65535)]
+        });
+        let stored = json!({ "ingress": [nacl_rule("6", 100, 1024, 65535)] });
+        assert_eq!(
+            action_for("aws_network_acl", declared, stored),
+            Action::Update
+        );
+    }
+
+    #[test]
+    fn two_declared_blocks_cannot_claim_one_stored_block() {
+        let declared = json!({
+            "ingress": [json!({ "rule_no": 100 }), json!({ "rule_no": 100, "protocol": "6" })]
+        });
+        let stored = json!({
+            "ingress": [nacl_rule("6", 100, 1024, 65535), nacl_rule("17", 110, 1024, 65535)]
+        });
+        assert_eq!(
+            action_for("aws_network_acl", declared, stored),
+            Action::Update
+        );
+    }
+
+    #[test]
+    fn the_matching_reassigns_a_greedy_first_claim() {
+        let declared = json!({
+            "ingress": [json!({ "rule_no": 100 }), json!({ "rule_no": 100, "protocol": "17" })]
+        });
+        let stored = json!({
+            "ingress": [nacl_rule("17", 100, 0, 0), nacl_rule("6", 100, 0, 0)]
+        });
+        assert_eq!(
+            action_for("aws_network_acl", declared, stored),
+            Action::NoOp
+        );
+    }
+
+    #[test]
+    fn nested_single_blocks_inside_a_block_list_are_noop() {
+        let declared = json!({
+            "bucket": "b",
+            "rule": [{
+                "expiration": { "days": 90 }, "filter": {}, "id": "expire",
+                "noncurrent_version_expiration": { "noncurrent_days": 90 }, "status": "Enabled"
+            }]
+        });
+        let stored = json!({
+            "bucket": "b", "expected_bucket_owner": "", "id": "b",
+            "rule": [{
+                "abort_incomplete_multipart_upload": [],
+                "expiration": [{ "date": null, "days": 90, "expired_object_delete_marker": false }],
+                "filter": [{ "and": [], "object_size_greater_than": null, "object_size_less_than": null, "prefix": "", "tag": [] }],
+                "id": "expire",
+                "noncurrent_version_expiration": [{ "newer_noncurrent_versions": null, "noncurrent_days": 90 }],
+                "noncurrent_version_transition": [], "prefix": "", "status": "Enabled", "transition": []
+            }]
+        });
+        assert_eq!(
+            action_for("aws_s3_bucket_lifecycle_configuration", declared, stored),
+            Action::NoOp
+        );
+    }
+
+    #[test]
+    fn a_changed_nested_value_inside_a_block_list_still_updates() {
+        let declared = json!({
+            "rule": [{ "apply_server_side_encryption_by_default": { "sse_algorithm": "aws:kms" } }]
+        });
+        let stored = json!({
+            "rule": [{
+                "apply_server_side_encryption_by_default": [{ "kms_master_key_id": "", "sse_algorithm": "AES256" }],
+                "bucket_key_enabled": false
+            }]
+        });
+        assert_eq!(
+            action_for(
+                "aws_s3_bucket_server_side_encryption_configuration",
+                declared,
+                stored
+            ),
+            Action::Update
+        );
+    }
+
+    #[test]
+    fn a_budget_limit_written_as_an_integer_matches_its_decimal_read() {
+        let stored = json!({ "limit_amount": "100.0", "limit_unit": "USD" });
+        assert_eq!(
+            action_for(
+                "aws_budgets_budget",
+                json!({ "limit_amount": "100" }),
+                stored.clone()
+            ),
+            Action::NoOp
+        );
+        assert_eq!(
+            action_for(
+                "aws_budgets_budget",
+                json!({ "limit_amount": 100 }),
+                stored.clone()
+            ),
+            Action::NoOp
+        );
+        assert_eq!(
+            action_for(
+                "aws_budgets_budget",
+                json!({ "limit_amount": "none" }),
+                json!({ "limit_amount": "none" })
+            ),
+            Action::NoOp
+        );
+        assert_eq!(
+            action_for(
+                "aws_budgets_budget",
+                json!({ "limit_amount": "200" }),
+                stored
+            ),
+            Action::Update
         );
     }
 }
