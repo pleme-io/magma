@@ -208,6 +208,21 @@ impl Observation {
         }
     }
 
+    #[must_use]
+    pub const fn scoped(counts: RefreshCounts, unread: usize) -> Self {
+        if unread == 0 {
+            return Self::of(counts);
+        }
+        if counts.probed() == 0 {
+            return Self::unrefreshed();
+        }
+        let coverage = match Self::derive_coverage(&counts) {
+            Coverage::Blind => Coverage::Blind,
+            _ => Coverage::Partial,
+        };
+        Self { coverage, counts }
+    }
+
     /// The coverage ladder, derived from counts alone.
     ///
     /// Order matters and each rung is deliberate:
