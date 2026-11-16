@@ -2574,6 +2574,14 @@ async fn try_adopt_on_conflict(
     adoption: Option<&crate::natural_id::ImportId>,
     msg: &str,
 ) -> Adoption {
+    if create_was_denied(msg) {
+        tracing::warn!(
+            address = ?change.address,
+            resource_type = %type_name,
+            "magma adopt: the create was denied, a permission finding; not adopting"
+        );
+        return Adoption::Absent;
+    }
     // Resolve the import id: the caller-derived natural id (composite, parent
     // references resolved against the apply loop's resolution map), or a
     // discovered `<zone_id>/<record_id>` for opaque-id resources via the
@@ -2696,6 +2704,15 @@ fn gate_on_confidence(
     }
 }
 
+fn create_was_denied(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("statuscode: 403")
+        || m.contains(": 403 ")
+        || m.contains("accessdenied")
+        || m.contains("unauthorizedoperation")
+        || m.contains("is not authorized to perform")
+}
+
 /// The generic adoption interpreter: discover a create-conflicted resource's
 /// opaque provider import id by reading the spec's list data source with a
 /// filter derived from the resource config, matching the natural key, and
@@ -2735,9 +2752,7 @@ async fn discover_via_spec(
     let result_json = result_dv
         .to_json(&ds_schema)
         .map_err(|e| EngineError::Cty(e.to_string()))?;
-    let Some(rows) = result_json.get("result").and_then(|v| v.as_array()) else {
-        return Ok(None);
-    };
+    let rows = crate::adopt::rows_of(spec, &result_json);
     let matched = rows
         .iter()
         .find(|row| crate::adopt::row_matches(row, after, &spec.match_keys));
@@ -4642,6 +4657,26 @@ mod tests {
             "no rule and no `name` attribute is a pure guess"
         );
         assert_eq!(gate_on_confidence(None, &addr, "github_issue_label"), None);
+    }
+
+    #[test]
+    fn a_denied_create_is_a_permission_finding_never_an_adoption() {
+        let rolesanywhere = "provider \"aws\" RPC: apply_resource_change: provider returned 1 error diagnostic(s) WITH a new_state (partial apply — resource is committed): creating RolesAnywhere Profile (pangea-operator-ryn): operation error RolesAnywhere: CreateProfile, https response error StatusCode: 403, RequestID: f872a4f9-15e3-48d0-9552-449297453b26, AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/pangea-operator-ryn/x is not authorized to perform: rolesanywhere:CreateProfile";
+        let ec2 = "creating EC2 VPC: operation error EC2: CreateVpc, https response error StatusCode: 403, RequestID: 1, api error UnauthorizedOperation: You are not authorized to perform this operation.";
+        let github = "POST https://api.github.com/orgs/pleme-io/repos: 403 Resource not accessible by integration []";
+        assert!(create_was_denied(rolesanywhere));
+        assert!(create_was_denied(ec2));
+        assert!(create_was_denied(github));
+
+        let iam_policy = "creating IAM Policy (pangea-operator-ryn-policy): operation error IAM: CreatePolicy, https response error StatusCode: 409, RequestID: e660d840-0425-4add-a4b9-9782351ffe0e, EntityAlreadyExists: A policy called pangea-operator-ryn-policy already exists. Duplicate names are not allowed.";
+        let budget = "creating Budget (kensa-pentest-monthly): operation error Budgets: CreateBudget, https response error StatusCode: 400, RequestID: 86a2fe86-73e8-4c62-9f6f-c08e4c13af96, DuplicateRecordException: Error creating budget: kensa-pentest-monthly - the budget already exists.";
+        let analyzer = "creating IAM Access Analyzer Analyzer (muralha-sa-east-1): operation error AccessAnalyzer: CreateAnalyzer, https response error StatusCode: 409, RequestID: 4031a1d1-7dbc-40c4-bd5c-ac7d41d64149, ConflictException: Analyzer with the same name already exists";
+        assert!(!create_was_denied(iam_policy));
+        assert!(!create_was_denied(budget));
+        assert!(
+            !create_was_denied(analyzer),
+            "a request id that happens to contain 403 is not a denial"
+        );
     }
 
     #[test]

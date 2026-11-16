@@ -52,6 +52,9 @@ pub struct AdoptionSpec {
     /// Import-id format. `{field}` pulls from config; `{result.field}` pulls
     /// from the matched result row ([`render_import_id`]).
     pub id_template: String,
+    /// How the read presents its candidates.
+    #[serde(default)]
+    pub rows: Rows,
 }
 
 /// The built-in adoption specs. Each entry is the only thing a new opaque-id
@@ -60,17 +63,36 @@ pub struct AdoptionSpec {
 /// the seam for it.)
 #[must_use]
 pub fn builtin_specs() -> Vec<AdoptionSpec> {
-    vec![AdoptionSpec {
-        resource_type: "cloudflare_dns_record".to_string(),
-        list_data_source: "cloudflare_dns_records".to_string(),
-        filter_template: serde_json::json!({
-            "zone_id": "{zone_id}",
-            "name": { "exact": "{name}" },
-            "type": "{type}",
-        }),
-        match_keys: vec!["name".to_string(), "type".to_string()],
-        id_template: "{zone_id}/{result.id}".to_string(),
-    }]
+    vec![
+        AdoptionSpec {
+            resource_type: "cloudflare_dns_record".to_string(),
+            list_data_source: "cloudflare_dns_records".to_string(),
+            filter_template: serde_json::json!({
+                "zone_id": "{zone_id}",
+                "name": { "exact": "{name}" },
+                "type": "{type}",
+            }),
+            match_keys: vec!["name".to_string(), "type".to_string()],
+            id_template: "{zone_id}/{result.id}".to_string(),
+            rows: Rows::ResultList,
+        },
+        AdoptionSpec {
+            resource_type: "aws_iam_policy".to_string(),
+            list_data_source: "aws_iam_policy".to_string(),
+            filter_template: serde_json::json!({ "name": "{name}" }),
+            match_keys: vec!["name".to_string()],
+            id_template: "{result.arn}".to_string(),
+            rows: Rows::Singleton,
+        },
+        AdoptionSpec {
+            resource_type: "aws_budgets_budget".to_string(),
+            list_data_source: "aws_budgets_budget".to_string(),
+            filter_template: serde_json::json!({ "name": "{name}" }),
+            match_keys: vec!["name".to_string()],
+            id_template: "{result.account_id}:{name}".to_string(),
+            rows: Rows::Singleton,
+        },
+    ]
 }
 
 /// The adoption spec for `resource_type`, if any opaque-id discovery is
@@ -80,6 +102,31 @@ pub fn spec_for(resource_type: &str) -> Option<AdoptionSpec> {
     builtin_specs()
         .into_iter()
         .find(|s| s.resource_type == resource_type)
+}
+
+/// Where a data source's read puts the candidate objects.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Rows {
+    /// A list data source: the candidates are its `result` array.
+    #[default]
+    ResultList,
+    /// A lookup data source: the read itself is the one candidate.
+    Singleton,
+}
+
+/// The candidate rows a data-source read offers for matching.
+#[must_use]
+pub fn rows_of(spec: &AdoptionSpec, result: &serde_json::Value) -> Vec<serde_json::Value> {
+    match spec.rows {
+        Rows::ResultList => result
+            .get("result")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        Rows::Singleton if result.is_object() => vec![result.clone()],
+        Rows::Singleton => Vec::new(),
+    }
 }
 
 /// A whole-value placeholder string of the exact form `{field}` → `field`.
@@ -257,6 +304,64 @@ mod tests {
             .unwrap();
         let id = render_import_id(&spec.id_template, &config, matched).unwrap();
         assert_eq!(id, "z9/the-one");
+    }
+
+    #[test]
+    fn aws_iam_policy_adopts_by_the_arn_its_own_data_source_reports() {
+        let spec = spec_for("aws_iam_policy").expect("aws_iam_policy adoptable");
+        let config = json!({ "name": "pangea-operator-ryn-policy", "policy": "{}" });
+        let result = json!({
+            "arn": "arn:aws:iam::123456789012:policy/pangea-operator-ryn-policy",
+            "name": "pangea-operator-ryn-policy",
+            "path": "/",
+        });
+        let filter = render_filter(&spec.filter_template, &config);
+        assert_eq!(filter["name"], "pangea-operator-ryn-policy");
+        let rows = rows_of(&spec, &result);
+        let matched = rows
+            .iter()
+            .find(|r| row_matches(r, &config, &spec.match_keys))
+            .expect("the policy the data source found is the planned one");
+        assert_eq!(
+            render_import_id(&spec.id_template, &config, matched).as_deref(),
+            Some("arn:aws:iam::123456789012:policy/pangea-operator-ryn-policy")
+        );
+    }
+
+    #[test]
+    fn aws_budgets_budget_adopts_by_account_and_name_without_an_authored_account() {
+        let spec = spec_for("aws_budgets_budget").expect("aws_budgets_budget adoptable");
+        let config = json!({ "name": "kensa-pentest-monthly", "budget_type": "COST" });
+        let result = json!({ "account_id": "123456789012", "name": "kensa-pentest-monthly" });
+        let rows = rows_of(&spec, &result);
+        let matched = rows
+            .iter()
+            .find(|r| row_matches(r, &config, &spec.match_keys))
+            .expect("the budget the data source found is the planned one");
+        assert_eq!(
+            render_import_id(&spec.id_template, &config, matched).as_deref(),
+            Some("123456789012:kensa-pentest-monthly")
+        );
+    }
+
+    #[test]
+    fn a_singleton_read_naming_a_different_object_is_not_a_match() {
+        let spec = spec_for("aws_iam_policy").unwrap();
+        let config = json!({ "name": "pangea-operator-ryn-policy" });
+        let result = json!({ "arn": "arn:aws:iam::1:policy/other", "name": "other" });
+        assert!(
+            rows_of(&spec, &result)
+                .iter()
+                .all(|r| !row_matches(r, &config, &spec.match_keys))
+        );
+    }
+
+    #[test]
+    fn a_list_spec_still_reads_its_result_rows() {
+        let spec = spec_for("cloudflare_dns_record").unwrap();
+        let result = json!({ "result": [{ "id": "a" }, { "id": "b" }] });
+        assert_eq!(rows_of(&spec, &result).len(), 2);
+        assert!(rows_of(&spec, &json!({ "zone_id": "z" })).is_empty());
     }
 
     #[test]

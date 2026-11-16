@@ -226,6 +226,11 @@ pub const CATALOG: &[NaturalIdRule] = &[
         parts: &[IdPart::Attr("account_id"), IdPart::Attr("name")],
         sep: ':',
     },
+    NaturalIdRule {
+        resource_type: "aws_accessanalyzer_analyzer",
+        parts: &[IdPart::Attr("analyzer_name")],
+        sep: ':',
+    },
 ];
 
 /// The catalog row for a resource type, if any.
@@ -773,6 +778,11 @@ mod tests {
                 after: || serde_json::json!({ "account_id": "123456789012", "name": "cap" }),
                 expect: "123456789012:cap",
             },
+            Row {
+                ty: "aws_accessanalyzer_analyzer",
+                after: || serde_json::json!({ "analyzer_name": "muralha-sa-east-1", "type": "ACCOUNT" }),
+                expect: "muralha-sa-east-1",
+            },
         ];
         assert_eq!(
             matrix.len(),
@@ -1033,6 +1043,32 @@ mod tests {
         )
         .expect("derivable");
         assert!(!got.confidence.is_exact());
+    }
+
+    #[test]
+    fn an_access_analyzer_imports_by_its_analyzer_name_exactly() {
+        let analyzer = serde_json::json!({
+            "analyzer_name": "muralha-sa-east-1",
+            "region": "sa-east-1",
+            "type": "ACCOUNT"
+        });
+        let got = derive(
+            &mk("aws_accessanalyzer_analyzer", "sa-east-1", analyzer),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("derivable");
+        assert_eq!(got.id, "muralha-sa-east-1");
+        assert!(
+            got.confidence.is_exact(),
+            "a 409 ConflictException on CreateAnalyzer is adoptable only when the \
+             id is exact; the address name `sa-east-1` names nothing"
+        );
+        assert_eq!(
+            identity_attrs("aws_accessanalyzer_analyzer"),
+            vec!["analyzer_name"]
+        );
     }
 
     // ── The confidence gate + the identity gate ───────────────────────────
