@@ -504,6 +504,12 @@ async fn handle_tool_call(
                 "created_at":       plan.created_at,
                 "workspace_dir":    dir,
                 "resource_changes": plan.resource_changes,
+                // Addresses whose planned Create the identity probe
+                // refused (magma never mints a twin). Surfaced here, not
+                // only in the apply receipt, because this plan output is
+                // what an operator reads to DECIDE — and a refusal is a
+                // decision waiting for them, not a failure to retry.
+                "probe_refusals":   plan.probe_refusals,
                 "summary": {
                     "total":  plan.resource_changes.len(),
                 },
