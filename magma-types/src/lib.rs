@@ -281,6 +281,42 @@ pub struct Plan {
     /// stripped without breaking verification is not a receipt.
     #[serde(default)]
     pub observation: Observation,
+    /// Addresses whose planned Create the identity probe REFUSED — magma
+    /// will not mint a twin. Carried on the plan (not only a downstream
+    /// receipt) because the plan is the artifact that persists across
+    /// cycles and process restarts: an apply of this plan must refuse the
+    /// same creates in every engine that consumes it, and a human reading
+    /// a saved plan must see the refusal where they see the creates it
+    /// replaces.
+    ///
+    /// Like [`Plan::observation`], deliberately OUTSIDE [`PlanId`]: the
+    /// refusal is a fact about the probe run that produced this plan, not
+    /// about the change set computed against state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub probe_refusals: Vec<ProbeRefusal>,
+}
+
+/// One planned Create the identity probe refused — the typed "magma will
+/// not mint a twin" verdict for a single address.
+///
+/// Produced by the apply prepass when the address is absent from state,
+/// its type carries a probe rule, and the live provider answered something
+/// other than "no such identity": either several live resources already
+/// carry the declared identity ([`ProbeRefusal::matched_ids`] names every
+/// one), or the probe could not complete and freshness was never proven
+/// (`matched_ids` empty, [`ProbeRefusal::reason`] says why). Both are a
+/// human decision, never an automatic create.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProbeRefusal {
+    /// Canonical address string (`aws_vpc.main`).
+    pub address: String,
+    /// Every live id the probe matched under the declared identity. Empty
+    /// when the probe itself could not complete — the create is refused
+    /// because freshness was not proven, not because twins were seen.
+    pub matched_ids: Vec<String>,
+    /// Why the create is refused. Single-sourced: render it, never
+    /// re-derive it.
+    pub reason: String,
 }
 
 impl Plan {
@@ -295,6 +331,27 @@ impl Plan {
     pub fn with_observation(mut self, observation: Observation) -> Self {
         self.observation = observation;
         self
+    }
+
+    /// Stamp this plan with the identity probe's refusals — the addresses
+    /// whose planned Create the apply must refuse rather than execute.
+    ///
+    /// The seam for the pre-plan identity probe, exactly as
+    /// [`Plan::with_observation`] is the seam for the plan-time refresh:
+    /// the probe runs in the same call that produces the plan, and this is
+    /// the artifact that survives.
+    #[must_use]
+    pub fn with_probe_refusals(mut self, refusals: Vec<ProbeRefusal>) -> Self {
+        self.probe_refusals = refusals;
+        self
+    }
+
+    /// The probe refusal recorded for `address`, if any.
+    #[must_use]
+    pub fn probe_refusal(&self, address: &ResourceAddress) -> Option<&ProbeRefusal> {
+        self.probe_refusals
+            .iter()
+            .find(|r| r.address == address.to_string())
     }
 
     /// Resources this plan intends to CHANGE — excludes both `NoOp` and
@@ -2006,6 +2063,72 @@ mod tests {
 }
 
 #[cfg(test)]
+mod probe_refusal_tests {
+    use super::*;
+
+    fn addr(name: &str) -> ResourceAddress {
+        ResourceAddress {
+            module: ModulePath::root(),
+            kind: ResourceKind::Managed,
+            type_id: ResourceTypeId("aws_vpc".into()),
+            name: name.into(),
+            key: None,
+        }
+    }
+
+    fn refusal(ids: &[&str]) -> ProbeRefusal {
+        ProbeRefusal {
+            address: "aws_vpc.main".into(),
+            matched_ids: ids.iter().map(|s| (*s).to_string()).collect(),
+            reason: "probe matched 2 live resources".into(),
+        }
+    }
+
+    /// A plan persisted before `probe_refusals` existed still deserializes —
+    /// an in-flight plan artifact must not become unreadable across a magma
+    /// upgrade (the same law `ResourceChange::meta`'s serde default serves).
+    #[test]
+    fn a_plan_without_probe_refusals_deserializes() {
+        let id: Vec<u64> = [0u8; 32].iter().map(|b| u64::from(*b)).collect();
+        let legacy = serde_json::json!({
+            "id": id,
+            "created_at": "2026-11-15T23:09:00Z",
+            "config_root": "/ws",
+            "variables": {},
+            "resource_changes": [],
+            "output_changes": [],
+            "observation": { "coverage": "unrefreshed" },
+        });
+        let plan: Plan = serde_json::from_value(legacy).expect("legacy plan deserializes");
+        assert_eq!(plan.probe_refusals, Vec::new());
+        assert_eq!(plan.probe_refusal(&addr("main")), None);
+    }
+
+    /// The refusal is found by ADDRESS — the same identity an apply engine
+    /// keys a change on — and the address renders canonically (`data.` marker,
+    /// module prefix, key), not by a hand-rolled `type.name` format.
+    #[test]
+    fn a_refusal_is_found_by_its_canonical_address() {
+        let plan = Plan {
+            id: PlanId([0u8; 32]),
+            created_at: Utc::now(),
+            config_root: PathBuf::new(),
+            variables: HashMap::new(),
+            resource_changes: vec![],
+            output_changes: vec![],
+            observation: Observation::default(),
+            probe_refusals: vec![refusal(&["vpc-1", "vpc-2"])],
+        };
+        let hit = plan.probe_refusal(&addr("main")).expect("refused");
+        assert_eq!(
+            hit.matched_ids,
+            vec!["vpc-1".to_string(), "vpc-2".to_string()]
+        );
+        assert_eq!(plan.probe_refusal(&addr("other")), None);
+    }
+}
+
+#[cfg(test)]
 mod read_is_not_a_change_tests {
     use super::*;
 
@@ -2028,6 +2151,7 @@ mod read_is_not_a_change_tests {
             resource_changes: changes,
             output_changes: vec![],
             observation: Observation::default(),
+            probe_refusals: Vec::new(),
         }
     }
 

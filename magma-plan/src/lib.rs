@@ -487,6 +487,7 @@ pub fn plan(config: &Config, state: &State) -> Result<Plan, PlanError> {
         // one place that does, and `Plan::with_observation` is the seam
         // for any other caller that runs its own refresh.
         observation: magma_types::Observation::unrefreshed(),
+        probe_refusals: Vec::new(),
     })
 }
 

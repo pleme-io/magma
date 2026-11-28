@@ -151,6 +151,17 @@ impl magma_apply::import_prepass::ImportEnvironment for LawMockEnv {
             private: vec![],
         }])
     }
+
+    async fn read_data_source(
+        &self,
+        _data_source: &str,
+        _config: &serde_json::Value,
+        _provider: &magma_types::ProviderInstance,
+    ) -> Result<Option<serde_json::Value>, String> {
+        // This law never probes: the identity-probe laws carry their own
+        // environment. Machinery-unavailable is the honest mock answer.
+        Ok(None)
+    }
 }
 
 #[tokio::test]

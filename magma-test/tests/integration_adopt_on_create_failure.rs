@@ -100,6 +100,7 @@ fn plan_of(change: ResourceChange) -> Plan {
         resource_changes: vec![change],
         output_changes: Vec::new(),
         observation: magma_types::Observation::unrefreshed(),
+        probe_refusals: Vec::new(),
     }
 }
 

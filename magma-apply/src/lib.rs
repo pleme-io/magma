@@ -89,7 +89,7 @@ pub use cursor::{
 pub use import_prepass::{
     AbsentImport, ConfiguredImportEnvironment, FailedImport, ImportEnvironment,
     ImportPrepassOutcome, ImportVerdict, ImportedAddress, PluginImportEnvironment,
-    import_on_conflict, run_explicit_prepass,
+    ProbePrepassOutcome, import_on_conflict, run_explicit_prepass, run_identity_probe_prepass,
 };
 
 use std::collections::HashMap;
@@ -257,6 +257,20 @@ pub fn run_plan(plan: &Plan, state: &mut State) -> Result<ApplyOutcome, ApplyErr
     // `ResourceGraph`-based ordering. Falls back to plan order on a
     // cycle / graph error — never refuses to apply.
     for change in dependency_ordered(&mutations) {
+        // ★ magma never mints a twin — the probe refusal gate, same law
+        // the provider-driven engine enforces: a create-class change for
+        // an address the pre-plan identity probe refused never executes.
+        // Per-address only; siblings in the same ordered pass apply.
+        if engine::has_create_half(change.action) {
+            if let Some(refusal) = plan.probe_refusal(&change.address) {
+                failed.push(FailedChange {
+                    address: change.address.clone(),
+                    action: change.action,
+                    reason: refusal.reason.clone(),
+                });
+                continue;
+            }
+        }
         match apply_one(change, state, &mut state_map) {
             Ok(a) => applied.push(a),
             Err(e) => failed.push(FailedChange {
@@ -590,6 +604,7 @@ mod tests {
             resource_changes: changes,
             output_changes: Vec::new(),
             observation: magma_types::Observation::unrefreshed(),
+            probe_refusals: Vec::new(),
         }
     }
 

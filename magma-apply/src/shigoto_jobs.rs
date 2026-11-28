@@ -106,6 +106,7 @@ impl Job for ApplyChangeJob {
             // computed one. It observed nothing itself; the trust record
             // belongs to the plan this change came from.
             observation: magma_types::Observation::unrefreshed(),
+            probe_refusals: Vec::new(),
         };
         let outcome = crate::run_plan(&single_plan, &mut state)?;
         Ok(outcome)

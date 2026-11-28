@@ -103,6 +103,7 @@ async fn force_new_attribute_change_applies_as_destroy_then_create() {
         resource_changes: vec![replace_change("old-value", "new-value")],
         output_changes: Vec::new(),
         observation: magma_types::Observation::unrefreshed(),
+        probe_refusals: Vec::new(),
     };
     let mut state = State {
         version: 4,

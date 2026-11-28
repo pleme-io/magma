@@ -1376,6 +1376,38 @@ pub async fn run_plan_with_providers_resumable(
             let Some(change) = by_key.get(&key).copied() else {
                 continue;
             };
+            // ★ magma never mints a twin — the probe refusal gate. A
+            // create-class change for an address the pre-plan identity
+            // probe refused NEVER reaches a provider: the refusal is the
+            // typed outcome for THIS address alone (a FailedChange naming
+            // every matched live id or the unproven-freshness reason),
+            // while every sibling in the graph applies exactly as it
+            // would have. Not recorded to the cursor — the next cycle
+            // re-probes, and an operator intervention (an explicit import
+            // hint, or removing the twins) unblocks it.
+            if has_create_half(change.action) {
+                if let Some(refusal) = plan.probe_refusal(&change.address) {
+                    tracing::warn!(
+                        address = %change.address,
+                        reason = %refusal.reason,
+                        "magma apply: refusing planned create (identity probe); siblings continue"
+                    );
+                    // Counted as attempted AND failed — the node was
+                    // visited and resolved, it just resolved to a
+                    // refusal. `nodes_remaining` below subtracts only
+                    // completed nodes, so a refused node stays in the
+                    // frontier's arithmetic exactly like any other
+                    // failure: retried next cycle.
+                    stats.nodes_attempted += 1;
+                    stats.nodes_failed += 1;
+                    failed.push(FailedChange {
+                        address: change.address.clone(),
+                        action: change.action,
+                        reason: refusal.reason.clone(),
+                    });
+                    continue;
+                }
+            }
             stats.nodes_attempted += 1;
             // Substitute ${ref}s against everything applied so far — including,
             // on a resumed cycle, everything earlier cycles wrote into `state`.
@@ -2330,6 +2362,29 @@ pub async fn refresh_then_plan(
         Some(ctx) => Some(refresh_state(state, ctx).await),
         None => None,
     };
+    // ★ magma never mints a twin. The pre-create identity probe — the
+    // third import directive source, after `spec.importHints` and
+    // `importPolicy.autoOnConflict`. For every managed resource the
+    // config declares at an address ABSENT from state whose type carries
+    // a probe rule, ask the live provider whether the resource's declared
+    // identity already exists BEFORE the plan proposes a Create. One live
+    // match is absorbed into working state here (so the plan below sees
+    // Update/NoOp, not Create); zero matches is a licensed fresh create;
+    // many matches — or a probe that could not complete — is a typed
+    // refusal carried ON the plan, which the apply engines honour by
+    // refusing that address's create alone. There is no opt-in: the
+    // receipted 2026-11-15 twin estate was minted by types whose Create
+    // never conflicts, so no conflict-driven policy could have prevented
+    // it. Runs only when provider access exists, exactly like the refresh
+    // above; with none, the plan is unprobed and unchanged.
+    let probe_refusals = match ctx {
+        Some(ctx) => {
+            let env = crate::import_prepass::ConfiguredImportEnvironment::new(ctx);
+            let outcome = crate::import_prepass::run_identity_probe_prepass(&env, cfg, state).await;
+            outcome.refused
+        }
+        None => Vec::new(),
+    };
     // Stamp the refresh's OWN trustworthiness onto the artifact that
     // survives. Without this the report died here — printed to stderr,
     // reduced to `.is_some()` — and a pass in which every `ReadResource`
@@ -2342,7 +2397,9 @@ pub async fn refresh_then_plan(
         magma_types::Observation::unrefreshed,
         RefreshReport::observation,
     );
-    let plan = magma_plan::plan(cfg, state)?.with_observation(observation);
+    let plan = magma_plan::plan(cfg, state)?
+        .with_observation(observation)
+        .with_probe_refusals(probe_refusals);
     Ok((plan, report))
 }
 
@@ -2713,6 +2770,45 @@ fn create_was_denied(msg: &str) -> bool {
         || m.contains("is not authorized to perform")
 }
 
+/// Read one provider data source by NAME against a live provider — encode
+/// `config` against the data source's schema, `ReadDataSource`, decode the
+/// answer to JSON. The shared read half behind every discovery-shaped
+/// consumer ([`discover_via_spec`]'s adopt-on-conflict discovery and the
+/// import prepass's identity probe both ride it), so the encode→RPC→decode
+/// contract is implemented once.
+///
+/// `Ok(None)` — this provider does not expose the data source (absent from
+/// its schema), so the question cannot be asked HERE. `Err` — the read was
+/// attempted and failed: transport error, the provider answered null state
+/// (a contract miss for any filtered list read, never "no matches"), or the
+/// answer did not decode.
+pub(crate) async fn read_data_source_decoded(
+    lp: &mut LiveProvider,
+    data_source: &str,
+    config: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, EngineError> {
+    let Some(ds_schema) = lp.schema.data_source(data_source).cloned() else {
+        return Ok(None);
+    };
+    let provider_name = provider_local_name(data_source);
+    let config_dv =
+        DynamicValue::from_json(config, &ds_schema).map_err(|e| EngineError::Cty(e.to_string()))?;
+    match lp.conn.read_data_source(data_source, &config_dv).await {
+        Ok(None) => Err(EngineError::Rpc(
+            provider_name,
+            format!("data source {data_source} returned null state"),
+        )),
+        Ok(Some(dv)) => dv
+            .to_json(&ds_schema)
+            .map(Some)
+            .map_err(|e| EngineError::Cty(e.to_string())),
+        Err(e) => Err(EngineError::Rpc(
+            provider_name,
+            format!("{data_source} read: {e}"),
+        )),
+    }
+}
+
 /// The generic adoption interpreter: discover a create-conflicted resource's
 /// opaque provider import id by reading the spec's list data source with a
 /// filter derived from the resource config, matching the natural key, and
@@ -2729,29 +2825,11 @@ async fn discover_via_spec(
     let Some(after) = change.after.as_ref() else {
         return Ok(None);
     };
-    // The provider must expose the list data source to discover the id.
-    let Some(ds_schema) = lp.schema.data_source(&spec.list_data_source).cloned() else {
-        return Ok(None);
-    };
     let filter = crate::adopt::render_filter(&spec.filter_template, after);
-    let filter_dv = DynamicValue::from_json(&filter, &ds_schema)
-        .map_err(|e| EngineError::Cty(e.to_string()))?;
-    let Some(result_dv) = lp
-        .conn
-        .read_data_source(&spec.list_data_source, &filter_dv)
-        .await
-        .map_err(|e| {
-            EngineError::Rpc(
-                provider_local_name(&spec.resource_type),
-                format!("{} discovery: {e}", spec.list_data_source),
-            )
-        })?
+    let Some(result_json) = read_data_source_decoded(lp, &spec.list_data_source, &filter).await?
     else {
         return Ok(None);
     };
-    let result_json = result_dv
-        .to_json(&ds_schema)
-        .map_err(|e| EngineError::Cty(e.to_string()))?;
     let rows = crate::adopt::rows_of(spec, &result_json);
     let matched = rows
         .iter()
@@ -4914,6 +4992,7 @@ mod tests {
             }],
             output_changes: vec![],
             observation: magma_types::Observation::unrefreshed(),
+            probe_refusals: Vec::new(),
         };
         let mut state = State {
             version: 4,
@@ -4993,6 +5072,7 @@ mod tests {
             }],
             output_changes: vec![],
             observation: magma_types::Observation::unrefreshed(),
+            probe_refusals: Vec::new(),
         };
         // State starts holding the orphaned data-source row (a prior apply put
         // it there); the reaction must purge it.
@@ -5864,6 +5944,7 @@ mod tests {
                 .collect(),
             output_changes: vec![],
             observation: magma_types::Observation::unrefreshed(),
+            probe_refusals: Vec::new(),
         }
     }
 
@@ -6246,6 +6327,7 @@ mod tests {
             }],
             output_changes: vec![],
             observation: magma_types::Observation::unrefreshed(),
+            probe_refusals: Vec::new(),
         };
         let td = tempfile::tempdir().unwrap();
         let ctx = unpaced_ctx(td.path());
@@ -7203,6 +7285,328 @@ mod guard_engine_tests {
             started.elapsed() < Duration::from_secs(3),
             "{:?}",
             started.elapsed()
+        );
+    }
+}
+
+// ── The pre-create identity probe, end to end ──────────────────────
+#[cfg(test)]
+mod identity_probe_tests {
+    use super::*;
+    use magma_plugin::provider::PlannedChange;
+    use magma_types::{PlanId, ResourceTypeId};
+    use std::sync::Mutex;
+
+    /// An in-process AWS that answers the probe's questions and records
+    /// every CREATE it was asked to perform — the twin detector.
+    struct AwsProbeStub {
+        /// What `aws_vpcs` reports under the declared tags: the live
+        /// estate the probe must find.
+        vpc_ids: Vec<String>,
+        /// Every `ApplyResourceChange` this provider served, as
+        /// `type/name` — a twin create lands here, an absorbed estate
+        /// never does.
+        applies: Arc<Mutex<Vec<String>>>,
+    }
+
+    fn vpc_type() -> CtyType {
+        let mut attrs = BTreeMap::new();
+        attrs.insert("id".to_string(), CtyType::String);
+        attrs.insert("cidr_block".to_string(), CtyType::String);
+        attrs.insert("tags".to_string(), CtyType::Map(Box::new(CtyType::String)));
+        CtyType::Object(attrs)
+    }
+
+    fn vpcs_type() -> CtyType {
+        let mut attrs = BTreeMap::new();
+        attrs.insert("id".to_string(), CtyType::String);
+        attrs.insert("tags".to_string(), CtyType::Map(Box::new(CtyType::String)));
+        attrs.insert("ids".to_string(), CtyType::Set(Box::new(CtyType::String)));
+        CtyType::Object(attrs)
+    }
+
+    fn schema() -> ProviderSchema {
+        let mut resources = BTreeMap::new();
+        resources.insert("aws_vpc".to_string(), vpc_type());
+        let mut data_sources = BTreeMap::new();
+        data_sources.insert("aws_vpcs".to_string(), vpcs_type());
+        ProviderSchema {
+            provider_config: CtyType::Object(BTreeMap::new()),
+            resources,
+            data_sources,
+            resource_versions: BTreeMap::new(),
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for AwsProbeStub {
+        async fn get_schema(&mut self) -> Result<ProviderSchema, ProviderError> {
+            Ok(schema())
+        }
+        async fn configure(&mut self, _: &DynamicValue, _: &str) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        async fn plan_resource_change(
+            &mut self,
+            _: &str,
+            _prior: &DynamicValue,
+            proposed: &DynamicValue,
+            _config: &DynamicValue,
+        ) -> Result<PlannedChange, ProviderError> {
+            Ok(PlannedChange {
+                state: proposed.clone(),
+                requires_replace: vec![],
+            })
+        }
+        async fn apply_resource_change(
+            &mut self,
+            type_name: &str,
+            _prior: &DynamicValue,
+            planned: &DynamicValue,
+            _config: &DynamicValue,
+        ) -> Result<DynamicValue, ProviderError> {
+            // THE twin detector: a create the engine actually issued for a
+            // live estate lands here. The id comes back server-assigned,
+            // exactly like the real AWS minting a duplicate.
+            self.applies.lock().unwrap().push(type_name.to_string());
+            let mut attrs = planned
+                .to_json(&vpc_type())
+                .unwrap_or_else(|_| serde_json::Value::Null);
+            if let Some(o) = attrs.as_object_mut() {
+                o.insert("id".to_string(), serde_json::json!("vpc-newly-minted"));
+            }
+            DynamicValue::from_json(&attrs, &vpc_type())
+                .map_err(|e| ProviderError::Transport(e.to_string()))
+        }
+        async fn read_resource(
+            &mut self,
+            _: &str,
+            current: &DynamicValue,
+        ) -> Result<Option<DynamicValue>, ProviderError> {
+            Ok(Some(current.clone()))
+        }
+        async fn read_data_source(
+            &mut self,
+            type_name: &str,
+            _config: &DynamicValue,
+        ) -> Result<Option<DynamicValue>, ProviderError> {
+            if type_name != "aws_vpcs" {
+                return Ok(None);
+            }
+            let ids: Vec<serde_json::Value> =
+                self.vpc_ids.iter().map(|i| serde_json::json!(i)).collect();
+            let answer = serde_json::json!({ "id": "sa-east-1", "ids": ids });
+            let dv = DynamicValue::from_json(&answer, &vpcs_type())
+                .map_err(|e| ProviderError::Transport(e.to_string()))?;
+            Ok(Some(dv))
+        }
+        async fn import_resource_state(
+            &mut self,
+            type_name: &str,
+            id: &str,
+        ) -> Result<Option<DynamicValue>, ProviderError> {
+            let attrs = serde_json::json!({
+                "id": id,
+                "cidr_block": "10.0.0.0/16",
+                "tags": { "Name": "engenho", "pleme.io/managed": "true" }
+            });
+            let ty = if type_name == "aws_vpc" {
+                vpc_type()
+            } else {
+                return Ok(None);
+            };
+            DynamicValue::from_json(&attrs, &ty)
+                .map(Some)
+                .map_err(|e| ProviderError::Transport(e.to_string()))
+        }
+        async fn upgrade_resource_state(
+            &mut self,
+            _: &str,
+            _: i64,
+            _: &[u8],
+        ) -> Result<DynamicValue, ProviderError> {
+            Err(ProviderError::NoNewState)
+        }
+    }
+
+    struct AwsProbeStubFactory {
+        vpc_ids: Vec<String>,
+        applies: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderFactory for AwsProbeStubFactory {
+        async fn dial(&self, _req: DialRequest<'_>) -> Result<LiveProvider, EngineError> {
+            Ok(LiveProvider {
+                transport: Box::new(InProcessTransport),
+                conn: Box::new(AwsProbeStub {
+                    vpc_ids: self.vpc_ids.clone(),
+                    applies: Arc::clone(&self.applies),
+                }),
+                schema: schema(),
+                abandoned: None,
+            })
+        }
+    }
+
+    fn estate(vpc_ids: &[&str]) -> (ApplyContext, Arc<Mutex<Vec<String>>>) {
+        let applies = Arc::new(Mutex::new(Vec::new()));
+        let ctx = ApplyContext::new(PathBuf::from("/ws"))
+            .without_pacer()
+            .with_provider_factory(Arc::new(AwsProbeStubFactory {
+                vpc_ids: vpc_ids.iter().map(|s| (*s).to_string()).collect(),
+                applies: Arc::clone(&applies),
+            }));
+        (ctx, applies)
+    }
+
+    fn vpc_cfg() -> magma_config::Config {
+        magma_config::Config::from_json(serde_json::json!({
+            "resource": {
+                "aws_vpc": {
+                    "main": {
+                        "cidr_block": "10.0.0.0/16",
+                        "tags": { "Name": "engenho", "pleme.io/managed": "true" }
+                    }
+                }
+            }
+        }))
+        .expect("valid config")
+    }
+
+    fn empty_state() -> State {
+        State {
+            version: 4,
+            terraform_version: "1.9.0".into(),
+            serial: 0,
+            lineage: uuid::Uuid::nil(),
+            outputs: Default::default(),
+            resources: Vec::new(),
+        }
+    }
+
+    /// THE 2026-11-15 lock, at the entry point every apply goes through:
+    /// empty state, ONE tag-matching live VPC, and `refresh_then_plan`
+    /// must hand back a plan that does NOT create it — the estate is
+    /// absorbed into working state instead. Without the probe this test's
+    /// apply half mints the twin (the provider's apply log proves it).
+    #[tokio::test]
+    async fn refresh_then_plan_absorbs_a_live_estate_instead_of_planning_its_twin() {
+        let (ctx, applies) = estate(&["vpc-live"]);
+        let mut state = empty_state();
+
+        let (plan, _) = refresh_then_plan(&vpc_cfg(), &mut state, Some(&ctx))
+            .await
+            .unwrap();
+
+        let vpc = plan
+            .resource_changes
+            .iter()
+            .find(|c| c.address.to_string() == "aws_vpc.main")
+            .expect("the declared vpc is in the plan");
+        assert_ne!(
+            vpc.action,
+            Action::Create,
+            "the probe absorbed the live estate; a Create here IS the twin"
+        );
+        assert!(plan.probe_refusals.is_empty(), "{:?}", plan.probe_refusals);
+        assert_eq!(state.resources.len(), 1);
+        assert_eq!(state.resources[0].instances[0].attributes["id"], "vpc-live");
+
+        let outcome = run_plan_with_providers(&plan, &mut state, &ctx).await;
+        assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+        assert!(
+            applies.lock().unwrap().is_empty(),
+            "no create was issued: the estate was adopted, not duplicated"
+        );
+    }
+
+    /// Two live matches through the SAME entry point: the plan carries the
+    /// typed refusal naming both ids, and the apply refuses that address
+    /// alone — the provider never sees a create for it.
+    #[tokio::test]
+    async fn refresh_then_plan_then_apply_refuses_a_many_match_create_naming_both_ids() {
+        let (ctx, applies) = estate(&["vpc-one", "vpc-two"]);
+        let mut state = empty_state();
+
+        let (plan, _) = refresh_then_plan(&vpc_cfg(), &mut state, Some(&ctx))
+            .await
+            .unwrap();
+
+        assert_eq!(plan.probe_refusals.len(), 1);
+        let refusal = &plan.probe_refusals[0];
+        assert_eq!(refusal.address, "aws_vpc.main");
+        assert_eq!(
+            refusal.matched_ids,
+            vec!["vpc-one".to_string(), "vpc-two".to_string()]
+        );
+        assert!(state.resources.is_empty(), "twins are never absorbed");
+
+        let outcome = run_plan_with_providers(&plan, &mut state, &ctx).await;
+
+        assert!(outcome.applied.is_empty(), "{:?}", outcome.applied);
+        assert_eq!(outcome.failed.len(), 1);
+        let failed = &outcome.failed[0];
+        assert_eq!(failed.address.to_string(), "aws_vpc.main");
+        assert!(
+            failed.reason.contains("vpc-one") && failed.reason.contains("vpc-two"),
+            "the refusal names every matched id: {}",
+            failed.reason
+        );
+        assert!(
+            applies.lock().unwrap().is_empty(),
+            "a refused create never reaches the provider"
+        );
+    }
+
+    /// Sibling isolation at the engine: a refused create blocks only ITS
+    /// address; a sibling create in the same plan applies normally.
+    #[tokio::test]
+    async fn a_refused_create_blocks_its_address_alone_and_siblings_apply() {
+        let (ctx, applies) = estate(&[]);
+        let mut state = empty_state();
+        let mk = |name: &str| ResourceChange {
+            address: ResourceAddress {
+                module: magma_types::ModulePath::root(),
+                kind: ResourceKind::Managed,
+                type_id: ResourceTypeId("aws_vpc".into()),
+                name: name.into(),
+                key: None,
+            },
+            action: Action::Create,
+            before: None,
+            after: Some(serde_json::json!({
+                "cidr_block": "10.0.0.0/16",
+                "tags": { "Name": name, "pleme.io/managed": "true" }
+            })),
+            reasons: vec![],
+            meta: Default::default(),
+        };
+        let plan = Plan {
+            id: PlanId([0u8; 32]),
+            created_at: Utc::now(),
+            config_root: PathBuf::from("/ws"),
+            variables: Default::default(),
+            resource_changes: vec![mk("twinned"), mk("fresh")],
+            output_changes: vec![],
+            observation: magma_types::Observation::unrefreshed(),
+            probe_refusals: vec![magma_types::ProbeRefusal {
+                address: "aws_vpc.twinned".into(),
+                matched_ids: vec!["vpc-one".into(), "vpc-two".into()],
+                reason: "identity probe matched 2 live resources".into(),
+            }],
+        };
+
+        let outcome = run_plan_with_providers(&plan, &mut state, &ctx).await;
+
+        assert!(outcome.applied.len() == 1, "{:?}", outcome.applied);
+        assert_eq!(outcome.applied[0].address.to_string(), "aws_vpc.fresh");
+        assert_eq!(outcome.failed.len(), 1);
+        assert_eq!(outcome.failed[0].address.to_string(), "aws_vpc.twinned");
+        assert_eq!(
+            applies.lock().unwrap().as_slice(),
+            ["aws_vpc"],
+            "only the sibling's create reached the provider"
         );
     }
 }

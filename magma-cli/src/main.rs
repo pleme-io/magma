@@ -1158,6 +1158,7 @@ async fn cmd_destroy(args: DestroyArgs) -> Result<u8> {
         // state without a refresh, so the honest record is "nothing was
         // observed".
         observation: magma::types::Observation::unrefreshed(),
+        probe_refusals: Vec::new(),
     };
 
     if !args.auto_approve {
